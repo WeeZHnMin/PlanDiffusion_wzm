@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Floor Plan Node Diffusion</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+         background: #f5f5f5; color: #333; }
+  header { background: #1a1a2e; color: #fff; padding: 16px 32px;
+           font-size: 20px; font-weight: bold; }
+  .container { display: flex; gap: 24px; padding: 24px 32px; }
+
+  /* ── 左侧控制面板 ── */
+  .panel { width: 320px; flex-shrink: 0; }
+  .card  { background: #fff; border-radius: 10px; padding: 18px;
+           box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 16px; }
+  .card h3 { font-size: 14px; color: #666; margin-bottom: 10px; }
+  textarea { width: 100%; height: 80px; border: 1px solid #ddd;
+             border-radius: 6px; padding: 8px; font-size: 13px;
+             resize: vertical; font-family: inherit; }
+  textarea:focus { outline: none; border-color: #4a90d9; }
+  .radio-group label { display: block; padding: 6px 0; font-size: 13px;
+                       cursor: pointer; }
+  .radio-group input { margin-right: 6px; }
+  button#gen-btn { width: 100%; padding: 12px; background: #4a90d9;
+                   color: #fff; border: none; border-radius: 8px;
+                   font-size: 15px; font-weight: bold; cursor: pointer;
+                   transition: background .2s; }
+  button#gen-btn:hover { background: #357abd; }
+  button#gen-btn:disabled { background: #aaa; cursor: not-allowed; }
+  #status { font-size: 12px; color: #888; margin-top: 8px; min-height: 18px; }
+  .examples-list { max-height: 220px; overflow-y: auto; }
+  .ex-item { padding: 6px 8px; font-size: 12px; cursor: pointer;
+             border-radius: 5px; transition: background .15s; color: #444; }
+  .ex-item:hover { background: #eef4ff; color: #357abd; }
+
+  /* ── 右侧结果区 ── */
+  .results { flex: 1; min-width: 0; }
+  .result-card { background: #fff; border-radius: 10px; padding: 18px;
+                 box-shadow: 0 2px 8px rgba(0,0,0,.08); margin-bottom: 20px; }
+  .result-card h3 { font-size: 14px; color: #555; margin-bottom: 12px;
+                    padding-bottom: 8px; border-bottom: 1px solid #eee; }
+  #anim-wrap { text-align: center; min-height: 120px;
+               display: flex; align-items: center; justify-content: center; }
+  #anim-img  { max-width: 100%; border-radius: 6px; display: none; }
+  #anim-placeholder { color: #bbb; font-size: 14px; }
+  #progress-bar-wrap { margin: 10px 0 4px; display: none; }
+  #progress-bar { height: 4px; background: #4a90d9; border-radius: 2px;
+                  width: 0%; transition: width .3s; }
+  #progress-label { font-size: 11px; color: #999; text-align: center; }
+
+  #final-wrap { text-align: center; min-height: 80px;
+                display: flex; align-items: center; justify-content: center; }
+  #final-img  { max-width: 100%; border-radius: 6px; display: none; }
+  #final-placeholder { color: #bbb; font-size: 14px; }
+  #play-btn { padding: 8px 28px; background: #27ae60; color: #fff;
+              border: none; border-radius: 6px; font-size: 14px;
+              font-weight: bold; cursor: pointer; transition: background .2s; }
+  #play-btn:hover:not(:disabled) { background: #1e8449; }
+  #play-btn:disabled { background: #aaa; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<header>Floor Plan Node Diffusion Demo</header>
+<div class="container">
+
+  <!-- 左侧 -->
+  <div class="panel">
+    <div class="card">
+      <h3>提示词 Prompt</h3>
+      <textarea id="prompt-input"
+        placeholder="例如：the bedroom is adjacent to the living room"></textarea>
+    </div>
+    <div class="card">
+      <h3>Transformer 注意力模式</h3>
+      <div class="radio-group">
+        <label><input type="radio" name="adj" value="1" checked>有邻接掩码 (with_adj_mask)</label>
+        <label><input type="radio" name="adj" value="0">无邻接掩码 (no_adj_mask)</label>
+      </div>
+    </div>
+    <button id="gen-btn" onclick="startGenerate()">生成扩散动画</button>
+    <div id="status"></div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>训练集示例（点击填充）</h3>
+      <div class="examples-list">
+        {% for ex in examples %}
+        <div class="ex-item" onclick="fillExample(this)">{{ ex }}</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧 -->
+  <div class="results">
+    <div class="result-card">
+      <h3>扩散推理过程（每 20 步一帧，共 20 帧）</h3>
+      <div id="progress-bar-wrap">
+        <div id="progress-bar"></div>
+        <div id="progress-label">0 / 20</div>
+      </div>
+      <div id="anim-wrap">
+        <div id="anim-placeholder">点击左侧按钮开始生成</div>
+        <img id="anim-img" alt="动画">
+      </div>
+      <div id="play-controls" style="display:none; text-align:center; margin-top:12px;">
+        <button id="play-btn" onclick="playOnce()">▶ 播放</button>
+        <span id="frame-counter" style="font-size:12px; color:#888; margin-left:12px;">帧 0 / 20</span>
+      </div>
+    </div>
+
+    <div class="result-card">
+      <h3>最终结果 (t=0)</h3>
+      <div id="final-wrap">
+        <div id="final-placeholder">等待生成完成...</div>
+        <img id="final-img" alt="最终结果">
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const TOTAL_FRAMES = {{ (400 // 20) }};
+  let collectedFrames = [];
+  let playTimer = null;
+
+  function fillExample(el) {
+    document.getElementById("prompt-input").value = el.textContent.trim();
+  }
+
+  // 点击播放：从第1帧逐帧播放到最后一帧，每帧 300ms，播完停在最后一帧
+  function playOnce() {
+    if (collectedFrames.length === 0) return;
+    const btn = document.getElementById("play-btn");
+    const img = document.getElementById("anim-img");
+    btn.disabled = true;
+    let i = 0;
+    clearInterval(playTimer);
+
+    function showFrame() {
+      img.src = "data:image/png;base64," + collectedFrames[i];
+      setFrameCounter(i + 1, collectedFrames.length);
+      i++;
+      if (i >= collectedFrames.length) {
+        clearInterval(playTimer);
+        btn.disabled = false;   // 播完解锁，可以再次点击
+      }
+    }
+
+    showFrame();                          // 立刻显示第 1 帧
+    playTimer = setInterval(showFrame, 300);
+  }
+
+  function startGenerate() {
+    const prompt  = document.getElementById("prompt-input").value.trim();
+    const use_adj = document.querySelector("input[name=adj]:checked").value;
+    if (!prompt) { setStatus("请输入提示词"); return; }
+
+    // 重置 UI
+    clearInterval(playTimer);
+    collectedFrames = [];
+    const animImg  = document.getElementById("anim-img");
+    const finalImg = document.getElementById("final-img");
+    animImg.style.display  = "none";
+    finalImg.style.display = "none";
+    document.getElementById("anim-placeholder").style.display  = "block";
+    document.getElementById("final-placeholder").style.display = "block";
+    document.getElementById("anim-placeholder").textContent    = "推理中，请稍候...";
+    document.getElementById("final-placeholder").textContent   = "等待推理完成...";
+    document.getElementById("progress-bar-wrap").style.display = "block";
+    document.getElementById("play-controls").style.display     = "none";
+    document.getElementById("play-btn").disabled = true;
+    setProgress(0, TOTAL_FRAMES);
+    setFrameCounter(0, TOTAL_FRAMES);
+    document.getElementById("gen-btn").disabled = true;
+    setStatus("正在推理，请稍候...");
+
+    const url = `/generate?prompt=${encodeURIComponent(prompt)}&use_adj=${use_adj}`;
+    const es  = new EventSource(url);
+
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+
+      if (data.error) {
+        setStatus("错误：" + data.error);
+        es.close(); document.getElementById("gen-btn").disabled = false;
+        return;
+      }
+
+      if (data.meta) {
+        setStatus(`节点: ${data.meta.n_nodes}  边: ${data.meta.n_edges}  来源: ${data.meta.src}`);
+        return;
+      }
+
+      if (data.frame) {
+        collectedFrames.push(data.frame);
+        setProgress(collectedFrames.length, TOTAL_FRAMES);
+
+        // 每帧到来时更新预览（显示最新一帧，让用户看到推理进度）
+        if (collectedFrames.length === 1) {
+          document.getElementById("anim-placeholder").style.display = "none";
+          animImg.style.display = "block";
+        }
+        animImg.src = "data:image/png;base64," + data.frame;
+        setFrameCounter(collectedFrames.length, TOTAL_FRAMES);
+
+        // 最终帧单独展示在下方
+        if (data.final) {
+          document.getElementById("final-placeholder").style.display = "none";
+          finalImg.src = "data:image/png;base64," + data.frame;
+          finalImg.style.display = "block";
+        }
+      }
+
+      if (data.done) {
+        es.close();
+        document.getElementById("gen-btn").disabled = false;
+        document.getElementById("progress-bar-wrap").style.display = "none";
+        document.getElementById("play-controls").style.display = "block";
+        document.getElementById("play-btn").disabled = false;
+        // 显示第一帧等待用户点播放
+        animImg.src = "data:image/png;base64," + collectedFrames[0];
+        setFrameCounter(1, collectedFrames.length);
+        setStatus(document.getElementById("status").textContent + "  ✅ 点击▶播放查看全过程");
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      document.getElementById("gen-btn").disabled = false;
+      setStatus("连接中断，请重试");
+    };
+  }
+
+  function setProgress(cur, total) {
+    const pct = total > 0 ? (cur / total * 100) : 0;
+    document.getElementById("progress-bar").style.width = pct + "%";
+    document.getElementById("progress-label").textContent = `已收到 ${cur} / ${total} 帧`;
+  }
+
+  function setFrameCounter(cur, total) {
+    document.getElementById("frame-counter").textContent = `帧 ${cur} / ${total}`;
+  }
+
+  function setStatus(msg) {
+    document.getElementById("status").textContent = msg;
+  }
+</script>
+</body>
+</html>
