@@ -36,9 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-amp", action="store_false", dest="amp")
     parser.add_argument("--adj", choices=["yes", "no"], default="no")
     parser.add_argument("--timesteps", type=int, default=400)
-    parser.add_argument("--d-model", type=int, default=256)
-    parser.add_argument("--n-heads", type=int, default=4)
-    parser.add_argument("--n-layers", type=int, default=4)
+    parser.add_argument("--d-model", type=int, default=768)
+    parser.add_argument("--n-heads", type=int, default=12)
+    parser.add_argument("--n-layers", type=int, default=10)
     return parser.parse_args()
 
 
