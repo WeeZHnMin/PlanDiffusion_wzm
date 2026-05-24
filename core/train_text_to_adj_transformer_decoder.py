@@ -33,15 +33,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_records(path: Path):
+def scan_jsonl(path: Path):
+    offsets = []
+    n_max = None
+    bad = 0
+    with path.open("r", encoding="utf-8") as f:
+        while True:
+            pos = f.tell()
+            line = f.readline()
+            if not line:
+                break
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                obj = json.loads(s)
+            except json.JSONDecodeError:
+                bad += 1
+                if bad <= 5:
+                    print(f"[WARN] skip bad json near byte offset {pos}")
+                continue
+            if n_max is None:
+                n_max = len(obj["adj_matrix"])
+            offsets.append(pos)
+    if not offsets:
+        raise SystemExit(f"No valid records in {path}")
+    if bad:
+        print(f"[WARN] skipped bad lines: {bad}")
+    return offsets, n_max
+
+
+def read_batch(path: Path, offsets, s: int, e: int):
     records = []
     with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    if not records:
-        raise SystemExit(f"No records in {path}")
+        for i in range(s, e):
+            f.seek(offsets[i])
+            line = f.readline().strip()
+            records.append(json.loads(line))
     return records
 
 
@@ -95,19 +123,9 @@ def main() -> None:
     if not args.bert.exists():
         raise SystemExit(f"Missing bert path: {args.bert}")
 
-    records = load_records(args.data)
-    n = len(records)
-    n_max = len(records[0]["adj_matrix"])
+    offsets, n_max = scan_jsonl(args.data)
+    n = len(offsets)
     print(f"records={n}, n_max={n_max}, device={device}")
-
-    prompts = [r["prompt"] for r in records]
-    adj = torch.tensor([r["adj_matrix"] for r in records], dtype=torch.float32, device=device)
-    node_counts = torch.tensor([int(r["n_nodes"]) for r in records], dtype=torch.long, device=device)
-
-    valid = torch.zeros((n, n_max, n_max), dtype=torch.float32, device=device)
-    for i, cnt in enumerate(node_counts.tolist()):
-        valid[i, :cnt, :cnt] = 1.0
-    pad = (1.0 - valid).bool()
 
     print("loading bert...")
     tokenizer = BertTokenizer.from_pretrained(str(args.bert))
@@ -131,10 +149,14 @@ def main() -> None:
         total_items = 0
 
         for s, e in iterate_batches(n, args.batch_size):
-            batch_prompts = prompts[s:e]
-            batch_adj = adj[s:e]
-            batch_valid = valid[s:e]
-            batch_pad = pad[s:e]
+            batch_recs = read_batch(args.data, offsets, s, e)
+            batch_prompts = [r["prompt"] for r in batch_recs]
+            batch_adj = torch.tensor([r["adj_matrix"] for r in batch_recs], dtype=torch.float32, device=device)
+            batch_n = torch.tensor([int(r["n_nodes"]) for r in batch_recs], dtype=torch.long, device=device)
+            batch_valid = torch.zeros((e - s, n_max, n_max), dtype=torch.float32, device=device)
+            for bi, cnt in enumerate(batch_n.tolist()):
+                batch_valid[bi, :cnt, :cnt] = 1.0
+            batch_pad = (1.0 - batch_valid).bool()
 
             with torch.no_grad():
                 enc = tokenizer(
@@ -170,8 +192,15 @@ def main() -> None:
             with torch.no_grad():
                 # quick metric on first batch
                 s, e = 0, min(args.batch_size, n)
+                batch_recs = read_batch(args.data, offsets, s, e)
+                batch_prompts = [r["prompt"] for r in batch_recs]
+                batch_adj = torch.tensor([r["adj_matrix"] for r in batch_recs], dtype=torch.float32, device=device)
+                batch_n = torch.tensor([int(r["n_nodes"]) for r in batch_recs], dtype=torch.long, device=device)
+                batch_valid = torch.zeros((e - s, n_max, n_max), dtype=torch.float32, device=device)
+                for bi, cnt in enumerate(batch_n.tolist()):
+                    batch_valid[bi, :cnt, :cnt] = 1.0
                 enc = tokenizer(
-                    prompts[s:e],
+                    batch_prompts,
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
@@ -182,8 +211,8 @@ def main() -> None:
                 text_mask = enc["attention_mask"].float()
                 logits = model(text_out, text_mask)
                 preds = (logits.sigmoid() > 0.5).float()
-                vmask = valid[s:e].bool()
-                labels_valid = adj[s:e][vmask]
+                vmask = batch_valid.bool()
+                labels_valid = batch_adj[vmask]
                 acc = (preds[vmask] == labels_valid).float().mean().item()
             print(
                 f"epoch={epoch+1:4d} loss={total_loss/max(total_items,1):.4f} "
