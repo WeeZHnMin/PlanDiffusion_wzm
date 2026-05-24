@@ -57,4 +57,6 @@ type_predictor_exp/node_diffusion_results/
 *.jsonl
 data/convert_rs/target/
 
-/data
+/data/*
+!/data/scripts/
+/额外的代码
