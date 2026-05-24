@@ -151,6 +151,7 @@ class TextProjection(nn.Module):
         super().__init__()
         self.proj = nn.Sequential(
             nn.Linear(text_hidden, text_hidden), nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(text_hidden, emb_dim),
         )
 
@@ -161,7 +162,7 @@ class TextProjection(nn.Module):
 # ─── InfoNCE Loss ──────────────────────────────────────────────────────────────
 
 class InfoNCE(nn.Module):
-    def __init__(self, init_temp=0.07):
+    def __init__(self, init_temp=0.2):
         super().__init__()
         # learnable log-temperature, clamped to [log(0.01), log(0.5)]
         self.log_temp = nn.Parameter(torch.tensor(math.log(init_temp)))
