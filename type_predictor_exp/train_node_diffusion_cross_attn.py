@@ -266,6 +266,14 @@ def train_version(use_adj, label):
 
     mask3 = node_masks.unsqueeze(-1)
 
+    if use_adj:
+        a1_use = adj_norm1
+        a2_use = adj_norm2
+    else:
+        # True no-adj baseline: remove graph signal from both attention mask and GCN aggregation.
+        a1_use = torch.zeros_like(adj_norm1)
+        a2_use = torch.zeros_like(adj_norm2)
+
     for epoch in range(EPOCHS):
         model.train()
         t_idx = torch.randint(0, T, (N,), device=DEVICE)
@@ -274,7 +282,7 @@ def train_version(use_adj, label):
 
         pred_x0 = model(
             x_t, t_idx, text_encs, text_mask,
-            a1=adj_norm1, a2=adj_norm2,
+            a1=a1_use, a2=a2_use,
             adj=adj_tensor if use_adj else None,
             node_mask=node_masks,
         )
@@ -292,7 +300,7 @@ def train_version(use_adj, label):
             t_idx = torch.full((N,), step, dtype=torch.long, device=DEVICE)
             pred_x0 = model(
                 x, t_idx, text_encs, text_mask,
-                a1=adj_norm1, a2=adj_norm2,
+                a1=a1_use, a2=a2_use,
                 adj=adj_tensor if use_adj else None,
                 node_mask=node_masks,
             ) * mask3
