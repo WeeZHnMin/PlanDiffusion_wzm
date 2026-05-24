@@ -298,11 +298,22 @@ def main():
         improved = vl < best_val
         if improved:
             best_val = vl
+            args.save_dir.mkdir(parents=True, exist_ok=True)
+            bert.save_pretrained(str(args.save_dir))
+            tokenizer.save_pretrained(str(args.save_dir))
+            torch.save({
+                "text_head": text_head.state_dict(),
+                "emb_dim":   args.emb_dim,
+                "fp_seed":   args.fp_seed,
+                "n_max":     n_max,
+                "epoch":     epoch + 1,
+                "best_val":  best_val,
+            }, args.save_dir / "text_head.pt")
 
         print(f"epoch={epoch+1:3d} "
               f"train_loss={tl:.4f} train_sim={ts:.4f} "
               f"val_loss={vl:.4f} val_sim={vs:.4f} "
-              f"{'(best)' if improved else ''}")
+              f"{'(saved)' if improved else ''}")
 
     # ── 训后文本相似度诊断 ─────────────────────────────────────────────────────
     t_mat = F.normalize(torch.cat(all_text_emb, dim=0), dim=-1)
