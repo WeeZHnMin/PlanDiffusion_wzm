@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-cache", type=Path, default=Path("data/jsonl/train_nodes.diffusion_tokens.pt"))
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--max-length", type=int, default=32)
     parser.add_argument("--val-ratio", type=float, default=0.02)
@@ -333,10 +333,10 @@ def main():
                 text_mask = b_attn_mask.float()
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                pred_x0 = model(
+                pred_eps = model(
                     x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                 )
-                loss = ((pred_x0 - b_coords) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
+                loss = ((pred_eps - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
 
             opt.zero_grad()
             scaler.scale(loss).backward()
@@ -381,10 +381,10 @@ def main():
                 text_mask = b_attn_mask.float()
 
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    pred_x0 = model(
+                    pred_eps = model(
                         x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                     )
-                    loss = ((pred_x0 - b_coords) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
+                    loss = ((pred_eps - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
 
                 bs = int(b_coords.size(0))
                 val_loss_sum += loss.item() * bs
@@ -405,6 +405,7 @@ def main():
                     "n_layers": args.n_layers,
                     "timesteps": args.timesteps,
                     "use_adj": use_adj,
+                    "pred_type": "epsilon",
                     "bert_path": str(args.bert),
                     "data_path": str(args.data),
                     "epoch": epoch + 1,
