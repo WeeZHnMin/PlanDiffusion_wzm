@@ -20,14 +20,14 @@ def parse_args():
     parser.add_argument("--data",         type=Path,  default=Path("data/jsonl/train_nodes.jsonl"))
     parser.add_argument("--save",         type=Path,  default=Path("type_predictor_exp/weights/uncond_diffusion.pt"))
     parser.add_argument("--n-samples",    type=int,   default=500)
-    parser.add_argument("--epochs",       type=int,   default=200)
+    parser.add_argument("--epochs",       type=int,   default=6000)
     parser.add_argument("--batch-size",   type=int,   default=64)
     parser.add_argument("--lr",           type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--timesteps",    type=int,   default=400)
     parser.add_argument("--d-model",      type=int,   default=256)
     parser.add_argument("--n-heads",      type=int,   default=4)
-    parser.add_argument("--n-layers",     type=int,   default=6)
+    parser.add_argument("--n-layers",     type=int,   default=12)
     parser.add_argument("--val-ratio",    type=float, default=0.1)
     parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--amp",          action="store_true", default=True)
@@ -69,43 +69,58 @@ class GCNProj(nn.Module):
         return self.proj(coords)
 
 
-class SelfAttnLayer(nn.Module):
-    def __init__(self, d_model, n_heads):
+class AdaLayerNorm(nn.Module):
+    """LayerNorm whose scale/shift are predicted from time embedding."""
+    def __init__(self, d_model, d_time):
         super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.attn  = nn.MultiheadAttention(d_model, n_heads, dropout=0.0, batch_first=True)
-        self.ffn   = nn.Sequential(
+        self.norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.proj = nn.Linear(d_time, d_model * 2)
+
+    def forward(self, x, t_emb):
+        # t_emb: (B, d_time)  →  scale/shift: (B, 1, d_model)
+        ss    = self.proj(t_emb).unsqueeze(1)
+        scale, shift = ss.chunk(2, dim=-1)
+        return self.norm(x) * (1 + scale) + shift
+
+
+class SelfAttnLayer(nn.Module):
+    def __init__(self, d_model, n_heads, d_time):
+        super().__init__()
+        self.ada1 = AdaLayerNorm(d_model, d_time)
+        self.ada2 = AdaLayerNorm(d_model, d_time)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=0.0, batch_first=True)
+        self.ffn  = nn.Sequential(
             nn.Linear(d_model, d_model * 4), nn.SiLU(),
             nn.Linear(d_model * 4, d_model))
 
-    def forward(self, x, key_pad=None):
-        h = self.norm1(x)
+    def forward(self, x, t_emb, key_pad=None):
+        h = self.ada1(x, t_emb)
         x = x + self.attn(h, h, h, key_padding_mask=key_pad)[0]
-        x = x + self.ffn(self.norm2(x))
+        x = x + self.ffn(self.ada2(x, t_emb))
         return x
 
 
 class NodeDiffusionUncond(nn.Module):
     def __init__(self, n_max, d_model, n_heads, n_layers):
         super().__init__()
-        self.n_max     = n_max
-        self.d_model   = d_model
-        self.gcn_proj  = GCNProj(d_model)
-        self.pos_emb   = nn.Embedding(n_max, d_model)
+        self.n_max    = n_max
+        self.d_model  = d_model
+        d_time        = d_model * 4
+        self.gcn_proj = GCNProj(d_model)
+        self.pos_emb  = nn.Embedding(n_max, d_model)
         self.time_proj = nn.Sequential(
-            nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, d_model))
-        self.layers     = nn.ModuleList([SelfAttnLayer(d_model, n_heads) for _ in range(n_layers)])
+            nn.Linear(d_model, d_time), nn.SiLU(), nn.Linear(d_time, d_time))
+        self.layers     = nn.ModuleList([SelfAttnLayer(d_model, n_heads, d_time) for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
         self.out        = nn.Linear(d_model, 2)
 
     def forward(self, noisy_coords, t_idx, node_mask):
         pos_idx  = torch.arange(self.n_max, device=noisy_coords.device).unsqueeze(0)
-        time_emb = self.time_proj(sinusoidal_emb(t_idx, self.d_model)).unsqueeze(1)
-        x        = self.gcn_proj(noisy_coords) + self.pos_emb(pos_idx) + time_emb
+        t_emb    = self.time_proj(sinusoidal_emb(t_idx, self.d_model))  # (B, d_time)
+        x        = self.gcn_proj(noisy_coords) + self.pos_emb(pos_idx)
         key_pad  = (node_mask == 0)
         for layer in self.layers:
-            x = layer(x, key_pad=key_pad)
+            x = layer(x, t_emb, key_pad=key_pad)
         return self.out(self.final_norm(x))
 
 
