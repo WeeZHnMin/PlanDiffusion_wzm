@@ -310,9 +310,12 @@ def main():
                 "best_val":  best_val,
             }, args.save_dir / "text_head.pt")
 
+        t_mat      = F.normalize(torch.cat(all_text_emb, dim=0), dim=-1)
+        text_stats = text_sim_stats(t_mat)
         print(f"epoch={epoch+1:3d} "
               f"train_loss={tl:.4f} train_sim={ts:.4f} "
               f"val_loss={vl:.4f} val_sim={vs:.4f} "
+              f"text_cos={text_stats['mean']:.4f} "
               f"{'(saved)' if improved else ''}")
 
     # ── 训后文本相似度诊断 ─────────────────────────────────────────────────────
