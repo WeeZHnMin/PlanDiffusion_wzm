@@ -40,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-model", type=int, default=768)
     parser.add_argument("--n-heads", type=int, default=12)
     parser.add_argument("--n-layers", type=int, default=10)
+    parser.add_argument("--init-from-uncond", type=Path, default=None,
+                        help="unconditional checkpoint to warm-start shared weights")
     return parser.parse_args()
 
 
@@ -94,6 +96,85 @@ def row_normalize(adj: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     deg = adj.sum(dim=-1, keepdim=True).clamp(min=1.0)
     a_norm = adj / deg
     return a_norm * mask.unsqueeze(-1)
+
+
+def transfer_uncond_weights(cond_model: "NodeDiffusionCrossAttn", ckpt_path) -> int:
+    """
+    Load shared weights from an unconditional checkpoint into the conditional model.
+
+    Mapped layers (must have same d_model):
+      uncond input_proj[0,2]  -> cond gcn_proj.proj[0,2]  (first 2 input cols copied)
+      uncond pos_emb          -> cond pos_emb
+      uncond time_proj        -> cond time_proj
+      uncond layers[i].norm1  -> cond layers[i].norm1
+      uncond layers[i].norm2  -> cond layers[i].norm2
+      uncond layers[i].attn   -> cond layers[i].self_attn
+      uncond layers[i].ffn    -> cond layers[i].ffn
+      uncond final_norm       -> cond final_norm
+      uncond out              -> cond out
+
+    cross_attn / norm3 / text_kv_proj stay randomly initialized.
+    """
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    sd = ckpt["model_state_dict"]
+    copied = 0
+
+    def _copy(dst: nn.Parameter, src_key: str):
+        nonlocal copied
+        if src_key in sd and sd[src_key].shape == dst.data.shape:
+            dst.data.copy_(sd[src_key])
+            copied += 1
+
+    # pos_emb, time_proj, final_norm, out — shapes identical
+    for key in ("pos_emb.weight",
+                "time_proj.0.weight", "time_proj.0.bias",
+                "time_proj.2.weight", "time_proj.2.bias",
+                "final_norm.weight", "final_norm.bias",
+                "out.weight", "out.bias"):
+        _copy(dict(cond_model.named_parameters())[key], key)
+
+    # gcn_proj.proj[2] == input_proj[2]: Linear(d_model, d_model) — same shape
+    _copy(cond_model.gcn_proj.proj[2].weight, "input_proj.2.weight")
+    _copy(cond_model.gcn_proj.proj[2].bias,   "input_proj.2.bias")
+
+    # gcn_proj.proj[0]: Linear(6, d_model) — copy first 2 input columns from input_proj[0]: Linear(2, d_model)
+    src_w = sd.get("input_proj.0.weight")   # (d_model, 2)
+    src_b = sd.get("input_proj.0.bias")     # (d_model,)
+    if src_w is not None and src_w.shape == (cond_model.d_model, 2):
+        with torch.no_grad():
+            cond_model.gcn_proj.proj[0].weight[:, :2].copy_(src_w)
+            cond_model.gcn_proj.proj[0].weight[:, 2:].zero_()
+        if src_b is not None:
+            cond_model.gcn_proj.proj[0].bias.data.copy_(src_b)
+        copied += 2
+
+    # per-layer: norm1, norm2, self_attn (=attn), ffn
+    n_shared = min(len(cond_model.layers), len([k for k in sd if k.startswith("layers.")
+                                                 and k.split(".")[1].isdigit()
+                                                 and int(k.split(".")[1]) < len(cond_model.layers)]))
+    uncond_layer_ids = sorted({int(k.split(".")[1]) for k in sd if k.startswith("layers.")})
+    for ui, ci in zip(uncond_layer_ids[:len(cond_model.layers)], range(len(cond_model.layers))):
+        prefix_u = f"layers.{ui}"
+        prefix_c = f"layers.{ci}"
+        mapping = {
+            f"{prefix_c}.norm1.weight": f"{prefix_u}.norm1.weight",
+            f"{prefix_c}.norm1.bias":   f"{prefix_u}.norm1.bias",
+            f"{prefix_c}.norm2.weight": f"{prefix_u}.norm2.weight",
+            f"{prefix_c}.norm2.bias":   f"{prefix_u}.norm2.bias",
+            f"{prefix_c}.ffn.0.weight": f"{prefix_u}.ffn.0.weight",
+            f"{prefix_c}.ffn.0.bias":   f"{prefix_u}.ffn.0.bias",
+            f"{prefix_c}.ffn.2.weight": f"{prefix_u}.ffn.2.weight",
+            f"{prefix_c}.ffn.2.bias":   f"{prefix_u}.ffn.2.bias",
+        }
+        # self_attn in cond = attn in uncond
+        for suffix in ("in_proj_weight", "in_proj_bias", "out_proj.weight", "out_proj.bias"):
+            mapping[f"{prefix_c}.self_attn.{suffix}"] = f"{prefix_u}.attn.{suffix}"
+        cond_params = dict(cond_model.named_parameters())
+        for dst_key, src_key in mapping.items():
+            if dst_key in cond_params:
+                _copy(cond_params[dst_key], src_key)
+
+    return copied
 
 
 def cosine_alpha_bars(timesteps: int, s: float = 0.008):
@@ -153,7 +234,8 @@ class CrossAttnLayer(nn.Module):
 
 
 class NodeDiffusionCrossAttn(nn.Module):
-    def __init__(self, n_max: int, d_model: int, n_heads: int, n_layers: int, use_adj: bool):
+    def __init__(self, n_max: int, d_model: int, n_heads: int, n_layers: int, use_adj: bool,
+                 text_hidden: int = 768):
         super().__init__()
         self.use_adj = use_adj
         self.n_max = n_max
@@ -166,7 +248,7 @@ class NodeDiffusionCrossAttn(nn.Module):
             nn.SiLU(),
             nn.Linear(d_model, d_model),
         )
-        self.text_kv_proj = nn.Linear(768, d_model)
+        self.text_kv_proj = nn.Linear(text_hidden, d_model)
         self.layers = nn.ModuleList([CrossAttnLayer(d_model, n_heads) for _ in range(n_layers)])
         self.final_norm = nn.LayerNorm(d_model)
         self.out = nn.Linear(d_model, 2)
@@ -289,14 +371,20 @@ def main():
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
 
+    text_hidden = bert.config.hidden_size
     model = NodeDiffusionCrossAttn(
         n_max=n_max,
         d_model=args.d_model,
         n_heads=args.n_heads,
         n_layers=args.n_layers,
         use_adj=use_adj,
+        text_hidden=text_hidden,
     ).to(device)
-    print(f"trainable params={sum(p.numel() for p in model.parameters()):,}")
+    print(f"model params={sum(p.numel() for p in model.parameters()):,}")
+
+    if args.init_from_uncond is not None:
+        n_copied = transfer_uncond_weights(model, args.init_from_uncond)
+        print(f"transferred {n_copied} tensors from {args.init_from_uncond}")
     bert_params = [p for p in bert.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(
         [
@@ -387,10 +475,10 @@ def main():
                 noise = torch.randn_like(b_coords)
                 mask3 = b_mask.unsqueeze(-1)
                 x_t = q_sample(b_coords, t_idx, noise, alpha_bars) * mask3
-                text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
-                text_mask = b_attn_mask.float()
 
                 with torch.amp.autocast("cuda", enabled=use_amp):
+                    text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+                    text_mask = b_attn_mask.float()
                     pred_eps = model(
                         x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                     )
