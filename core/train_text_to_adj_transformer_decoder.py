@@ -13,6 +13,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 from transformers import BertModel, BertTokenizer
 
 
@@ -20,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("data/jsonl/train_nodes.jsonl"))
     parser.add_argument("--bert", type=Path, default=Path("models/bert-base-chinese"))
-    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
@@ -29,6 +30,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--ffn", type=int, default=1024)
+    parser.add_argument("--val-ratio", type=float, default=0.02)
+    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--amp", action="store_true", default=True)
+    parser.add_argument("--no-amp", action="store_false", dest="amp")
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--prefetch-factor", type=int, default=4)
+    parser.add_argument("--token-cache", type=Path, default=Path("data/jsonl/train_nodes.tokens.pt"))
     parser.add_argument("--save", type=Path, default=Path("core/weights/adj_text_decoder.pt"))
     return parser.parse_args()
 
@@ -108,9 +116,55 @@ class TextToAdjDecoder(nn.Module):
         return logits
 
 
-def iterate_batches(n: int, batch_size: int):
-    for s in range(0, n, batch_size):
-        yield s, min(s + batch_size, n)
+def build_masks(batch_n: torch.Tensor, n_max: int, device: torch.device):
+    bsz = int(batch_n.size(0))
+    valid = torch.zeros((bsz, n_max, n_max), dtype=torch.float32, device=device)
+    for bi, cnt in enumerate(batch_n.tolist()):
+        valid[bi, :cnt, :cnt] = 1.0
+    pad = (1.0 - valid).bool()
+    return valid, pad
+
+
+def load_all_records(path: Path, offsets):
+    prompts = []
+    adjs = []
+    n_nodes = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, pos in enumerate(offsets):
+            f.seek(pos)
+            obj = json.loads(f.readline().strip())
+            prompts.append(obj["prompt"])
+            adjs.append(obj["adj_matrix"])
+            n_nodes.append(int(obj["n_nodes"]))
+            if (i + 1) % 5000 == 0:
+                print(f"loaded records: {i + 1}/{len(offsets)}")
+    return prompts, adjs, n_nodes
+
+
+def build_or_load_token_cache(tokenizer, prompts, max_length: int, cache_path: Path):
+    if cache_path.exists():
+        cache = torch.load(cache_path, map_location="cpu")
+        input_ids = cache["input_ids"]
+        attention_mask = cache["attention_mask"]
+        if input_ids.size(0) == len(prompts) and input_ids.size(1) == max_length:
+            print(f"token cache hit: {cache_path}")
+            return input_ids, attention_mask
+        print("token cache shape mismatch, rebuilding...")
+
+    print("tokenizing all prompts once...")
+    enc = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        max_length=max_length,
+    )
+    input_ids = enc["input_ids"].contiguous()
+    attention_mask = enc["attention_mask"].contiguous()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"input_ids": input_ids, "attention_mask": attention_mask}, cache_path)
+    print(f"token cache saved: {cache_path}")
+    return input_ids, attention_mask
 
 
 def main() -> None:
@@ -125,7 +179,18 @@ def main() -> None:
 
     offsets, n_max = scan_jsonl(args.data)
     n = len(offsets)
-    print(f"records={n}, n_max={n_max}, device={device}")
+    val_size = max(1, int(n * args.val_ratio))
+    if val_size >= n:
+        val_size = max(1, n - 1)
+    train_n = n - val_size
+    train_offsets = offsets[:train_n]
+    val_offsets = offsets[train_n:]
+    use_amp = bool(args.amp and device.type == "cuda")
+
+    print(
+        f"records={n}, train={len(train_offsets)}, val={len(val_offsets)}, "
+        f"n_max={n_max}, device={device}, amp={use_amp}"
+    )
 
     print("loading bert...")
     tokenizer = BertTokenizer.from_pretrained(str(args.bert))
@@ -142,98 +207,153 @@ def main() -> None:
         ffn=args.ffn,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    best_val_loss = float("inf")
+    global_step = 0
+
+    print("loading dataset into memory...")
+    prompts, adjs, n_nodes = load_all_records(args.data, offsets)
+    input_ids, attention_mask = build_or_load_token_cache(tokenizer, prompts, args.max_length, args.token_cache)
+    adj_tensor = torch.tensor(adjs, dtype=torch.float32)
+    n_nodes_tensor = torch.tensor(n_nodes, dtype=torch.long)
+
+    train_ds = TensorDataset(
+        input_ids[:train_n],
+        attention_mask[:train_n],
+        adj_tensor[:train_n],
+        n_nodes_tensor[:train_n],
+    )
+    val_ds = TensorDataset(
+        input_ids[train_n:],
+        attention_mask[train_n:],
+        adj_tensor[train_n:],
+        n_nodes_tensor[train_n:],
+    )
+    pin_memory = device.type == "cuda"
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(args.num_workers > 0),
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(args.num_workers > 0),
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+    )
 
     for epoch in range(args.epochs):
         model.train()
         total_loss = 0.0
         total_items = 0
 
-        for s, e in iterate_batches(n, args.batch_size):
-            batch_recs = read_batch(args.data, offsets, s, e)
-            batch_prompts = [r["prompt"] for r in batch_recs]
-            batch_adj = torch.tensor([r["adj_matrix"] for r in batch_recs], dtype=torch.float32, device=device)
-            batch_n = torch.tensor([int(r["n_nodes"]) for r in batch_recs], dtype=torch.long, device=device)
-            batch_valid = torch.zeros((e - s, n_max, n_max), dtype=torch.float32, device=device)
-            for bi, cnt in enumerate(batch_n.tolist()):
-                batch_valid[bi, :cnt, :cnt] = 1.0
-            batch_pad = (1.0 - batch_valid).bool()
+        for batch in train_loader:
+            b_input_ids, b_attn_mask, b_adj, b_n = batch
+            b_input_ids = b_input_ids.to(device, non_blocking=True)
+            b_attn_mask = b_attn_mask.to(device, non_blocking=True)
+            batch_adj = b_adj.to(device, non_blocking=True)
+            batch_n = b_n.to(device, non_blocking=True)
+            batch_valid, batch_pad = build_masks(batch_n, n_max, device)
 
             with torch.no_grad():
-                enc = tokenizer(
-                    batch_prompts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=args.max_length,
-                )
-                enc = {k: v.to(device) for k, v in enc.items()}
-                text_out = bert(**enc).last_hidden_state
-                text_mask = enc["attention_mask"].float()
+                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+                text_mask = b_attn_mask.float()
 
-            logits = model(text_out, text_mask)
-            logits_valid = logits[batch_valid.bool()]
-            labels_valid = batch_adj[batch_valid.bool()]
-            loss_valid = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = model(text_out, text_mask)
+                logits_valid = logits[batch_valid.bool()]
+                labels_valid = batch_adj[batch_valid.bool()]
+                loss_valid = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
 
-            logits_pad = logits[batch_pad]
-            loss_pad = F.binary_cross_entropy_with_logits(logits_pad, torch.zeros_like(logits_pad))
-            loss = loss_valid + loss_pad
+                logits_pad = logits[batch_pad]
+                loss_pad = F.binary_cross_entropy_with_logits(logits_pad, torch.zeros_like(logits_pad))
+                loss = loss_valid + loss_pad
 
             opt.zero_grad()
-            loss.backward()
-            opt.step()
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
 
-            bs = e - s
+            bs = int(batch_adj.size(0))
             total_loss += loss.item() * bs
             total_items += bs
-
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            model.eval()
-            with torch.no_grad():
-                # quick metric on first batch
-                s, e = 0, min(args.batch_size, n)
-                batch_recs = read_batch(args.data, offsets, s, e)
-                batch_prompts = [r["prompt"] for r in batch_recs]
-                batch_adj = torch.tensor([r["adj_matrix"] for r in batch_recs], dtype=torch.float32, device=device)
-                batch_n = torch.tensor([int(r["n_nodes"]) for r in batch_recs], dtype=torch.long, device=device)
-                batch_valid = torch.zeros((e - s, n_max, n_max), dtype=torch.float32, device=device)
-                for bi, cnt in enumerate(batch_n.tolist()):
-                    batch_valid[bi, :cnt, :cnt] = 1.0
-                enc = tokenizer(
-                    batch_prompts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=args.max_length,
+            global_step += 1
+            if global_step % args.log_every == 0:
+                print(
+                    f"epoch={epoch+1:4d} step={global_step:7d} "
+                    f"train_loss={total_loss/max(total_items,1):.4f}"
                 )
-                enc = {k: v.to(device) for k, v in enc.items()}
-                text_out = bert(**enc).last_hidden_state
-                text_mask = enc["attention_mask"].float()
-                logits = model(text_out, text_mask)
+
+        model.eval()
+        val_loss_sum = 0.0
+        val_items = 0
+        val_acc_num = 0.0
+        val_acc_den = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                b_input_ids, b_attn_mask, b_adj, b_n = batch
+                b_input_ids = b_input_ids.to(device, non_blocking=True)
+                b_attn_mask = b_attn_mask.to(device, non_blocking=True)
+                batch_adj = b_adj.to(device, non_blocking=True)
+                batch_n = b_n.to(device, non_blocking=True)
+                batch_valid, batch_pad = build_masks(batch_n, n_max, device)
+                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+                text_mask = b_attn_mask.float()
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    logits = model(text_out, text_mask)
+                    logits_valid = logits[batch_valid.bool()]
+                    labels_valid = batch_adj[batch_valid.bool()]
+                    loss_valid = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
+                    logits_pad = logits[batch_pad]
+                    loss_pad = F.binary_cross_entropy_with_logits(logits_pad, torch.zeros_like(logits_pad))
+                    loss = loss_valid + loss_pad
+
                 preds = (logits.sigmoid() > 0.5).float()
                 vmask = batch_valid.bool()
-                labels_valid = batch_adj[vmask]
-                acc = (preds[vmask] == labels_valid).float().mean().item()
-            print(
-                f"epoch={epoch+1:4d} loss={total_loss/max(total_items,1):.4f} "
-                f"sample_acc={acc*100:.2f}%"
+                val_acc_num += (preds[vmask] == batch_adj[vmask]).float().sum().item()
+                val_acc_den += float(vmask.sum().item())
+                bs = int(batch_adj.size(0))
+                val_loss_sum += loss.item() * bs
+                val_items += bs
+
+        train_loss_epoch = total_loss / max(total_items, 1)
+        val_loss_epoch = val_loss_sum / max(val_items, 1)
+        val_acc = val_acc_num / max(val_acc_den, 1.0)
+        improved = val_loss_epoch < best_val_loss
+        if improved:
+            best_val_loss = val_loss_epoch
+            args.save.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "n_max": n_max,
+                    "d_model": args.d_model,
+                    "nhead": args.nhead,
+                    "layers": args.layers,
+                    "ffn": args.ffn,
+                    "bert_path": str(args.bert),
+                    "data_path": str(args.data),
+                    "epoch": epoch + 1,
+                    "best_val_loss": best_val_loss,
+                },
+                args.save,
             )
 
-    args.save.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "n_max": n_max,
-            "d_model": args.d_model,
-            "nhead": args.nhead,
-            "layers": args.layers,
-            "ffn": args.ffn,
-            "bert_path": str(args.bert),
-            "data_path": str(args.data),
-        },
-        args.save,
-    )
-    print(f"saved={args.save}")
+        print(
+            f"epoch={epoch+1:4d} done "
+            f"train_loss={train_loss_epoch:.4f} val_loss={val_loss_epoch:.4f} "
+            f"val_acc={val_acc*100:.2f}% best_val_loss={best_val_loss:.4f} "
+            f"{'(saved)' if improved else ''}"
+        )
+
+    print(f"best_saved={args.save}, best_val_loss={best_val_loss:.4f}")
 
 
 if __name__ == "__main__":
