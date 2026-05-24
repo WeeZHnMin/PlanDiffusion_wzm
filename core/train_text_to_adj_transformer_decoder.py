@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--ffn", type=int, default=1024)
+    parser.add_argument("--n-max", type=int, default=45)
     parser.add_argument("--val-ratio", type=float, default=0.02)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--amp", action="store_true", default=True)
@@ -43,7 +44,6 @@ def parse_args() -> argparse.Namespace:
 
 def scan_jsonl(path: Path):
     offsets = []
-    n_max = None
     bad = 0
     with path.open("r", encoding="utf-8") as f:
         while True:
@@ -61,14 +61,12 @@ def scan_jsonl(path: Path):
                 if bad <= 5:
                     print(f"[WARN] skip bad json near byte offset {pos}")
                 continue
-            if n_max is None:
-                n_max = len(obj["adj_matrix"])
             offsets.append(pos)
     if not offsets:
         raise SystemExit(f"No valid records in {path}")
     if bad:
         print(f"[WARN] skipped bad lines: {bad}")
-    return offsets, n_max
+    return offsets
 
 
 def read_batch(path: Path, offsets, s: int, e: int):
@@ -125,19 +123,34 @@ def build_masks(batch_n: torch.Tensor, n_max: int, device: torch.device):
     return valid, pad
 
 
-def load_all_records(path: Path, offsets):
+def load_all_records(path: Path, offsets, n_max: int):
     prompts = []
     adjs = []
     n_nodes = []
+    clipped = 0
     with path.open("r", encoding="utf-8") as f:
         for i, pos in enumerate(offsets):
             f.seek(pos)
             obj = json.loads(f.readline().strip())
             prompts.append(obj["prompt"])
-            adjs.append(obj["adj_matrix"])
-            n_nodes.append(int(obj["n_nodes"]))
+            raw_adj = obj["adj_matrix"]
+            raw_n = int(obj["n_nodes"])
+            use_n = min(raw_n, n_max)
+            if raw_n > n_max:
+                clipped += 1
+
+            adj = [[0.0] * n_max for _ in range(n_max)]
+            for r in range(min(len(raw_adj), n_max)):
+                row = raw_adj[r]
+                for c in range(min(len(row), n_max)):
+                    adj[r][c] = float(row[c])
+
+            adjs.append(adj)
+            n_nodes.append(use_n)
             if (i + 1) % 5000 == 0:
                 print(f"loaded records: {i + 1}/{len(offsets)}")
+    if clipped:
+        print(f"[WARN] clipped n_nodes to n_max={n_max}: {clipped}")
     return prompts, adjs, n_nodes
 
 
@@ -177,7 +190,8 @@ def main() -> None:
     if not args.bert.exists():
         raise SystemExit(f"Missing bert path: {args.bert}")
 
-    offsets, n_max = scan_jsonl(args.data)
+    offsets = scan_jsonl(args.data)
+    n_max = args.n_max
     n = len(offsets)
     val_size = max(1, int(n * args.val_ratio))
     if val_size >= n:
@@ -260,21 +274,21 @@ def main() -> None:
             b_attn_mask = b_attn_mask.to(device, non_blocking=True)
             batch_adj = b_adj.to(device, non_blocking=True)
             batch_n = b_n.to(device, non_blocking=True)
-            batch_valid, batch_pad = build_masks(batch_n, n_max, device)
+            batch_valid, _ = build_masks(batch_n, n_max, device)
+            tri_mask = torch.triu(
+                torch.ones((n_max, n_max), dtype=torch.bool, device=device), diagonal=1
+            )
+            loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
 
             with torch.no_grad():
                 text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(text_out, text_mask)
-                logits_valid = logits[batch_valid.bool()]
-                labels_valid = batch_adj[batch_valid.bool()]
-                loss_valid = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
-
-                logits_pad = logits[batch_pad]
-                loss_pad = F.binary_cross_entropy_with_logits(logits_pad, torch.zeros_like(logits_pad))
-                loss = loss_valid + loss_pad
+                logits_valid = logits[loss_mask]
+                labels_valid = batch_adj[loss_mask]
+                loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
 
             opt.zero_grad()
             scaler.scale(loss).backward()
@@ -303,20 +317,21 @@ def main() -> None:
                 b_attn_mask = b_attn_mask.to(device, non_blocking=True)
                 batch_adj = b_adj.to(device, non_blocking=True)
                 batch_n = b_n.to(device, non_blocking=True)
-                batch_valid, batch_pad = build_masks(batch_n, n_max, device)
+                batch_valid, _ = build_masks(batch_n, n_max, device)
+                tri_mask = torch.triu(
+                    torch.ones((n_max, n_max), dtype=torch.bool, device=device), diagonal=1
+                )
+                loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
                 text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with torch.amp.autocast("cuda", enabled=use_amp):
                     logits = model(text_out, text_mask)
-                    logits_valid = logits[batch_valid.bool()]
-                    labels_valid = batch_adj[batch_valid.bool()]
-                    loss_valid = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
-                    logits_pad = logits[batch_pad]
-                    loss_pad = F.binary_cross_entropy_with_logits(logits_pad, torch.zeros_like(logits_pad))
-                    loss = loss_valid + loss_pad
+                    logits_valid = logits[loss_mask]
+                    labels_valid = batch_adj[loss_mask]
+                    loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
 
                 preds = (logits.sigmoid() > 0.5).float()
-                vmask = batch_valid.bool()
+                vmask = loss_mask
                 val_acc_num += (preds[vmask] == batch_adj[vmask]).float().sum().item()
                 val_acc_den += float(vmask.sum().item())
                 bs = int(batch_adj.size(0))
