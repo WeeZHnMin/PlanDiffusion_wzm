@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--ffn", type=int, default=1024)
-    parser.add_argument("--n-max", type=int, default=45)
+    parser.add_argument("--n-max", type=int, default=40)
     parser.add_argument("--val-ratio", type=float, default=0.02)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--amp", action="store_true", default=True)
@@ -227,8 +227,10 @@ def main() -> None:
     if val_size >= n:
         val_size = max(1, n - 1)
     train_n = n - val_size
-    train_offsets = offsets[:train_n]
-    val_offsets = offsets[train_n:]
+    rng = torch.Generator().manual_seed(42)
+    perm = torch.randperm(n, generator=rng).tolist()
+    train_offsets = [offsets[i] for i in perm[:train_n]]
+    val_offsets = [offsets[i] for i in perm[train_n:]]
     use_amp = bool(args.amp and device.type == "cuda")
 
     print(
@@ -239,9 +241,15 @@ def main() -> None:
     print("loading bert...")
     tokenizer = BertTokenizer.from_pretrained(str(args.bert))
     bert = BertModel.from_pretrained(str(args.bert)).to(device)
-    for p in bert.parameters():
-        p.requires_grad = False
-    bert.eval()
+    for name, p in bert.named_parameters():
+        layer_id = None
+        for part in name.split("."):
+            if part.isdigit():
+                layer_id = int(part)
+                break
+        p.requires_grad = layer_id is not None and layer_id >= 10
+    bert_trainable = sum(p.numel() for p in bert.parameters() if p.requires_grad)
+    print(f"bert trainable params (last 2 layers): {bert_trainable:,}")
 
     model = TextToAdjDecoder(
         n_max=n_max,
@@ -250,7 +258,14 @@ def main() -> None:
         layers=args.layers,
         ffn=args.ffn,
     ).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    bert_params = [p for p in bert.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(
+        [
+            {"params": model.parameters(), "lr": args.lr},
+            {"params": bert_params, "lr": 1e-5},
+        ],
+        weight_decay=args.weight_decay,
+    )
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     best_val_loss = float("inf")
     global_step = 0
@@ -261,17 +276,20 @@ def main() -> None:
     adj_tensor = torch.tensor(adjs, dtype=torch.float32)
     n_nodes_tensor = torch.tensor(n_nodes, dtype=torch.long)
 
+    perm_t = torch.tensor(perm, dtype=torch.long)
+    train_idx = perm_t[:train_n]
+    val_idx = perm_t[train_n:]
     train_ds = TensorDataset(
-        input_ids[:train_n],
-        attention_mask[:train_n],
-        adj_tensor[:train_n],
-        n_nodes_tensor[:train_n],
+        input_ids[train_idx],
+        attention_mask[train_idx],
+        adj_tensor[train_idx],
+        n_nodes_tensor[train_idx],
     )
     val_ds = TensorDataset(
-        input_ids[train_n:],
-        attention_mask[train_n:],
-        adj_tensor[train_n:],
-        n_nodes_tensor[train_n:],
+        input_ids[val_idx],
+        attention_mask[val_idx],
+        adj_tensor[val_idx],
+        n_nodes_tensor[val_idx],
     )
     pin_memory = device.type == "cuda"
     train_loader = DataLoader(
@@ -296,7 +314,7 @@ def main() -> None:
     if args.pos_weight > 0:
         pos_weight_value = float(args.pos_weight)
     else:
-        pos_weight_value = estimate_pos_weight(adj_tensor[:train_n], n_nodes_tensor[:train_n], n_max)
+        pos_weight_value = estimate_pos_weight(adj_tensor[train_idx], n_nodes_tensor[train_idx], n_max)
     pos_weight_t = torch.tensor(pos_weight_value, dtype=torch.float32, device=device)
     print(f"using pos_weight={pos_weight_value:.4f}")
 
@@ -305,6 +323,7 @@ def main() -> None:
         total_loss = 0.0
         total_items = 0
 
+        bert.train()
         for batch in train_loader:
             b_input_ids, b_attn_mask, b_adj, b_n = batch
             b_input_ids = b_input_ids.to(device, non_blocking=True)
@@ -317,11 +336,9 @@ def main() -> None:
             )
             loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
 
-            with torch.no_grad():
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
-
-            with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(text_out, text_mask)
                 logits_valid = logits[loss_mask]
                 labels_valid = batch_adj[loss_mask]
@@ -345,6 +362,7 @@ def main() -> None:
                 )
 
         model.eval()
+        bert.eval()
         val_loss_sum = 0.0
         val_items = 0
         val_pred_pos = 0.0

@@ -342,8 +342,6 @@ def main():
             with torch.amp.autocast("cuda", enabled=use_amp):
                 text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
-
-            with torch.amp.autocast("cuda", enabled=use_amp):
                 pred_eps = model(
                     x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                 )
