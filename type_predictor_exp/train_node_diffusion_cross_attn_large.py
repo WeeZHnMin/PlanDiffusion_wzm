@@ -27,7 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--max-length", type=int, default=32)
+    parser.add_argument("--max-length", type=int, default=64)
+    parser.add_argument("--bert-lr", type=float, default=1e-5)
     parser.add_argument("--val-ratio", type=float, default=0.02)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--num-workers", type=int, default=8)
@@ -224,13 +225,6 @@ def main():
     print(f"records={n_total}, train={train_n}, val={val_size}, n_max={n_max}, device={device}, amp={use_amp}, adj={use_adj}")
 
     print("building tensors...")
-    all_x = [c[0] for r in records for c in r["node_coords"][: int(r["n_nodes"])]]
-    all_y = [c[1] for r in records for c in r["node_coords"][: int(r["n_nodes"])]]
-    xmin, xmax = min(all_x), max(all_x)
-    ymin, ymax = min(all_y), max(all_y)
-    xrange = max(xmax - xmin, 1)
-    yrange = max(ymax - ymin, 1)
-
     coords_raw = torch.zeros((n_total, n_max, 2), dtype=torch.float32)
     node_masks = torch.zeros((n_total, n_max), dtype=torch.float32)
     adj_tensor = torch.zeros((n_total, n_max, n_max), dtype=torch.float32)
@@ -241,20 +235,29 @@ def main():
         prompts.append(r["prompt"])
         node_masks[i, :n_nodes] = 1.0
         adj_tensor[i] = torch.tensor(r["adj_matrix"], dtype=torch.float32)
-        for k, (x, y) in enumerate(r["node_coords"][:n_nodes]):
-            nx = 2.0 * (x - xmin) / xrange - 1.0
-            ny = 2.0 * (y - ymin) / yrange - 1.0
-            coords_raw[i, k, 0] = nx
-            coords_raw[i, k, 1] = ny
+        raw = r["node_coords"][:n_nodes]
+        xs = [c[0] for c in raw]
+        ys = [c[1] for c in raw]
+        xmin_r = min(xs); xrange_r = max(max(xs) - min(xs), 1)
+        ymin_r = min(ys); yrange_r = max(max(ys) - min(ys), 1)
+        for k, (x, y) in enumerate(raw):
+            coords_raw[i, k, 0] = 2.0 * (x - xmin_r) / xrange_r - 1.0
+            coords_raw[i, k, 1] = 2.0 * (y - ymin_r) / yrange_r - 1.0
         if (i + 1) % 5000 == 0:
             print(f"prepared {i + 1}/{n_total}")
 
     print("loading bert/tokenizer...")
     tokenizer = BertTokenizer.from_pretrained(str(args.bert))
     bert = BertModel.from_pretrained(str(args.bert)).to(device)
-    for p in bert.parameters():
-        p.requires_grad = False
-    bert.eval()
+    for name, p in bert.named_parameters():
+        layer_id = None
+        for part in name.split("."):
+            if part.isdigit():
+                layer_id = int(part)
+                break
+        p.requires_grad = layer_id is not None and layer_id >= 10
+    bert_trainable = sum(p.numel() for p in bert.parameters() if p.requires_grad)
+    print(f"bert trainable params (last 2 layers): {bert_trainable:,}")
 
     input_ids, attention_mask = build_or_load_token_cache(
         tokenizer, prompts, args.max_length, args.token_cache
@@ -294,7 +297,14 @@ def main():
         use_adj=use_adj,
     ).to(device)
     print(f"trainable params={sum(p.numel() for p in model.parameters()):,}")
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    bert_params = [p for p in bert.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(
+        [
+            {"params": model.parameters(), "lr": args.lr},
+            {"params": bert_params, "lr": args.bert_lr},
+        ],
+        weight_decay=args.weight_decay,
+    )
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=1e-5)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
@@ -304,6 +314,7 @@ def main():
 
     for epoch in range(args.epochs):
         model.train()
+        bert.train()
         train_loss_sum = 0.0
         train_items = 0
         for batch in train_loader:
@@ -328,7 +339,7 @@ def main():
             mask3 = b_mask.unsqueeze(-1)
             x_t = q_sample(b_coords, t_idx, noise, alpha_bars) * mask3
 
-            with torch.no_grad():
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
 
@@ -353,6 +364,7 @@ def main():
         sched.step()
 
         model.eval()
+        bert.eval()
         val_loss_sum = 0.0
         val_items = 0
         with torch.no_grad():
@@ -406,11 +418,11 @@ def main():
                     "timesteps": args.timesteps,
                     "use_adj": use_adj,
                     "pred_type": "epsilon",
+                    "norm_type": "per_record",
                     "bert_path": str(args.bert),
                     "data_path": str(args.data),
                     "epoch": epoch + 1,
                     "best_val_loss": best_val,
-                    "norm": {"xmin": xmin, "xrange": xrange, "ymin": ymin, "yrange": yrange},
                 },
                 args.save,
             )
