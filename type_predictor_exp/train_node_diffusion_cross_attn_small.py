@@ -113,7 +113,8 @@ class NodeDiffusionCrossAttn(nn.Module):
         pos_idx  = torch.arange(self.n_max, device=noisy_coords.device).unsqueeze(0)
         time_emb = self.time_proj(sinusoidal_emb(t_idx, self.d_model)).unsqueeze(1)
         # --adj no: a1=a2=zeros, GCN聚合为零，节点只用自身坐标
-        zeros = torch.zeros_like(noisy_coords)
+        B = noisy_coords.size(0)
+        zeros = torch.zeros(B, self.n_max, self.n_max, device=noisy_coords.device)
         x = self.gcn_proj(noisy_coords, zeros, zeros) + self.pos_emb(pos_idx) + time_emb
 
         text_kv      = self.text_kv_proj(text_enc)
