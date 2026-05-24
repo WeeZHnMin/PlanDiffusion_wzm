@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--bert",        type=Path, default=Path("models/bert-base-chinese"))
     parser.add_argument("--save-dir",    type=Path, default=Path("models/bert-finetuned-fp"),
                         help="output dir for fine-tuned BERT (HuggingFace format)")
+    parser.add_argument("--save-data",   type=Path, default=Path("data/jsonl/train_nodes_phase1.jsonl"),
+                        help="save sampled records here so Phase 2 uses identical data")
     parser.add_argument("--n-samples",   type=int,  default=5000)
     parser.add_argument("--epochs",      type=int,  default=80)
     parser.add_argument("--batch-size",  type=int,  default=128)
@@ -171,6 +173,13 @@ def main():
     records = random.sample(all_records, min(args.n_samples, len(all_records)))
     n_max   = max(len(r["adj_matrix"]) for r in records)
     print(f"sampled={len(records)}, n_max={n_max}, device={device}, amp={use_amp}")
+
+    # 固定数据集：保存采样结果，Phase 2 必须使用同一份文件
+    args.save_data.parent.mkdir(parents=True, exist_ok=True)
+    with args.save_data.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"sampled data saved → {args.save_data}  (Phase 2 must use this file)")
 
     print("loading bert...")
     tokenizer = BertTokenizer.from_pretrained(str(args.bert))
