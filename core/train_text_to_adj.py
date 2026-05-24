@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--max-length", type=int, default=64)
+    parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument("--hidden", type=int, default=768)
     parser.add_argument("--save", type=Path, default=Path("core/weights/adj_text_encoder.pt"))
     return parser.parse_args()
