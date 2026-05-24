@@ -55,3 +55,6 @@ type_predictor_exp/verify_viz
 type_predictor_exp/node_diffusion_results/
 *.png
 *.jsonl
+data/convert_rs/target/
+
+/data
