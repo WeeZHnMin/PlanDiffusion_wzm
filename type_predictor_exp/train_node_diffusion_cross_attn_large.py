@@ -42,6 +42,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-layers", type=int, default=10)
     parser.add_argument("--init-from-uncond", type=Path, default=None,
                         help="unconditional checkpoint to warm-start shared weights")
+    parser.add_argument("--pred-type", choices=["epsilon", "x0"], default="x0")
+    parser.add_argument("--snr-gamma", type=float, default=5.0,
+                        help="Min-SNR-gamma cap for x0 loss weighting (ignored for epsilon)")
     return parser.parse_args()
 
 
@@ -182,6 +185,16 @@ def cosine_alpha_bars(timesteps: int, s: float = 0.008):
     f = torch.cos((ts / timesteps + s) / (1.0 + s) * math.pi / 2.0) ** 2
     ab = f / f[0]
     return ab[1:].float().clamp(min=1e-5)
+
+
+def snr_weighted_loss(pred_x0, x0, t_idx, alpha_bars, snr_gamma, mask3):
+    """Min-SNR-γ weighted x0-prediction MSE (Choi et al. 2022)."""
+    ab = alpha_bars[t_idx]                        # (B,)
+    snr = ab / (1.0 - ab)                         # (B,)  signal-to-noise ratio
+    w = snr.clamp(max=snr_gamma)                  # (B,)  cap at γ
+    per_elem = (pred_x0 - x0) ** 2 * mask3        # (B, N, 2)
+    per_sample = per_elem.sum(dim=(1, 2)) / mask3.sum(dim=(1, 2)).clamp(min=1.0)  # (B,)
+    return (w * per_sample).mean()
 
 
 def q_sample(x0: torch.Tensor, t_idx: torch.Tensor, noise: torch.Tensor, alpha_bars: torch.Tensor):
@@ -430,10 +443,13 @@ def main():
             with torch.amp.autocast("cuda", enabled=use_amp):
                 text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
-                pred_eps = model(
+                pred = model(
                     x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                 )
-                loss = ((pred_eps - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
+                if args.pred_type == "x0":
+                    loss = snr_weighted_loss(pred, b_coords, t_idx, alpha_bars, args.snr_gamma, mask3)
+                else:
+                    loss = ((pred - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
 
             opt.zero_grad()
             scaler.scale(loss).backward()
@@ -479,10 +495,14 @@ def main():
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     text_enc = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                     text_mask = b_attn_mask.float()
-                    pred_eps = model(
+                    pred = model(
                         x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                     )
-                    loss = ((pred_eps - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
+                    if args.pred_type == "x0":
+                        # unweighted MSE for val: cleaner metric, comparable to baseline
+                        loss = ((pred - b_coords) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
+                    else:
+                        loss = ((pred - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
 
                 bs = int(b_coords.size(0))
                 val_loss_sum += loss.item() * bs
@@ -503,7 +523,8 @@ def main():
                     "n_layers": args.n_layers,
                     "timesteps": args.timesteps,
                     "use_adj": use_adj,
-                    "pred_type": "epsilon",
+                    "pred_type": args.pred_type,
+                    "snr_gamma": args.snr_gamma if args.pred_type == "x0" else None,
                     "norm_type": "per_record",
                     "bert_path": str(args.bert),
                     "data_path": str(args.data),
