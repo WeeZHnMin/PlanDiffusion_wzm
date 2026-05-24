@@ -221,12 +221,12 @@ def main() -> None:
         ffn=args.ffn,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     best_val_loss = float("inf")
     global_step = 0
 
     print("loading dataset into memory...")
-    prompts, adjs, n_nodes = load_all_records(args.data, offsets)
+    prompts, adjs, n_nodes = load_all_records(args.data, offsets, n_max)
     input_ids, attention_mask = build_or_load_token_cache(tokenizer, prompts, args.max_length, args.token_cache)
     adj_tensor = torch.tensor(adjs, dtype=torch.float32)
     n_nodes_tensor = torch.tensor(n_nodes, dtype=torch.long)
