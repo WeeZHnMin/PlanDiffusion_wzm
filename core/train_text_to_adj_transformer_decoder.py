@@ -1,9 +1,5 @@
 """
-Train text -> adjacency(0/1) with a Transformer Decoder head.
-
-- Text encoder: frozen bert-base-chinese
-- Head: learned node queries + TransformerDecoder + bilinear edge scorer
-- Target: adj_matrix in data/jsonl/train_nodes.jsonl
+Train text -> adjacency(0/1) with an MLP head on frozen BERT [CLS].
 """
 
 import argparse
@@ -80,38 +76,20 @@ def read_batch(path: Path, offsets, s: int, e: int):
 
 
 class TextToAdjDecoder(nn.Module):
-    def __init__(self, n_max: int, d_model: int, nhead: int, layers: int, ffn: int):
+    def __init__(self, n_max: int, hidden: int = 512):
         super().__init__()
         self.n_max = n_max
-        self.text_proj = nn.Linear(768, d_model)
-        self.query_embed = nn.Parameter(torch.randn(n_max, d_model) * 0.02)
-        layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=ffn,
-            dropout=0.1,
-            batch_first=True,
-            activation="gelu",
+        self.mlp = nn.Sequential(
+            nn.Linear(768, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, n_max * n_max),
         )
-        self.decoder = nn.TransformerDecoder(layer, num_layers=layers)
-        self.edge_w = nn.Parameter(torch.randn(d_model, d_model) * 0.02)
-        self.edge_b = nn.Parameter(torch.zeros(1))
 
-    def forward(self, text_tokens: torch.Tensor, text_mask: torch.Tensor) -> torch.Tensor:
-        # text_tokens: [B, L, 768], text_mask: [B, L] with 1=valid
-        memory = self.text_proj(text_tokens)  # [B, L, D]
-        bsz = memory.size(0)
-        tgt = self.query_embed.unsqueeze(0).expand(bsz, self.n_max, -1)  # [B, N, D]
-        h = self.decoder(
-            tgt=tgt,
-            memory=memory,
-            memory_key_padding_mask=(text_mask == 0),
-        )  # [B, N, D]
-
-        logits = torch.einsum("bnd,df,bmf->bnm", h, self.edge_w, h) + self.edge_b
-        # Keep symmetry; diagonal is learned through loss.
-        logits = 0.5 * (logits + logits.transpose(1, 2))
-        return logits
+    def forward(self, cls_vec: torch.Tensor) -> torch.Tensor:
+        out = self.mlp(cls_vec)
+        return out.view(-1, self.n_max, self.n_max)
 
 
 def build_masks(batch_n: torch.Tensor, n_max: int, device: torch.device):
@@ -121,6 +99,24 @@ def build_masks(batch_n: torch.Tensor, n_max: int, device: torch.device):
         valid[bi, :cnt, :cnt] = 1.0
     pad = (1.0 - valid).bool()
     return valid, pad
+
+
+def compute_binary_metrics(preds: torch.Tensor, labels: torch.Tensor):
+    preds_f = preds.float()
+    labels_f = labels.float()
+    tp = float(((preds_f == 1) & (labels_f == 1)).sum().item())
+    fp = float(((preds_f == 1) & (labels_f == 0)).sum().item())
+    fn = float(((preds_f == 0) & (labels_f == 1)).sum().item())
+    pred_pos = float((preds_f == 1).sum().item())
+    gt_pos = float((labels_f == 1).sum().item())
+    total = float(labels_f.numel())
+
+    precision = tp / (tp + fp + 1e-12)
+    recall = tp / (tp + fn + 1e-12)
+    f1 = 2.0 * precision * recall / (precision + recall + 1e-12)
+    pred_pos_rate = pred_pos / (total + 1e-12)
+    gt_pos_rate = gt_pos / (total + 1e-12)
+    return pred_pos_rate, gt_pos_rate, precision, recall, f1
 
 
 def load_all_records(path: Path, offsets, n_max: int):
@@ -215,10 +211,6 @@ def main() -> None:
 
     model = TextToAdjDecoder(
         n_max=n_max,
-        d_model=args.d_model,
-        nhead=args.nhead,
-        layers=args.layers,
-        ffn=args.ffn,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -281,11 +273,10 @@ def main() -> None:
             loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
 
             with torch.no_grad():
-                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
-                text_mask = b_attn_mask.float()
+                cls_vec = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state[:, 0, :]
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                logits = model(text_out, text_mask)
+                logits = model(cls_vec)
                 logits_valid = logits[loss_mask]
                 labels_valid = batch_adj[loss_mask]
                 loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
@@ -308,8 +299,12 @@ def main() -> None:
         model.eval()
         val_loss_sum = 0.0
         val_items = 0
-        val_acc_num = 0.0
-        val_acc_den = 0.0
+        val_pred_pos = 0.0
+        val_gt_pos = 0.0
+        val_precision = 0.0
+        val_recall = 0.0
+        val_f1 = 0.0
+        val_batches = 0
         with torch.no_grad():
             for batch in val_loader:
                 b_input_ids, b_attn_mask, b_adj, b_n = batch
@@ -322,25 +317,34 @@ def main() -> None:
                     torch.ones((n_max, n_max), dtype=torch.bool, device=device), diagonal=1
                 )
                 loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
-                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
-                text_mask = b_attn_mask.float()
+                cls_vec = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state[:, 0, :]
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    logits = model(text_out, text_mask)
+                    logits = model(cls_vec)
                     logits_valid = logits[loss_mask]
                     labels_valid = batch_adj[loss_mask]
                     loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
 
-                preds = (logits.sigmoid() > 0.5).float()
-                vmask = loss_mask
-                val_acc_num += (preds[vmask] == batch_adj[vmask]).float().sum().item()
-                val_acc_den += float(vmask.sum().item())
+                preds = (logits.sigmoid() > 0.5)
+                preds_valid = preds[loss_mask]
+                labels_valid_bin = (batch_adj[loss_mask] > 0.5)
+                m_pred_pos, m_gt_pos, m_p, m_r, m_f1 = compute_binary_metrics(preds_valid, labels_valid_bin)
+                val_pred_pos += m_pred_pos
+                val_gt_pos += m_gt_pos
+                val_precision += m_p
+                val_recall += m_r
+                val_f1 += m_f1
+                val_batches += 1
                 bs = int(batch_adj.size(0))
                 val_loss_sum += loss.item() * bs
                 val_items += bs
 
         train_loss_epoch = total_loss / max(total_items, 1)
         val_loss_epoch = val_loss_sum / max(val_items, 1)
-        val_acc = val_acc_num / max(val_acc_den, 1.0)
+        pred_pos_rate = val_pred_pos / max(val_batches, 1)
+        gt_pos_rate = val_gt_pos / max(val_batches, 1)
+        precision = val_precision / max(val_batches, 1)
+        recall = val_recall / max(val_batches, 1)
+        f1 = val_f1 / max(val_batches, 1)
         improved = val_loss_epoch < best_val_loss
         if improved:
             best_val_loss = val_loss_epoch
@@ -349,10 +353,7 @@ def main() -> None:
                 {
                     "model_state_dict": model.state_dict(),
                     "n_max": n_max,
-                    "d_model": args.d_model,
-                    "nhead": args.nhead,
-                    "layers": args.layers,
-                    "ffn": args.ffn,
+                    "head": "mlp_cls",
                     "bert_path": str(args.bert),
                     "data_path": str(args.data),
                     "epoch": epoch + 1,
@@ -364,7 +365,9 @@ def main() -> None:
         print(
             f"epoch={epoch+1:4d} done "
             f"train_loss={train_loss_epoch:.4f} val_loss={val_loss_epoch:.4f} "
-            f"val_acc={val_acc*100:.2f}% best_val_loss={best_val_loss:.4f} "
+            f"pred_pos={pred_pos_rate*100:.2f}% gt_pos={gt_pos_rate*100:.2f}% "
+            f"p={precision*100:.2f}% r={recall*100:.2f}% f1={f1*100:.2f}% "
+            f"best_val_loss={best_val_loss:.4f} "
             f"{'(saved)' if improved else ''}"
         )
 
