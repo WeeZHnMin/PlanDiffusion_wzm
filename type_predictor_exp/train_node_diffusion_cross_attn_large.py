@@ -447,7 +447,7 @@ def main():
                     x_t, t_idx, text_enc, text_mask, a1=a1, a2=a2, adj=adj_for_attn, node_mask=b_mask
                 )
                 if args.pred_type == "x0":
-                    loss = snr_weighted_loss(pred, b_coords, t_idx, alpha_bars, args.snr_gamma, mask3)
+                    loss = ((pred - b_coords) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
                 else:
                     loss = ((pred - noise) ** 2 * mask3).sum() / mask3.sum().clamp(min=1.0)
 

@@ -9,7 +9,8 @@ Phase 1: Fine-tune BERT text encoder via fixed floor-plan fingerprint regression
 Loss: cosine similarity between text_emb and fingerprint target.
       (equivalent to MSE when both are L2-normalized)
 
-Goal: force BERT to output different vectors for different floor plan descriptions.
+Goal: force BERT to memorize all 5k samples — no validation split, pure train.
+      Save checkpoint whenever train_loss improves.
 After training, BERT is saved in HuggingFace format for direct use in diffusion trainer.
 """
 
@@ -34,7 +35,7 @@ def parse_args():
     parser.add_argument("--save-data",   type=Path, default=Path("data/jsonl/train_nodes_phase1.jsonl"),
                         help="save sampled records here so Phase 2 uses identical data")
     parser.add_argument("--n-samples",   type=int,  default=5000)
-    parser.add_argument("--epochs",      type=int,  default=80)
+    parser.add_argument("--epochs",      type=int,  default=50)
     parser.add_argument("--batch-size",  type=int,  default=128)
     parser.add_argument("--lr",          type=float, default=3e-4)
     parser.add_argument("--bert-lr",     type=float, default=1e-5)
@@ -43,7 +44,6 @@ def parse_args():
     parser.add_argument("--emb-dim",     type=int,  default=256)
     parser.add_argument("--fp-seed",     type=int,  default=12345,
                         help="seed for fixed random projection matrix (must stay constant)")
-    parser.add_argument("--val-ratio",   type=float, default=0.1)
     parser.add_argument("--seed",        type=int,  default=42)
     parser.add_argument("--num-workers", type=int,  default=4)
     parser.add_argument("--amp",         action="store_true", default=True)
@@ -194,17 +194,9 @@ def main():
     print(f"bert trainable: {sum(p.numel() for p in bert.parameters() if p.requires_grad):,}")
 
     print("building dataset...")
-    dataset  = FPDataset(records, tokenizer, args.max_length, n_max)
-    val_n    = max(1, int(len(dataset) * args.val_ratio))
-    train_n  = len(dataset) - val_n
-    train_ds, val_ds = torch.utils.data.random_split(
-        dataset, [train_n, val_n],
-        generator=torch.Generator().manual_seed(args.seed))
+    dataset = FPDataset(records, tokenizer, args.max_length, n_max)
     pin = device.type == "cuda"
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.num_workers, pin_memory=pin,
-                              persistent_workers=(args.num_workers > 0))
-    val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False,
+    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.num_workers, pin_memory=pin,
                               persistent_workers=(args.num_workers > 0))
 
@@ -231,11 +223,13 @@ def main():
     stats = text_sim_stats(emb.cpu())
     print(f"  text cos_sim BEFORE: mean={stats['mean']:.4f} std={stats['std']:.4f} p95={stats['p95']:.4f}")
 
-    best_val = float("inf")
+    best_train = float("inf")
+    all_text_emb = []   # collected each epoch for text_cos diagnostic
 
     for epoch in range(args.epochs):
         bert.train(); text_head.train()
         train_loss = 0.0; train_sim = 0.0; n_train = 0
+        all_text_emb = []
 
         for b_ids, b_mask, b_coords, b_adj, b_nmask in train_loader:
             b_ids    = b_ids.to(device,    non_blocking=True)
@@ -245,11 +239,11 @@ def main():
             b_nmask  = b_nmask.to(device,  non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                target   = fp_model(b_coords, b_adj, b_nmask)          # fixed fingerprint
+                target   = fp_model(b_coords, b_adj, b_nmask)
                 hs       = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
                 text_emb = text_head(hs, b_mask)
-                sim      = (text_emb * target).sum(dim=-1)              # cosine similarity
-                loss     = (1.0 - sim).mean()                           # minimize distance
+                sim      = (text_emb * target).sum(dim=-1)
+                loss     = (1.0 - sim).mean()
 
             opt.zero_grad()
             scaler.scale(loss).backward()
@@ -262,42 +256,16 @@ def main():
             train_loss += loss.item() * bs
             train_sim  += sim.mean().item() * bs
             n_train    += bs
+            all_text_emb.append(text_emb.detach().cpu())
 
         sched.step()
 
-        bert.eval(); text_head.eval()
-        val_loss = 0.0; val_sim = 0.0; n_val = 0
-        all_text_emb = []
-
-        with torch.no_grad():
-            for b_ids, b_mask, b_coords, b_adj, b_nmask in val_loader:
-                b_ids    = b_ids.to(device,    non_blocking=True)
-                b_mask   = b_mask.to(device,   non_blocking=True)
-                b_coords = b_coords.to(device, non_blocking=True)
-                b_adj    = b_adj.to(device,    non_blocking=True)
-                b_nmask  = b_nmask.to(device,  non_blocking=True)
-
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    target   = fp_model(b_coords, b_adj, b_nmask)
-                    hs       = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
-                    text_emb = text_head(hs, b_mask)
-                    sim      = (text_emb * target).sum(dim=-1)
-                    loss     = (1.0 - sim).mean()
-
-                bs = b_ids.size(0)
-                val_loss += loss.item() * bs
-                val_sim  += sim.mean().item() * bs
-                n_val    += bs
-                all_text_emb.append(text_emb.cpu())
-
         tl = train_loss / max(n_train, 1)
-        vl = val_loss   / max(n_val,   1)
         ts = train_sim  / max(n_train, 1)
-        vs = val_sim    / max(n_val,   1)
 
-        improved = vl < best_val
+        improved = tl < best_train
         if improved:
-            best_val = vl
+            best_train = tl
             args.save_dir.mkdir(parents=True, exist_ok=True)
             bert.save_pretrained(str(args.save_dir))
             tokenizer.save_pretrained(str(args.save_dir))
@@ -307,15 +275,14 @@ def main():
                 "fp_seed":   args.fp_seed,
                 "n_max":     n_max,
                 "epoch":     epoch + 1,
-                "best_val":  best_val,
+                "best_train": best_train,
             }, args.save_dir / "text_head.pt")
 
         t_mat      = F.normalize(torch.cat(all_text_emb, dim=0), dim=-1)
         text_stats = text_sim_stats(t_mat)
-        print(f"epoch={epoch+1:3d} "
-              f"train_loss={tl:.4f} train_sim={ts:.4f} "
-              f"val_loss={vl:.4f} val_sim={vs:.4f} "
-              f"text_cos={text_stats['mean']:.4f} "
+        print(f"epoch={epoch+1:3d}  "
+              f"train_loss={tl:.4f}  train_sim={ts:.4f}  "
+              f"text_cos={text_stats['mean']:.4f}  "
               f"{'(saved)' if improved else ''}")
 
     # ── 训后文本相似度诊断 ─────────────────────────────────────────────────────
@@ -323,19 +290,7 @@ def main():
     stats = text_sim_stats(t_mat)
     print(f"\ntext cos_sim AFTER:  mean={stats['mean']:.4f} std={stats['std']:.4f} p95={stats['p95']:.4f}")
     print(f"(baseline was ~0.90 mean before fine-tuning)")
-
-    # ── 保存微调后的 BERT（HuggingFace 格式，可直接 from_pretrained 加载）──────
-    args.save_dir.mkdir(parents=True, exist_ok=True)
-    bert.save_pretrained(str(args.save_dir))
-    tokenizer.save_pretrained(str(args.save_dir))
-    # 也保存 projection head，供分析用
-    torch.save({
-        "text_head": text_head.state_dict(),
-        "emb_dim":   args.emb_dim,
-        "fp_seed":   args.fp_seed,
-        "n_max":     n_max,
-    }, args.save_dir / "text_head.pt")
-    print(f"\nsaved fine-tuned BERT → {args.save_dir}")
+    print(f"\nbest checkpoint saved → {args.save_dir}  (best_train={best_train:.4f})")
     print(f"usage: --bert {args.save_dir}")
 
 
