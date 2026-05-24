@@ -1,5 +1,5 @@
 """
-Train text -> adjacency(0/1) with an MLP head on frozen BERT [CLS].
+Train text -> adjacency(0/1) with a Transformer Decoder head.
 """
 
 import argparse
@@ -76,20 +76,35 @@ def read_batch(path: Path, offsets, s: int, e: int):
 
 
 class TextToAdjDecoder(nn.Module):
-    def __init__(self, n_max: int, hidden: int = 512):
+    def __init__(self, n_max: int, d_model: int, nhead: int, layers: int, ffn: int):
         super().__init__()
         self.n_max = n_max
-        self.mlp = nn.Sequential(
-            nn.Linear(768, hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, n_max * n_max),
+        self.text_proj = nn.Linear(768, d_model)
+        self.query_embed = nn.Parameter(torch.randn(n_max, d_model) * 0.02)
+        layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=ffn,
+            dropout=0.1,
+            batch_first=True,
+            activation="gelu",
         )
+        self.decoder = nn.TransformerDecoder(layer, num_layers=layers)
+        self.edge_w = nn.Parameter(torch.randn(d_model, d_model) * 0.02)
+        self.edge_b = nn.Parameter(torch.zeros(1))
 
-    def forward(self, cls_vec: torch.Tensor) -> torch.Tensor:
-        out = self.mlp(cls_vec)
-        return out.view(-1, self.n_max, self.n_max)
+    def forward(self, text_tokens: torch.Tensor, text_mask: torch.Tensor) -> torch.Tensor:
+        memory = self.text_proj(text_tokens)
+        bsz = memory.size(0)
+        tgt = self.query_embed.unsqueeze(0).expand(bsz, self.n_max, -1)
+        h = self.decoder(
+            tgt=tgt,
+            memory=memory,
+            memory_key_padding_mask=(text_mask == 0),
+        )
+        logits = torch.einsum("bnd,df,bmf->bnm", h, self.edge_w, h) + self.edge_b
+        logits = 0.5 * (logits + logits.transpose(1, 2))
+        return logits
 
 
 def build_masks(batch_n: torch.Tensor, n_max: int, device: torch.device):
@@ -211,6 +226,10 @@ def main() -> None:
 
     model = TextToAdjDecoder(
         n_max=n_max,
+        d_model=args.d_model,
+        nhead=args.nhead,
+        layers=args.layers,
+        ffn=args.ffn,
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -273,10 +292,11 @@ def main() -> None:
             loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
 
             with torch.no_grad():
-                cls_vec = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state[:, 0, :]
+                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+                text_mask = b_attn_mask.float()
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                logits = model(cls_vec)
+                logits = model(text_out, text_mask)
                 logits_valid = logits[loss_mask]
                 labels_valid = batch_adj[loss_mask]
                 loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
@@ -317,9 +337,10 @@ def main() -> None:
                     torch.ones((n_max, n_max), dtype=torch.bool, device=device), diagonal=1
                 )
                 loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
-                cls_vec = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state[:, 0, :]
+                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+                text_mask = b_attn_mask.float()
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    logits = model(cls_vec)
+                    logits = model(text_out, text_mask)
                     logits_valid = logits[loss_mask]
                     labels_valid = batch_adj[loss_mask]
                     loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
@@ -353,7 +374,11 @@ def main() -> None:
                 {
                     "model_state_dict": model.state_dict(),
                     "n_max": n_max,
-                    "head": "mlp_cls",
+                    "d_model": args.d_model,
+                    "nhead": args.nhead,
+                    "layers": args.layers,
+                    "ffn": args.ffn,
+                    "head": "transformer_decoder",
                     "bert_path": str(args.bert),
                     "data_path": str(args.data),
                     "epoch": epoch + 1,
