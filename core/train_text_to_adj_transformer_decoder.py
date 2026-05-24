@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=10)
     parser.add_argument("--prefetch-factor", type=int, default=6)
     parser.add_argument("--token-cache", type=Path, default=Path("data/jsonl/train_nodes.tokens.pt"))
+    parser.add_argument("--pos-weight", type=float, default=0.0,
+                        help=">0 use fixed pos_weight; <=0 auto-estimate from train set")
     parser.add_argument("--save", type=Path, default=Path("core/weights/adj_text_decoder.pt"))
     return parser.parse_args()
 
@@ -132,6 +134,23 @@ def compute_binary_metrics(preds: torch.Tensor, labels: torch.Tensor):
     pred_pos_rate = pred_pos / (total + 1e-12)
     gt_pos_rate = gt_pos / (total + 1e-12)
     return pred_pos_rate, gt_pos_rate, precision, recall, f1
+
+
+def estimate_pos_weight(adj_tensor: torch.Tensor, n_nodes_tensor: torch.Tensor, n_max: int) -> float:
+    tri = torch.triu(torch.ones((n_max, n_max), dtype=torch.bool), diagonal=1)
+    pos = 0.0
+    total = 0.0
+    for i in range(adj_tensor.size(0)):
+        n = int(n_nodes_tensor[i].item())
+        m = torch.zeros((n_max, n_max), dtype=torch.bool)
+        m[:n, :n] = True
+        mask = m & tri
+        y = adj_tensor[i][mask]
+        pos += float((y > 0.5).sum().item())
+        total += float(y.numel())
+    neg = max(total - pos, 1.0)
+    pos = max(pos, 1.0)
+    return neg / pos
 
 
 def load_all_records(path: Path, offsets, n_max: int):
@@ -274,6 +293,13 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
 
+    if args.pos_weight > 0:
+        pos_weight_value = float(args.pos_weight)
+    else:
+        pos_weight_value = estimate_pos_weight(adj_tensor[:train_n], n_nodes_tensor[:train_n], n_max)
+    pos_weight_t = torch.tensor(pos_weight_value, dtype=torch.float32, device=device)
+    print(f"using pos_weight={pos_weight_value:.4f}")
+
     for epoch in range(args.epochs):
         model.train()
         total_loss = 0.0
@@ -299,7 +325,9 @@ def main() -> None:
                 logits = model(text_out, text_mask)
                 logits_valid = logits[loss_mask]
                 labels_valid = batch_adj[loss_mask]
-                loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
+                loss = F.binary_cross_entropy_with_logits(
+                    logits_valid, labels_valid, pos_weight=pos_weight_t
+                )
 
             opt.zero_grad()
             scaler.scale(loss).backward()
@@ -343,7 +371,9 @@ def main() -> None:
                     logits = model(text_out, text_mask)
                     logits_valid = logits[loss_mask]
                     labels_valid = batch_adj[loss_mask]
-                    loss = F.binary_cross_entropy_with_logits(logits_valid, labels_valid)
+                    loss = F.binary_cross_entropy_with_logits(
+                        logits_valid, labels_valid, pos_weight=pos_weight_t
+                    )
 
                 preds = (logits.sigmoid() > 0.5)
                 preds_valid = preds[loss_mask]
