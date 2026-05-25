@@ -111,14 +111,21 @@ def main():
     print(f"y shape: {y.shape}")
     print(f"edge ratio: {y.mean():.4f}  ({y.sum():.0f} / {y.size} positions)")
 
-    print("\ntraining logistic regression (one classifier per adj position) ...")
+    # skip columns with only one class (always 0 in this subset)
+    active_cols = np.where(y.sum(axis=0) > 0)[0]
+    inactive_cols = np.where(y.sum(axis=0) == 0)[0]
+    print(f"\nactive adj positions (have ≥1 edge in 1000 samples): {len(active_cols)} / {y.shape[1]}")
+    print(f"always-zero positions (skipped):                      {len(inactive_cols)} / {y.shape[1]}")
+
+    print("\ntraining logistic regression (one classifier per active adj position) ...")
     clf = MultiOutputClassifier(
         LogisticRegression(max_iter=1000, C=1.0, solver="lbfgs"),
         n_jobs=-1,
     )
-    clf.fit(X, y)
+    clf.fit(X, y[:, active_cols])
 
-    pred = clf.predict(X)   # [N, 780]
+    pred = np.zeros_like(y)
+    pred[:, active_cols] = clf.predict(X)
 
     # ── metrics ────────────────────────────────────────────────────────────────
     overall_acc = accuracy_score(y.reshape(-1), pred.reshape(-1))
