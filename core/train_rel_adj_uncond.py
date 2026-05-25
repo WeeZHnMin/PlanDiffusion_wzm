@@ -196,13 +196,23 @@ def build_tensors(path: Path, cache: Path, n_max: int, coord_scale: float,
                     rel_t[idx, i, j, 0] = val[0] / coord_scale
                     rel_t[idx, i, j, 1] = val[1] / coord_scale
 
-        for i, row in enumerate(r["adj_matrix"]):
-            if i >= n_max:
-                break
-            for k, val in enumerate(row):
-                j = i + k
-                if j < n_max:
-                    adj_t[idx, i, j] = float(val)
+        # use adj_matrix if present, otherwise derive from rel_adj_half (non-zero = edge)
+        if "adj_matrix" in r:
+            for i, row in enumerate(r["adj_matrix"]):
+                if i >= n_max:
+                    break
+                for k, val in enumerate(row):
+                    j = i + k
+                    if j < n_max:
+                        adj_t[idx, i, j] = float(val)
+        else:
+            for i, row in enumerate(r["rel_adj_half"]):
+                if i >= n_max:
+                    break
+                for k, val in enumerate(row):
+                    j = i + k
+                    if j < n_max and (val[0] != 0 or val[1] != 0):
+                        adj_t[idx, i, j] = 1.0
 
         if (idx + 1) % 10000 == 0:
             print(f"  {idx+1}/{n}")
