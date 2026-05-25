@@ -84,9 +84,12 @@ def main():
     model      = ToyDiffModel().to(device)
     opt        = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
 
+    pred_type = "x0"   # "epsilon" or "x0"
+
     print(f"device={device}  params={sum(p.numel() for p in model.parameters()):,}")
     print(f"data shape={list(data.shape)}  range=[{data.min():.2f}, {data.max():.2f}]")
-    print(f"baseline MSE (predict-zero) = 1.0000  ← model must beat this\n")
+    print(f"pred_type={pred_type}")
+    print(f"baseline MSE (predict-zero noise) = 1.0000\n")
 
     n = data.size(0)
     for epoch in range(epochs):
@@ -100,8 +103,9 @@ def main():
             noise = torch.randn_like(x0)
             x_t   = q_sample(x0, t_idx, noise, alpha_bars)
 
-            pred  = model(x_t, t_idx)
-            loss  = F.mse_loss(pred, noise)
+            pred   = model(x_t, t_idx)
+            target = noise if pred_type == "epsilon" else x0
+            loss   = F.mse_loss(pred, target)
 
             opt.zero_grad()
             loss.backward()
