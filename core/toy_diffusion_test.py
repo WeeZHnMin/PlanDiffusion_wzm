@@ -75,7 +75,7 @@ def main():
     torch.manual_seed(42)
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     timesteps = 1000
-    epochs    = 100
+    epochs    = 8000
     batch_size = 128
     lr        = 3e-4
 
@@ -111,7 +111,8 @@ def main():
             epoch_loss += loss.item() * B
             steps      += B
 
-        print(f"ep={epoch+1:4d}  loss={epoch_loss/steps:.6f}")
+        if (epoch + 1) % 100 == 0 or epoch == 0:
+            print(f"ep={epoch+1:5d}  loss={epoch_loss/steps:.6f}")
 
 
 if __name__ == "__main__":
