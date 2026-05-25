@@ -281,6 +281,8 @@ def parse_args():
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--amp", action="store_true", default=True)
     p.add_argument("--no-amp", action="store_false", dest="amp")
+    p.add_argument("--pred-type", choices=["epsilon", "x0"], default="epsilon",
+                   help="epsilon: predict noise  |  x0: predict original signal")
     return p.parse_args()
 
 
@@ -345,8 +347,12 @@ def main():
             valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                pred_noise, logit = model(x_t, t_idx, b_nm)
-                loss_diff = ((pred_noise - noise)[valid.unsqueeze(-1).expand_as(pred_noise)] ** 2).mean()
+                pred, logit = model(x_t, t_idx, b_nm)
+                if args.pred_type == "epsilon":
+                    target = noise
+                else:
+                    target = b_rel
+                loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
                 loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
                 loss = loss_diff + args.adj_lambda * loss_adj
 
@@ -392,8 +398,9 @@ def main():
                 x_t   = q_sample(b_rel, t_idx, noise, alpha_bars) * upper_tri[None, :, :, None].float()
                 valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    pred_noise, logit = model(x_t, t_idx, b_nm)
-                    loss_diff = ((pred_noise - noise)[valid.unsqueeze(-1).expand_as(pred_noise)] ** 2).mean()
+                    pred, logit = model(x_t, t_idx, b_nm)
+                    target = noise if args.pred_type == "epsilon" else b_rel
+                    loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
                     loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
 
                 pred_adj   = (logit[valid] > 0).float()
@@ -428,6 +435,7 @@ def main():
                 "n_max": args.n_max, "d_model": args.d_model,
                 "n_heads": args.n_heads, "timesteps": args.timesteps,
                 "coord_scale": args.coord_scale, "epoch": epoch + 1,
+                "pred_type": args.pred_type,
             }, args.save)
         print(f"ep={epoch+1:4d}  diff train={train_l:.4f} val={val_l:.4f}  "
               f"adj_bce={v_bce:.4f}  acc={v_acc:.4f}  "
