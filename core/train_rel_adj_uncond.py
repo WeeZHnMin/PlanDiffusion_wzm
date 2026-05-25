@@ -329,6 +329,7 @@ def main():
     for epoch in range(args.epochs):
         model.train()
         tl, ti = 0.0, 0
+        adj_bce_sum, adj_acc_sum, adj_steps = 0.0, 0.0, 0
 
         for b_rel, b_adj, b_nm in train_loader:
             b_rel = b_rel.to(device, non_blocking=True)
@@ -339,10 +340,8 @@ def main():
             t_idx = torch.randint(0, args.timesteps, (B,), device=device)
             noise = torch.randn_like(b_rel)
             x_t   = q_sample(b_rel, t_idx, noise, alpha_bars)
-            # keep lower tri zero (no signal there)
             x_t = x_t * upper_tri[None, :, :, None].float()
 
-            # valid positions for loss: j>i, both nodes valid
             valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
 
             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -358,19 +357,34 @@ def main():
             scaler.step(opt)
             scaler.update()
 
+            # adj metrics (no grad needed)
+            with torch.no_grad():
+                pred_adj = (logit[valid] > 0).float()
+                acc = (pred_adj == b_adj[valid]).float().mean().item()
+                adj_bce_sum += loss_adj.item()
+                adj_acc_sum += acc
+                adj_steps   += 1
+
             tl += loss_diff.item() * B
             ti += B
             global_step += 1
             if global_step % args.log_every == 0:
-                print(f"ep={epoch+1:4d} step={global_step:7d} diff_loss={tl/ti:.6f}")
+                avg_bce = adj_bce_sum / max(adj_steps, 1)
+                avg_acc = adj_acc_sum / max(adj_steps, 1)
+                print(f"ep={epoch+1:4d} step={global_step:7d} "
+                      f"diff={tl/ti:.4f}  adj_bce={avg_bce:.4f}  adj_acc={avg_acc:.4f}")
 
         sched.step()
 
+        # ── val ──────────────────────────────────────────────────────
         model.eval()
         vl, vi = 0.0, 0
+        val_bce_sum, val_acc_sum, val_edge_acc_sum, val_noedge_acc_sum = 0.0, 0.0, 0.0, 0.0
+        val_steps = 0
         with torch.no_grad():
             for b_rel, b_adj, b_nm in val_loader:
                 b_rel = b_rel.to(device, non_blocking=True)
+                b_adj = b_adj.to(device, non_blocking=True)
                 b_nm  = b_nm.to(device,  non_blocking=True)
                 B = b_rel.size(0)
                 t_idx = torch.randint(0, args.timesteps, (B,), device=device)
@@ -378,13 +392,33 @@ def main():
                 x_t   = q_sample(b_rel, t_idx, noise, alpha_bars) * upper_tri[None, :, :, None].float()
                 valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    pred_noise, _ = model(x_t, t_idx, b_nm)
+                    pred_noise, logit = model(x_t, t_idx, b_nm)
                     loss_diff = ((pred_noise - noise)[valid.unsqueeze(-1).expand_as(pred_noise)] ** 2).mean()
-                vl += loss_diff.item() * B
-                vi += B
+                    loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
 
-        train_l = tl / max(ti, 1)
-        val_l   = vl / max(vi, 1)
+                pred_adj   = (logit[valid] > 0).float()
+                target_adj = b_adj[valid]
+                edge_mask    = target_adj == 1
+                noedge_mask  = target_adj == 0
+                acc          = (pred_adj == target_adj).float().mean().item()
+                edge_acc     = (pred_adj[edge_mask] == 1).float().mean().item() if edge_mask.any() else float("nan")
+                noedge_acc   = (pred_adj[noedge_mask] == 0).float().mean().item() if noedge_mask.any() else float("nan")
+
+                vl           += loss_diff.item() * B
+                vi           += B
+                val_bce_sum  += loss_adj.item()
+                val_acc_sum  += acc
+                val_edge_acc_sum   += edge_acc if not (edge_acc != edge_acc) else 0
+                val_noedge_acc_sum += noedge_acc if not (noedge_acc != noedge_acc) else 0
+                val_steps    += 1
+
+        train_l  = tl / max(ti, 1)
+        val_l    = vl / max(vi, 1)
+        v_bce    = val_bce_sum  / max(val_steps, 1)
+        v_acc    = val_acc_sum  / max(val_steps, 1)
+        v_eacc   = val_edge_acc_sum   / max(val_steps, 1)
+        v_neacc  = val_noedge_acc_sum / max(val_steps, 1)
+
         saved = val_l < best_val
         if saved:
             best_val = val_l
@@ -395,7 +429,10 @@ def main():
                 "n_heads": args.n_heads, "timesteps": args.timesteps,
                 "coord_scale": args.coord_scale, "epoch": epoch + 1,
             }, args.save)
-        print(f"ep={epoch+1:4d}  train={train_l:.6f}  val={val_l:.6f}  best={best_val:.6f}{'  (saved)' if saved else ''}")
+        print(f"ep={epoch+1:4d}  diff train={train_l:.4f} val={val_l:.4f}  "
+              f"adj_bce={v_bce:.4f}  acc={v_acc:.4f}  "
+              f"edge_acc={v_eacc:.4f}  noedge_acc={v_neacc:.4f}"
+              f"{'  (saved)' if saved else ''}")
 
     print(f"done. best_val={best_val:.6f}  ->  {args.save}")
 
