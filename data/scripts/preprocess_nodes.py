@@ -29,10 +29,11 @@ def process_record(rec):
     node_mask  = np.array(rec["node_mask"],   dtype=np.float32)  # [40]
     adj        = np.array(rec["adj_matrix"],  dtype=np.float32)  # [40, 40]
 
-    # center using only valid nodes
+    # center using only valid nodes, then normalize to [-1, 1]
+    # 160 = empirical max absolute value after centering (actual max: 156.68)
     valid = coords_raw[:n]                    # [n, 2]
     center = valid.mean(axis=0)               # [2]
-    valid  = valid - center                   # shift to origin
+    valid  = (valid - center) / 160.0         # shift to origin and normalize
 
     coords = np.zeros((MAX_NODES, 2), dtype=np.float32)
     coords[:n] = valid

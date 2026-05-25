@@ -73,6 +73,7 @@ def main():
 
     model.train()
     running_loss = 0.0
+    running_coord_rmse = 0.0
 
     for step in range(start_step, args.total_steps):
         x, cond = next(data)
@@ -81,19 +82,21 @@ def main():
 
         t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
 
-        loss = diffusion.training_losses(model, x, t, cond)
+        loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
 
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
 
-        running_loss += loss.item()
+        running_loss      += loss.item()
+        running_coord_rmse += coord_rmse
 
         if step % args.log_interval == 0:
-            avg = running_loss / args.log_interval if step > 0 else running_loss
-            running_loss = 0.0
-            print(f"step {step:6d} | loss {avg:.6f}")
+            avg      = running_loss       / args.log_interval if step > 0 else running_loss
+            avg_rmse = running_coord_rmse / args.log_interval if step > 0 else running_coord_rmse
+            running_loss = running_coord_rmse = 0.0
+            print(f"step {step:6d} | loss {avg:.4f} | coord_rmse {avg_rmse:.2f} px")
 
         if step > 0 and step % args.save_interval == 0:
             path = os.path.join(args.save_dir, f'model_{step:07d}.pt')

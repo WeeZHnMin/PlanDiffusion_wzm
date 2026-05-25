@@ -66,8 +66,14 @@ class GaussianDiffusion:
 
         # mask out padding nodes: node_mask [B, 40] → [B, 1, 40]
         mask = model_kwargs['node_mask'].float().unsqueeze(1)
-        loss = (loss * mask).sum() / (mask.sum() * 2 + 1e-8)
-        return loss
+        weighted_loss = (loss * mask).sum() / (mask.sum() * 2 + 1e-8)
+
+        # unweighted coord RMSE in pixels (normalized coords * 128)
+        with torch.no_grad():
+            raw_mse    = ((pred_x0 - x0) ** 2 * mask).sum() / (mask.sum() * 2 + 1e-8)
+            coord_rmse = raw_mse.sqrt().item() * 160.0
+
+        return weighted_loss, coord_rmse
 
     @torch.no_grad()
     def p_sample_loop(self, model, shape, model_kwargs, device, clamp=200.0):
