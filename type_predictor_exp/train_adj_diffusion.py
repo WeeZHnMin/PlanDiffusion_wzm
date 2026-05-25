@@ -46,6 +46,8 @@ def parse_args():
     parser.add_argument("--dy",          type=int,   default=256)
     parser.add_argument("--n-heads",     type=int,   default=4)
     parser.add_argument("--n-layers",    type=int,   default=6)
+    parser.add_argument("--pos-weight",  type=float, default=6.0,
+                        help="BCE 正类权重，补偿边稀疏性（真实边约占 10-15%%）")
     parser.add_argument("--val-ratio",   type=float, default=0.05)
     parser.add_argument("--seed",        type=int,   default=42)
     parser.add_argument("--amp",         action="store_true", default=True)
@@ -292,14 +294,11 @@ class AdjDiffusionNet(nn.Module):
         for layer in self.layers:
             X, E, y = layer(X, E, y, node_mask)
 
-        pred_X   = self.mlp_out_X(X)
-        pred_adj = self.mlp_out_E(E).squeeze(-1)
-        pred_adj = (pred_adj + pred_adj.transpose(1, 2)) * 0.5
-        diag     = torch.eye(N, device=pred_adj.device, dtype=torch.bool).unsqueeze(0)
-        pred_adj = pred_adj.masked_fill(diag, 0.0)
-        pred_adj = pred_adj * e_mask
-
-        return pred_adj, pred_X
+        pred_X     = self.mlp_out_X(X)
+        pred_logit = self.mlp_out_E(E).squeeze(-1)
+        pred_logit = (pred_logit + pred_logit.transpose(1, 2)) * 0.5
+        # 不在这里做 mask，由外部 vp 上三角 mask 控制损失计算
+        return pred_logit, pred_X
 
 
 # ── 数据加载 ───────────────────────────────────────────────────────────────────
@@ -376,7 +375,9 @@ def compute_metrics(model, loader, alpha_bars, device, use_amp, text_t=None, cfg
         noise  = torch.randn_like(b_adj)
         noise  = (noise + noise.transpose(1, 2)) * 0.5
         noisy  = q_sample(b_adj, t_idx, noise, alpha_bars)
-        vp     = b_mask.unsqueeze(2) * b_mask.unsqueeze(1)
+        N_     = b_adj.size(1)
+        triu   = torch.triu(torch.ones(N_, N_, device=b_adj.device), diagonal=1)
+        vp     = b_mask.unsqueeze(2) * b_mask.unsqueeze(1) * triu.unsqueeze(0)
         noisy  = noisy * vp
 
         # 文本嵌入
@@ -388,12 +389,14 @@ def compute_metrics(model, loader, alpha_bars, device, use_amp, text_t=None, cfg
         with torch.amp.autocast("cuda", enabled=use_amp):
             pred_adj, pred_X = model(noisy, b_onehot, t_idx, b_mask, t_emb)
 
-        # adj MSE
-        mse = ((pred_adj - b_adj) ** 2 * vp).sum() / vp.sum().clamp(min=1)
+        # adj BCE（logits）
+        mse = F.binary_cross_entropy_with_logits(
+            pred_adj, b_adj, reduction='none')
+        mse = (mse * vp).sum() / vp.sum().clamp(min=1)
         stats["mse"] += mse.item() * B
 
-        # 二值化边指标
-        pred_bin = (pred_adj > 0.5).float() * vp
+        # 二值化边指标：logit > 0 → 预测有边
+        pred_bin = (pred_adj > 0).float() * vp
         true_bin = b_adj * vp
         tp = (pred_bin * true_bin).sum()
         stats["acc"]      += ((pred_bin == true_bin) * vp).sum().item()
@@ -500,20 +503,25 @@ def main():
             noise = torch.randn_like(b_adj)
             noise = (noise + noise.transpose(1, 2)) * 0.5
             noisy = q_sample(b_adj, t_idx, noise, alpha_bars)
-            vp    = b_mask.unsqueeze(2) * b_mask.unsqueeze(1)
+            N_    = b_adj.size(1)
+            triu  = torch.triu(torch.ones(N_, N_, device=device), diagonal=1)
+            vp    = b_mask.unsqueeze(2) * b_mask.unsqueeze(1) * triu.unsqueeze(0)
             noisy = noisy * vp
 
             with torch.amp.autocast("cuda", enabled=use_amp):
                 pred_adj, _ = model(noisy, b_onehot, t_idx, b_mask, t_emb)
-                loss = ((pred_adj - b_adj) ** 2 * vp).sum() / vp.sum().clamp(min=1.0)
+                pw    = torch.tensor(args.pos_weight, device=device)
+                loss  = F.binary_cross_entropy_with_logits(
+                    pred_adj, b_adj, pos_weight=pw, reduction='none')
+                loss  = (loss * vp).sum() / vp.sum().clamp(min=1.0)
 
             opt.zero_grad()
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt); scaler.update()
-            tr_loss += loss.item() * b_adj.size(0)
-            tr_n    += b_adj.size(0)
+            tr_loss += loss.item()
+            tr_n    += 1
         sched.step()
 
         # ── 验证 + 评估指标 ──────────────────────────────────────────────────
