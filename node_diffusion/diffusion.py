@@ -43,10 +43,11 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         return s1 * x0 + s2 * noise, noise
 
-    def training_losses(self, model, x0, t, model_kwargs):
+    def training_losses(self, model, x0, t, model_kwargs, snr_gamma=5.0):
         """
-        Compute x0-prediction MSE loss, masked by node_mask so padding
-        positions do not contribute to the loss.
+        x0-prediction MSE loss with Min-SNR weighting.
+        weight(t) = min(SNR(t), gamma), SNR(t) = alpha_bar_t / (1 - alpha_bar_t)
+        Focuses training on low-noise timesteps, reduces blur from high-noise steps.
         """
         self._to(x0.device)
         x0    = x0.float()
@@ -55,7 +56,13 @@ class GaussianDiffusion:
 
         pred_x0 = model(xt, t, **model_kwargs)              # [B, 2, 40]
 
-        loss = (pred_x0 - x0) ** 2                          # [B, 2, 40]
+        # per-sample Min-SNR weight
+        ab  = self.alphas_bar[t]                            # [B]
+        snr = ab / (1 - ab)                                 # [B]
+        w   = snr.clamp(max=snr_gamma)                      # [B]
+        w   = w.view(-1, 1, 1)                              # [B, 1, 1]
+
+        loss = w * (pred_x0 - x0) ** 2                     # [B, 2, 40]
 
         # mask out padding nodes: node_mask [B, 40] → [B, 1, 40]
         mask = model_kwargs['node_mask'].float().unsqueeze(1)
