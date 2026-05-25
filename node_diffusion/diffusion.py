@@ -4,7 +4,7 @@ import numpy as np
 
 class GaussianDiffusion:
     """
-    DDPM with ε-prediction (noise prediction).
+    DDPM with x0-prediction (direct clean data prediction).
     Linear beta schedule, T=1000 timesteps.
     """
 
@@ -45,7 +45,7 @@ class GaussianDiffusion:
 
     def training_losses(self, model, x0, t, model_kwargs):
         """
-        Compute ε-prediction MSE loss, masked by node_mask so padding
+        Compute x0-prediction MSE loss, masked by node_mask so padding
         positions do not contribute to the loss.
         """
         self._to(x0.device)
@@ -53,9 +53,9 @@ class GaussianDiffusion:
         noise = torch.randn_like(x0)
         xt, _ = self.q_sample(x0, t, noise)
 
-        pred_noise = model(xt, t, **model_kwargs)           # [B, 2, 40]
+        pred_x0 = model(xt, t, **model_kwargs)              # [B, 2, 40]
 
-        loss = (pred_noise - noise) ** 2                    # [B, 2, 40]
+        loss = (pred_x0 - x0) ** 2                          # [B, 2, 40]
 
         # mask out padding nodes: node_mask [B, 40] → [B, 1, 40]
         mask = model_kwargs['node_mask'].float().unsqueeze(1)
@@ -76,18 +76,15 @@ class GaussianDiffusion:
         for t in reversed(range(self.T)):
             ts = torch.full((shape[0],), t, device=device, dtype=torch.long)
 
-            pred_noise = model(x, ts, **model_kwargs)
+            x0_pred = model(x, ts, **model_kwargs)
+            x0_pred = x0_pred.clamp(-clamp, clamp)
 
             alpha_bar      = self.alphas_bar[t]
             alpha_bar_prev = self.alphas_bar_prev[t]
             beta           = self.betas[t]
             alpha          = self.alphas[t]
 
-            # predicted x0
-            x0_pred = (x - (1 - alpha_bar).sqrt() * pred_noise) / alpha_bar.sqrt()
-            x0_pred = x0_pred.clamp(-clamp, clamp)
-
-            # posterior mean
+            # posterior mean from predicted x0
             mean = (
                 alpha_bar_prev.sqrt() * beta / (1 - alpha_bar) * x0_pred
                 + alpha.sqrt() * (1 - alpha_bar_prev) / (1 - alpha_bar) * x
