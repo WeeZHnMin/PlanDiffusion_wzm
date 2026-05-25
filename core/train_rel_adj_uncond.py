@@ -223,6 +223,40 @@ def build_tensors(path: Path, cache: Path, n_max: int, coord_scale: float,
     return rel_t, adj_t, nmask
 
 
+def print_data_stats(rel_t: torch.Tensor, adj_t: torch.Tensor,
+                     nmask: torch.Tensor, n_max: int) -> None:
+    """Print data baseline stats after loading."""
+    N = n_max
+    upper = ~torch.tril(torch.ones(N, N, dtype=torch.bool))  # j > i
+    valid = upper[None] & (nmask[:, :, None] * nmask[:, None, :]).bool()  # [n, N, N]
+
+    rel_valid = rel_t[valid]               # [M, 2]  all valid upper-tri offsets
+    adj_valid = adj_t[valid]               # [M]     corresponding adj values
+
+    n_total = valid.sum().item()
+    n_edges = (adj_valid == 1).sum().item()
+    n_zeros = n_total - n_edges
+    sparsity = n_zeros / max(n_total, 1)
+
+    # baseline MSE: predict the global mean of rel at each position
+    mean_rel = rel_valid.mean(dim=0)       # [2]
+    baseline_mse = ((rel_valid - mean_rel) ** 2).mean().item()
+
+    # zero-predictor MSE: always predict [0, 0]
+    zero_mse = (rel_valid ** 2).mean().item()
+
+    print(f"\n── data stats ──────────────────────────────")
+    print(f"  samples        : {rel_t.shape[0]}")
+    print(f"  valid positions: {n_total}  (upper-tri, valid nodes)")
+    print(f"  edge positions : {n_edges}  ({100*n_edges/max(n_total,1):.1f}%)")
+    print(f"  zero positions : {n_zeros}  (sparsity {100*sparsity:.1f}%)")
+    print(f"  rel mean       : [{mean_rel[0]:.4f}, {mean_rel[1]:.4f}]")
+    print(f"  baseline MSE   : {baseline_mse:.6f}  (predict global mean)")
+    print(f"  zero-pred MSE  : {zero_mse:.6f}  (always predict [0,0])")
+    print(f"  → model must beat {baseline_mse:.6f} to learn anything useful")
+    print(f"────────────────────────────────────────────\n")
+
+
 # ─── training ──────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -258,6 +292,7 @@ def main():
 
     rel, adj, nmask = build_tensors(args.data, args.cache, args.n_max,
                                     args.coord_scale, args.max_samples)
+    print_data_stats(rel, adj, nmask, args.n_max)
     n = len(rel)
     val_n = max(1, int(n * args.val_ratio))
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(42))
