@@ -161,8 +161,9 @@ class RelAdjUncondModel(nn.Module):
 
 # ─── data loading ──────────────────────────────────────────────────────────────
 
-def build_tensors(path: Path, cache: Path, n_max: int, coord_scale: float):
-    if cache.exists():
+def build_tensors(path: Path, cache: Path, n_max: int, coord_scale: float,
+                  max_samples: int = 0):
+    if max_samples <= 0 and cache.exists():
         print(f"tensor cache hit: {cache}")
         d = torch.load(cache, map_location="cpu")
         return d["rel"], d["adj"], d["node_mask"]
@@ -174,6 +175,8 @@ def build_tensors(path: Path, cache: Path, n_max: int, coord_scale: float):
             s = line.strip()
             if s:
                 records.append(json.loads(s))
+            if max_samples > 0 and len(records) >= max_samples:
+                break
 
     n = len(records)
     rel_t = torch.zeros(n, n_max, n_max, 2, dtype=torch.float32)
@@ -229,6 +232,8 @@ def parse_args():
     p.add_argument("--log-every", type=int, default=100)
     p.add_argument("--adj-lambda", type=float, default=0.1)
     p.add_argument("--coord-scale", type=float, default=256.0)
+    p.add_argument("--max-samples", type=int, default=0,
+                   help="limit records loaded (0=all); skips tensor cache when set")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--amp", action="store_true", default=True)
     p.add_argument("--no-amp", action="store_false", dest="amp")
@@ -241,7 +246,8 @@ def main():
     use_amp = args.amp and device.type == "cuda"
     torch.manual_seed(42)
 
-    rel, adj, nmask = build_tensors(args.data, args.cache, args.n_max, args.coord_scale)
+    rel, adj, nmask = build_tensors(args.data, args.cache, args.n_max,
+                                    args.coord_scale, args.max_samples)
     n = len(rel)
     val_n = max(1, int(n * args.val_ratio))
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(42))
