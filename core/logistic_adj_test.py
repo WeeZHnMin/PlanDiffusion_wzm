@@ -61,19 +61,30 @@ def encode_texts(records, bert_path, max_length):
 
 
 def build_adj_targets(records, n_max):
-    """Flatten upper triangle (j > i) of adj into a fixed [n_max*(n_max-1)//2] vector."""
+    """Flatten upper triangle (j > i) of adj into a fixed [n_max*(n_max-1)//2] vector.
+    Falls back to deriving adj from rel_adj_half when adj_matrix is absent."""
     n_tri = n_max * (n_max - 1) // 2   # 780 for n_max=40
     targets = np.zeros((len(records), n_tri), dtype=np.float32)
 
     for idx, r in enumerate(records):
         adj_padded = np.zeros((n_max, n_max), dtype=np.float32)
-        for i, row in enumerate(r["adj_matrix"]):
-            if i >= n_max:
-                break
-            for k, val in enumerate(row):
-                j = i + k
-                if j < n_max:
-                    adj_padded[i, j] = float(val)
+
+        if "adj_matrix" in r:
+            for i, row in enumerate(r["adj_matrix"]):
+                if i >= n_max:
+                    break
+                for k, val in enumerate(row):
+                    j = i + k
+                    if j < n_max:
+                        adj_padded[i, j] = float(val)
+        else:
+            for i, row in enumerate(r["rel_adj_half"]):
+                if i >= n_max:
+                    break
+                for k, val in enumerate(row):
+                    j = i + k
+                    if j < n_max and (val[0] != 0 or val[1] != 0):
+                        adj_padded[i, j] = 1.0
 
         # extract upper triangle (j > i)
         pos = 0
@@ -90,10 +101,8 @@ def main():
     records = load_records(DATA_PATH, N_SAMPLES)
     print(f"loaded {len(records)} records")
 
-    # check adj_matrix present
     has_adj = sum(1 for r in records if "adj_matrix" in r)
-    print(f"records with adj_matrix: {has_adj}/{len(records)}")
-    records = [r for r in records if "adj_matrix" in r]
+    print(f"records with adj_matrix: {has_adj}/{len(records)}  (rest derived from rel_adj_half)")
 
     X = encode_texts(records, BERT_PATH, MAX_LENGTH)   # [N, 768]
     y = build_adj_targets(records, N_MAX)               # [N, 780]
