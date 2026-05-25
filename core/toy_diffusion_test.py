@@ -111,7 +111,7 @@ def main():
             epoch_loss += loss.item() * B
             steps      += B
 
-        if (epoch + 1) % 100 == 0 or epoch == 0:
+        if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f"ep={epoch+1:5d}  loss={epoch_loss/steps:.6f}")
 
 
