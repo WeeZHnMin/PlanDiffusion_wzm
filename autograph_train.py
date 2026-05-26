@@ -31,12 +31,11 @@ CFG = dict(
     data_path   = 'data/processed/graph_tokens_combo_5w.npz',
     save_dir    = 'checkpoints/autograph_combo',
     batch_size  = 32,
-    max_epochs  = 20,
+    max_epochs  = 100,
     lr          = 6e-4,
     weight_decay= 0.1,
     grad_clip   = 1.0,
     log_every   = 200,        # 每隔多少 step 打印一次
-    save_every  = 2000,       # 每隔多少 step 保存一次
     seed        = 42,
 )
 
@@ -180,6 +179,7 @@ def train():
     os.makedirs(CFG['save_dir'], exist_ok=True)
 
     global_step = 0
+    best_train_loss = float('inf')
 
     for epoch in range(CFG['max_epochs']):
         model.train()
@@ -208,14 +208,18 @@ def train():
                 print(f'epoch {epoch+1:3d}  step {global_step:5d}  '
                       f'loss {loss.item():.4f}  lr {scheduler.get_last_lr()[0]:.2e}')
 
-            if global_step % CFG['save_every'] == 0:
-                torch.save(model.state_dict(),
-                           os.path.join(CFG['save_dir'], f'step{global_step}.pt'))
-
         avg_loss = epoch_loss / len(train_loader)
-        print(f'=== epoch {epoch+1} 结束  avg_loss={avg_loss:.4f} ===\n')
+        print(f'=== epoch {epoch+1} 结束  avg_loss={avg_loss:.4f} ===')
 
-    print('训练完成。最优 val_loss:', best_val_loss)
+        if avg_loss < best_train_loss:
+            best_train_loss = avg_loss
+            torch.save(model.state_dict(),
+                       os.path.join(CFG['save_dir'], 'best.pt'))
+            print(f'  -> 保存最优模型  best_train_loss={best_train_loss:.4f}\n')
+        else:
+            print()
+
+    print('训练完成。最优 train_loss:', best_train_loss)
 
 
 if __name__ == '__main__':
