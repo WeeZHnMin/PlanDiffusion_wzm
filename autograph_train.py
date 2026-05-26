@@ -8,7 +8,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader
 from transformers import GPT2Config, GPT2LMHeadModel
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -30,17 +30,13 @@ VOCAB_SIZE  = _vocab['VOCAB_SIZE']   # 78
 CFG = dict(
     data_path   = 'data/processed/graph_tokens_combo_5w.npz',
     save_dir    = 'checkpoints/autograph_combo',
-    val_ratio   = 0.1,        # 10% 做验证集
     batch_size  = 32,
-    max_epochs  = 200,
+    max_epochs  = 20,
     lr          = 6e-4,
     weight_decay= 0.1,
     grad_clip   = 1.0,
-    log_every   = 50,         # 每隔多少 step 打印一次
-    val_every   = 500,        # 每隔多少 step 验证一次
-    save_every  = 1000,       # 每隔多少 step 保存一次
-    gen_samples = 4,          # 验证时生成几张图看看
-    top_k       = 10,
+    log_every   = 200,        # 每隔多少 step 打印一次
+    save_every  = 2000,       # 每隔多少 step 保存一次
     seed        = 42,
 )
 
@@ -164,19 +160,10 @@ def train():
     lengths = raw['lengths']   # (248295,)
 
     full_dataset = GraphTokenDataset(tokens, lengths)
-    n_val   = int(len(full_dataset) * CFG['val_ratio'])
-    n_train = len(full_dataset) - n_val
-    train_set, val_set = random_split(
-        full_dataset, [n_train, n_val],
-        generator=torch.Generator().manual_seed(CFG['seed'])
-    )
-    train_loader = DataLoader(train_set, batch_size=CFG['batch_size'],
-                              shuffle=True,  collate_fn=collate_fn, drop_last=True,
+    train_loader = DataLoader(full_dataset, batch_size=CFG['batch_size'],
+                              shuffle=True, collate_fn=collate_fn, drop_last=True,
                               num_workers=0)
-    val_loader   = DataLoader(val_set,   batch_size=CFG['batch_size'],
-                              shuffle=False, collate_fn=collate_fn,
-                              num_workers=0)
-    print(f'train: {n_train}  val: {n_val}')
+    print(f'train: {len(full_dataset)}')
 
     # 建模型（从零初始化）
     config = GPT2Config(**MODEL_CFG)
@@ -193,20 +180,19 @@ def train():
     os.makedirs(CFG['save_dir'], exist_ok=True)
 
     global_step = 0
-    best_val_loss = float('inf')
 
     for epoch in range(CFG['max_epochs']):
         model.train()
         epoch_loss = 0.0
 
         for batch, attn_mask in train_loader:
-            batch     = batch.to(device)          # (B, L)
-            attn_mask = attn_mask.to(device)      # (B, L)
-            x = batch[:, :-1]                     # 输入：去掉最后一个
-            y = batch[:, 1:]                      # 目标：右移一位
-            m = attn_mask[:, :-1]                 # mask 对应输入
+            batch     = batch.to(device)
+            attn_mask = attn_mask.to(device)
+            x = batch[:, :-1]
+            y = batch[:, 1:]
+            m = attn_mask[:, :-1]
 
-            logits = model(input_ids=x, attention_mask=m).logits  # (B, L-1, V)
+            logits = model(input_ids=x, attention_mask=m).logits
             loss = loss_fn(logits.reshape(-1, VOCAB_SIZE), y.reshape(-1))
 
             optimizer.zero_grad()
@@ -222,36 +208,6 @@ def train():
                 print(f'epoch {epoch+1:3d}  step {global_step:5d}  '
                       f'loss {loss.item():.4f}  lr {scheduler.get_last_lr()[0]:.2e}')
 
-            # 验证
-            if global_step % CFG['val_every'] == 0:
-                model.eval()
-                val_loss = 0.0
-                with torch.no_grad():
-                    for vbatch, vmask in val_loader:
-                        vbatch = vbatch.to(device)
-                        vmask  = vmask.to(device)
-                        vx, vy = vbatch[:, :-1], vbatch[:, 1:]
-                        vm = vmask[:, :-1]
-                        vlogits = model(input_ids=vx, attention_mask=vm).logits
-                        val_loss += loss_fn(vlogits.reshape(-1, VOCAB_SIZE), vy.reshape(-1)).item()
-                val_loss /= len(val_loader)
-                print(f'\n  ── val loss: {val_loss:.4f} ──')
-
-                # 生成几张图看看
-                samples = generate_samples(model, device, n=CFG['gen_samples'])
-                for s in samples:
-                    print(f'     节点={s["n_nodes"]}  边={s["n_edges"]}')
-                print()
-
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    torch.save(model.state_dict(),
-                               os.path.join(CFG['save_dir'], 'best.pt'))
-                    print(f'  ✓ 保存最优模型 val_loss={best_val_loss:.4f}\n')
-
-                model.train()
-
-            # 定期保存
             if global_step % CFG['save_every'] == 0:
                 torch.save(model.state_dict(),
                            os.path.join(CFG['save_dir'], f'step{global_step}.pt'))
