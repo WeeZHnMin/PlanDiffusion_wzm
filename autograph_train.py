@@ -1,8 +1,10 @@
 """
-从零训练 GPT-2 做平面布局图结构生成（带节点类型）
-数据：data/processed/graph_tokens_typed_5w.npz
+从零训练 GPT-2 做平面布局图结构生成（带节点组合类型）
+数据：data/processed/graph_tokens_combo_5w.npz
+常量从 data/processed/type_combo_vocab.json 加载
 """
 
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,22 +14,22 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import os
 
-# ── 常量（和 autograph_preprocess_typed.py 保持一致）─────────
-MAX_NODES   = 40
+# ── 从词表文件加载常量 ────────────────────────────────────────
+_vocab = json.load(open('data/processed/type_combo_vocab.json', encoding='utf-8'))
+MAX_NODES   = _vocab['MAX_NODES']    # 40
 PAD_ID      = 0
-# 1-7: 节点类型 (bathroom/bedroom/living_room/kitchen/corridor/dining_room/other)
-TOK_OPEN    = 8   # <
-TOK_CLOSE   = 9   # >
-TOK_BREAK   = 10  # /
-BOS_ID      = 11
-EOS_ID      = 12
-NODE_OFFSET = 13  # 节点token = 节点编号(1-based) + NODE_OFFSET
-VOCAB_SIZE  = 53  # NODE_OFFSET + MAX_NODES
+TOK_OPEN    = _vocab['TOK_OPEN']     # 33
+TOK_CLOSE   = _vocab['TOK_CLOSE']    # 34
+TOK_BREAK   = _vocab['TOK_BREAK']    # 35
+BOS_ID      = _vocab['BOS_ID']       # 36
+EOS_ID      = _vocab['EOS_ID']       # 37
+NODE_OFFSET = _vocab['NODE_OFFSET']  # 38
+VOCAB_SIZE  = _vocab['VOCAB_SIZE']   # 78
 
 # ── 配置 ───────────────────────────────────────────────────
 CFG = dict(
-    data_path   = 'data/processed/graph_tokens_typed_5w.npz',
-    save_dir    = 'checkpoints/autograph_typed',
+    data_path   = 'data/processed/graph_tokens_combo_5w.npz',
+    save_dir    = 'checkpoints/autograph_combo',
     val_ratio   = 0.1,        # 10% 做验证集
     batch_size  = 32,
     max_epochs  = 200,
@@ -158,7 +160,7 @@ def train():
 
     # 加载数据
     raw = np.load(CFG['data_path'])
-    tokens  = raw['tokens']    # (248295, 256)
+    tokens  = raw['tokens']    # (248295, 256), VOCAB_SIZE=78
     lengths = raw['lengths']   # (248295,)
 
     full_dataset = GraphTokenDataset(tokens, lengths)
