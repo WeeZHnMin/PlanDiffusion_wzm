@@ -1,6 +1,6 @@
 """
-从零训练 GPT-2 做平面布局图结构生成
-数据：data/processed/graph_tokens_train.npz
+从零训练 GPT-2 做平面布局图结构生成（带节点类型）
+数据：data/processed/graph_tokens_typed_5w.npz
 """
 
 import numpy as np
@@ -12,20 +12,22 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import os
 
-# ── 常量（和 autograph_preprocess.py 保持一致）─────────────
-MAX_NODES  = 40
-PAD_ID     = 0
-TOK_OPEN   = 41   # <
-TOK_CLOSE  = 42   # >
-TOK_BREAK  = 43   # /
-BOS_ID     = 44
-EOS_ID     = 45
-VOCAB_SIZE = 46
+# ── 常量（和 autograph_preprocess_typed.py 保持一致）─────────
+MAX_NODES   = 40
+PAD_ID      = 0
+# 1-7: 节点类型 (bathroom/bedroom/living_room/kitchen/corridor/dining_room/other)
+TOK_OPEN    = 8   # <
+TOK_CLOSE   = 9   # >
+TOK_BREAK   = 10  # /
+BOS_ID      = 11
+EOS_ID      = 12
+NODE_OFFSET = 13  # 节点token = 节点编号(1-based) + NODE_OFFSET
+VOCAB_SIZE  = 53  # NODE_OFFSET + MAX_NODES
 
 # ── 配置 ───────────────────────────────────────────────────
 CFG = dict(
-    data_path   = 'data/processed/graph_tokens_train.npz',
-    save_dir    = 'checkpoints/autograph',
+    data_path   = 'data/processed/graph_tokens_typed_5w.npz',
+    save_dir    = 'checkpoints/autograph_typed',
     val_ratio   = 0.1,        # 10% 做验证集
     batch_size  = 64,
     max_epochs  = 200,
@@ -46,7 +48,7 @@ MODEL_CFG = dict(
     n_embd              = 384,
     n_layer             = 8,
     n_head              = 6,
-    n_positions         = 256,    # 比最长序列 143 留有余量
+    n_positions         = 256,
     bos_token_id        = BOS_ID,
     eos_token_id        = EOS_ID,
     pad_token_id        = PAD_ID,
@@ -86,7 +88,8 @@ def collate_fn(batch):
 def decode_tokens(token_list):
     """
     把 token 列表还原成边集合。
-    返回 set of (i, j)，i < j，节点编号从 1 开始。
+    返回 set of (i, j)，i < j，节点编号1-based（原始编号，去掉NODE_OFFSET偏移）。
+    跳过类型token（1-7）和结构符号。
     """
     edges = set()
     i = 0
@@ -106,15 +109,17 @@ def decode_tokens(token_list):
         elif t == TOK_CLOSE:
             in_bracket = False
             bracket_node = None
-        elif 1 <= t <= MAX_NODES:
+        elif NODE_OFFSET < t <= NODE_OFFSET + MAX_NODES:
+            node_id = t - NODE_OFFSET  # 还原为1-based编号
             if in_bracket and bracket_node is not None:
-                u, v = min(bracket_node, t), max(bracket_node, t)
+                u, v = min(bracket_node, node_id), max(bracket_node, node_id)
                 edges.add((u, v))
             else:
                 if prev_node is not None:
-                    u, v = min(prev_node, t), max(prev_node, t)
+                    u, v = min(prev_node, node_id), max(prev_node, node_id)
                     edges.add((u, v))
-                prev_node = t
+                prev_node = node_id
+        # 1-7 是类型token，直接跳过
         i += 1
     return edges
 
@@ -153,8 +158,8 @@ def train():
 
     # 加载数据
     raw = np.load(CFG['data_path'])
-    tokens  = raw['tokens']    # (6000, 143)
-    lengths = raw['lengths']   # (6000,)
+    tokens  = raw['tokens']    # (248295, 256)
+    lengths = raw['lengths']   # (248295,)
 
     full_dataset = GraphTokenDataset(tokens, lengths)
     n_val   = int(len(full_dataset) * CFG['val_ratio'])
