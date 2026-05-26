@@ -176,7 +176,7 @@ def main():
     BOS_ID      = N_TYPES + 4
     EOS_ID      = N_TYPES + 5
     NODE_OFFSET = N_TYPES + 6
-    VOCAB_SIZE  = NODE_OFFSET + MAX_NODES
+    VOCAB_SIZE  = NODE_OFFSET + MAX_NODES + 1  # 节点token最大为NODE_OFFSET+MAX_NODES，需+1
 
     # 统计多类型组合
     multi = {k: v for k, v in combo_to_id.items() if len(k) > 1}
