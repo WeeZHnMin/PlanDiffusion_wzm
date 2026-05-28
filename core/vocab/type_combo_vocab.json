@@ -1,45 +1,199 @@
 {
   "combo_to_id": {
-    "[1]": 1,
-    "[2]": 2,
-    "[3]": 3,
-    "[4]": 4,
-    "[5]": 5,
-    "[6]": 6,
-    "[7]": 7,
-    "[1, 2]": 8,
-    "[2, 4]": 9,
-    "[2, 3]": 10,
-    "[1, 3]": 11,
-    "[2, 5]": 12,
-    "[3, 4]": 13,
-    "[4, 5]": 14,
-    "[1, 5]": 15,
-    "[1, 2, 5]": 16,
-    "[3, 5]": 17,
-    "[1, 4]": 18,
-    "[1, 2, 3]": 19,
-    "[1, 2, 4]": 20,
-    "[2, 3, 5]": 21,
-    "[3, 4, 5]": 22,
-    "[1, 2, 3, 4]": 23,
-    "[1, 4, 5]": 24,
-    "[1, 3, 5]": 25,
-    "[2, 4, 5]": 26,
-    "[1, 3, 4, 5]": 27,
-    "[2, 3, 4]": 28,
-    "[1, 3, 4]": 29,
-    "[1, 2, 3, 5]": 30,
-    "[1, 2, 4, 5]": 31,
-    "[2, 3, 4, 5]": 32
+    "[\"bathroom\"]": 1,
+    "[\"bedroom\"]": 2,
+    "[\"living_room\"]": 3,
+    "[\"kitchen\"]": 4,
+    "[\"corridor\"]": 5,
+    "[\"dining_room\"]": 6,
+    "[\"other\"]": 7,
+    "[\"bathroom\", \"bedroom\"]": 8,
+    "[\"bathroom\", \"bedroom\", \"living_room\"]": 9,
+    "[\"bathroom\", \"bedroom\", \"kitchen\"]": 10,
+    "[\"bathroom\", \"bedroom\", \"kitchen\", \"living_room\"]": 11,
+    "[\"bathroom\", \"bedroom\", \"corridor\"]": 12,
+    "[\"bathroom\", \"bedroom\", \"corridor\", \"living_room\"]": 13,
+    "[\"bathroom\", \"bedroom\", \"corridor\", \"kitchen\"]": 14,
+    "[\"bathroom\", \"living_room\"]": 15,
+    "[\"bathroom\", \"kitchen\"]": 16,
+    "[\"bathroom\", \"kitchen\", \"living_room\"]": 17,
+    "[\"bathroom\", \"corridor\"]": 18,
+    "[\"bathroom\", \"corridor\", \"living_room\"]": 19,
+    "[\"bathroom\", \"corridor\", \"kitchen\"]": 20,
+    "[\"bathroom\", \"corridor\", \"kitchen\", \"living_room\"]": 21,
+    "[\"bedroom\", \"living_room\"]": 22,
+    "[\"bedroom\", \"kitchen\"]": 23,
+    "[\"bedroom\", \"kitchen\", \"living_room\"]": 24,
+    "[\"bedroom\", \"corridor\"]": 25,
+    "[\"bedroom\", \"corridor\", \"living_room\"]": 26,
+    "[\"bedroom\", \"corridor\", \"kitchen\"]": 27,
+    "[\"bedroom\", \"corridor\", \"kitchen\", \"living_room\"]": 28,
+    "[\"kitchen\", \"living_room\"]": 29,
+    "[\"corridor\", \"living_room\"]": 30,
+    "[\"corridor\", \"kitchen\"]": 31,
+    "[\"corridor\", \"kitchen\", \"living_room\"]": 32
+  },
+  "id_to_combo": {
+    "1": [
+      "bathroom"
+    ],
+    "2": [
+      "bedroom"
+    ],
+    "3": [
+      "living_room"
+    ],
+    "4": [
+      "kitchen"
+    ],
+    "5": [
+      "corridor"
+    ],
+    "6": [
+      "dining_room"
+    ],
+    "7": [
+      "other"
+    ],
+    "8": [
+      "bathroom",
+      "bedroom"
+    ],
+    "9": [
+      "bathroom",
+      "bedroom",
+      "living_room"
+    ],
+    "10": [
+      "bathroom",
+      "bedroom",
+      "kitchen"
+    ],
+    "11": [
+      "bathroom",
+      "bedroom",
+      "kitchen",
+      "living_room"
+    ],
+    "12": [
+      "bathroom",
+      "bedroom",
+      "corridor"
+    ],
+    "13": [
+      "bathroom",
+      "bedroom",
+      "corridor",
+      "living_room"
+    ],
+    "14": [
+      "bathroom",
+      "bedroom",
+      "corridor",
+      "kitchen"
+    ],
+    "15": [
+      "bathroom",
+      "living_room"
+    ],
+    "16": [
+      "bathroom",
+      "kitchen"
+    ],
+    "17": [
+      "bathroom",
+      "kitchen",
+      "living_room"
+    ],
+    "18": [
+      "bathroom",
+      "corridor"
+    ],
+    "19": [
+      "bathroom",
+      "corridor",
+      "living_room"
+    ],
+    "20": [
+      "bathroom",
+      "corridor",
+      "kitchen"
+    ],
+    "21": [
+      "bathroom",
+      "corridor",
+      "kitchen",
+      "living_room"
+    ],
+    "22": [
+      "bedroom",
+      "living_room"
+    ],
+    "23": [
+      "bedroom",
+      "kitchen"
+    ],
+    "24": [
+      "bedroom",
+      "kitchen",
+      "living_room"
+    ],
+    "25": [
+      "bedroom",
+      "corridor"
+    ],
+    "26": [
+      "bedroom",
+      "corridor",
+      "living_room"
+    ],
+    "27": [
+      "bedroom",
+      "corridor",
+      "kitchen"
+    ],
+    "28": [
+      "bedroom",
+      "corridor",
+      "kitchen",
+      "living_room"
+    ],
+    "29": [
+      "kitchen",
+      "living_room"
+    ],
+    "30": [
+      "corridor",
+      "living_room"
+    ],
+    "31": [
+      "corridor",
+      "kitchen"
+    ],
+    "32": [
+      "corridor",
+      "kitchen",
+      "living_room"
+    ]
   },
   "N_TYPES": 32,
-  "TOK_OPEN": 33,
-  "TOK_CLOSE": 34,
-  "TOK_BREAK": 35,
-  "BOS_ID": 36,
-  "EOS_ID": 37,
-  "NODE_OFFSET": 38,
-  "VOCAB_SIZE": 79,
+  "ROOM_TYPE_ORDER": [
+    "bathroom",
+    "bedroom",
+    "living_room",
+    "kitchen",
+    "corridor",
+    "dining_room",
+    "other"
+  ],
+  "PAD_ID": 0,
+  "NODE_TOKEN_START": 1,
+  "NODE_TOKEN_END": 40,
+  "TOK_OPEN": 41,
+  "TOK_CLOSE": 42,
+  "TOK_BREAK": 43,
+  "BOS_ID": 44,
+  "EOS_ID": 45,
+  "VOCAB_SIZE": 46,
   "MAX_NODES": 40
 }

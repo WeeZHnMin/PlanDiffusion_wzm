@@ -6,7 +6,7 @@ from pathlib import Path
 # 对于 captions.jsonl 里没有的数据，直接丢弃（不写入输出文件）。
 # 输出: data/jsonl/mapped_node_data_zh.jsonl
 DATA_DIR = Path(__file__).resolve().parent.parent
-CAPTIONS_FILE = DATA_DIR / "jsonl" / "captions.jsonl"
+CAPTIONS_FILE = DATA_DIR / "jsonl" / "captions_unique.jsonl"
 SRC_FILE = DATA_DIR / "jsonl" / "mapped_node_data.jsonl"
 OUT_FILE = DATA_DIR / "jsonl" / "mapped_node_data_zh.jsonl"
 
