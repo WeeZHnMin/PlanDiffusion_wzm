@@ -11,20 +11,10 @@ Dataset，支持两种数据源：
 import json
 import numpy as np
 import torch
-from functools import partial
 from torch.utils.data import Dataset
 from transformers import BertTokenizerFast
 
 HF_REPO = 'wzmmmm/plan-diffusion'
-
-
-def _filter_by_prompt_len(tokenizer, prompts, max_len):
-    """返回 prompt tokenize 后长度 <= max_len 的索引列表。"""
-    valid = []
-    for i, p in enumerate(prompts):
-        if len(tokenizer.encode(p, add_special_tokens=True)) <= max_len:
-            valid.append(i)
-    return valid
 
 
 # ── 本地加载 ────────────────────────────────────────────────
@@ -46,13 +36,13 @@ class LocalGraphTokenDataset(Dataset):
 
 
 class LocalGraphTextDataset(Dataset):
-    """SFT · 本地：返回 token 序列 + prompt。超过 max_text_len 的样本丢弃。"""
+    """SFT · 本地：返回 token 序列 + prompt（超长截断）。"""
 
     def __init__(self, npz_path, jsonl_path, bert_path,
                  max_text_len=256, augment=5):
         data = np.load(npz_path)
-        tokens  = data['tokens']
-        lengths = data['lengths']
+        self.tokens  = data['tokens']
+        self.lengths = data['lengths']
 
         prompts = []
         with open(jsonl_path, encoding='utf-8') as f:
@@ -63,18 +53,11 @@ class LocalGraphTextDataset(Dataset):
                 rec = json.loads(line)
                 for _ in range(augment):
                     prompts.append(rec['prompt'])
-        assert len(prompts) == len(tokens), \
-            f'prompt数({len(prompts)}) 与样本数({len(tokens)}) 不匹配'
-
+        assert len(prompts) == len(self.tokens), \
+            f'prompt数({len(prompts)}) 与样本数({len(self.tokens)}) 不匹配'
+        self.prompts      = prompts
         self.tokenizer    = BertTokenizerFast.from_pretrained(bert_path)
         self.max_text_len = max_text_len
-
-        print('过滤超长 prompt...')
-        valid = _filter_by_prompt_len(self.tokenizer, prompts, max_text_len)
-        self.tokens  = tokens[valid]
-        self.lengths = lengths[valid]
-        self.prompts = [prompts[i] for i in valid]
-        print(f'保留 {len(valid)} / {len(prompts)} 条 (丢弃 {len(prompts)-len(valid)} 条)')
 
     def __len__(self):
         return len(self.tokens)
@@ -86,7 +69,7 @@ class LocalGraphTextDataset(Dataset):
             self.prompts[idx],
             max_length=self.max_text_len,
             padding='max_length',
-            truncation=False,
+            truncation=True,
             return_tensors='pt',
         )
         return seq, enc['input_ids'].squeeze(0), enc['attention_mask'].squeeze(0)
@@ -113,23 +96,17 @@ class HFGraphTokenDataset(Dataset):
 
 
 class HFGraphTextDataset(Dataset):
-    """SFT · HF Hub：返回 token 序列 + prompt。超过 max_text_len 的样本丢弃。"""
+    """SFT · HF Hub：返回 token 序列 + prompt（超长截断）。"""
 
     def __init__(self, bert_path, max_text_len=256, repo_id=HF_REPO):
         from datasets import load_dataset
         print(f'从 HuggingFace Hub 加载数据集: {repo_id} ...')
         ds = load_dataset(repo_id, split='train')
-
+        self.tokens   = ds['tokens']
+        self.lengths  = ds['lengths']
+        self.prompts  = ds['prompt']
         self.tokenizer    = BertTokenizerFast.from_pretrained(bert_path)
         self.max_text_len = max_text_len
-
-        print('过滤超长 prompt...')
-        prompts = ds['prompt']
-        valid   = _filter_by_prompt_len(self.tokenizer, prompts, max_text_len)
-        self.tokens  = [ds['tokens'][i]  for i in valid]
-        self.lengths = [ds['lengths'][i] for i in valid]
-        self.prompts = [prompts[i]        for i in valid]
-        print(f'保留 {len(valid)} / {len(prompts)} 条 (丢弃 {len(prompts)-len(valid)} 条)')
 
     def __len__(self):
         return len(self.tokens)
@@ -141,7 +118,7 @@ class HFGraphTextDataset(Dataset):
             self.prompts[idx],
             max_length=self.max_text_len,
             padding='max_length',
-            truncation=False,
+            truncation=True,
             return_tensors='pt',
         )
         return seq, enc['input_ids'].squeeze(0), enc['attention_mask'].squeeze(0)
