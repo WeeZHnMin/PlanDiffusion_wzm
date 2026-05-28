@@ -22,7 +22,7 @@ MODE        = 'pretrain'  # 'pretrain' | 'sft'
 DATA_SOURCE = 'local'     # 'local'    | 'hf'
 # ══════════════════════════════════════════════════════════════
 
-_vocab      = json.load(open('../data/processed/type_combo_vocab.json', encoding='utf-8'))
+_vocab      = json.load(open('../core/vocab/type_combo_vocab.json', encoding='utf-8'))
 PAD_ID      = 0
 BOS_ID      = _vocab['BOS_ID']
 EOS_ID      = _vocab['EOS_ID']

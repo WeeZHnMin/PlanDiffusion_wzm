@@ -20,7 +20,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ── 从词表文件加载常量 ────────────────────────────────────────
-_vocab = json.load(open('data/processed/type_combo_vocab.json', encoding='utf-8'))
+_vocab = json.load(open('core/vocab/type_combo_vocab.json', encoding='utf-8'))
 PAD_ID      = 0
 TOK_OPEN    = _vocab['TOK_OPEN']
 TOK_CLOSE   = _vocab['TOK_CLOSE']

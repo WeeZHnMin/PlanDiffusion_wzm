@@ -7,7 +7,7 @@
 输出：
   data/processed/graph_tokens_combo_5w.npz
   data/processed/graph_prompts_combo_5w.txt
-  data/processed/type_combo_vocab.json   ← 组合词表（供训练脚本加载）
+  core/vocab/type_combo_vocab.json   ← 组合词表（供训练脚本加载）
 """
 
 import json
@@ -19,7 +19,7 @@ from collections import defaultdict
 SRC_FILE  = Path('data/jsonl/mapped_type_data_zh.jsonl')
 OUT_NPZ   = Path('data/processed/graph_tokens_combo_5w.npz')
 OUT_TXT   = Path('data/processed/graph_prompts_combo_5w.txt')
-OUT_VOCAB = Path('data/processed/type_combo_vocab.json')
+OUT_VOCAB = Path('core/vocab/type_combo_vocab.json')
 
 ROOM_TYPE_IDS = {
     'bathroom': 1, 'bedroom': 2, 'living_room': 3,

@@ -1,7 +1,7 @@
 """
 从零训练 GPT-2 做平面布局图结构生成（带节点组合类型）
 数据：data/processed/graph_tokens_combo_5w.npz
-常量从 data/processed/type_combo_vocab.json 加载
+常量从 core/vocab/type_combo_vocab.json 加载
 """
 
 import json
@@ -15,7 +15,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import os
 
 # ── 从词表文件加载常量 ────────────────────────────────────────
-_vocab = json.load(open('data/processed/type_combo_vocab.json', encoding='utf-8'))
+_vocab = json.load(open('core/vocab/type_combo_vocab.json', encoding='utf-8'))
 MAX_NODES   = _vocab['MAX_NODES']    # 40
 PAD_ID      = 0
 TOK_OPEN    = _vocab['TOK_OPEN']     # 33
