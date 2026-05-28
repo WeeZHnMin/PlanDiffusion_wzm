@@ -29,8 +29,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-max", type=int, default=40)
     parser.add_argument("--val-ratio", type=float, default=0.02)
     parser.add_argument("--log-every", type=int, default=100)
-    parser.add_argument("--amp", action="store_true", default=True)
-    parser.add_argument("--no-amp", action="store_false", dest="amp")
     parser.add_argument("--num-workers", type=int, default=10)
     parser.add_argument("--prefetch-factor", type=int, default=6)
     parser.add_argument("--token-cache", type=Path, default=Path("data/jsonl/train_nodes.tokens.pt"))
@@ -231,11 +229,9 @@ def main() -> None:
     perm = torch.randperm(n, generator=rng).tolist()
     train_offsets = [offsets[i] for i in perm[:train_n]]
     val_offsets = [offsets[i] for i in perm[train_n:]]
-    use_amp = bool(args.amp and device.type == "cuda")
-
     print(
         f"records={n}, train={len(train_offsets)}, val={len(val_offsets)}, "
-        f"n_max={n_max}, device={device}, amp={use_amp}"
+        f"n_max={n_max}, device={device}"
     )
 
     print("loading bert...")
@@ -266,7 +262,6 @@ def main() -> None:
         ],
         weight_decay=args.weight_decay,
     )
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     best_val_loss = float("inf")
     global_step = 0
 
@@ -336,20 +331,19 @@ def main() -> None:
             )
             loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
-                text_mask = b_attn_mask.float()
-                logits = model(text_out, text_mask)
-                logits_valid = logits[loss_mask]
-                labels_valid = batch_adj[loss_mask]
-                loss = F.binary_cross_entropy_with_logits(
-                    logits_valid, labels_valid, pos_weight=pos_weight_t
-                )
+            text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
+            text_mask = b_attn_mask.float()
+            logits = model(text_out, text_mask)
+            logits_valid = logits[loss_mask]
+            labels_valid = batch_adj[loss_mask]
+            loss = F.binary_cross_entropy_with_logits(
+                logits_valid, labels_valid, pos_weight=pos_weight_t
+            )
 
             opt.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
 
             bs = int(batch_adj.size(0))
             total_loss += loss.item() * bs
@@ -385,13 +379,12 @@ def main() -> None:
                 loss_mask = batch_valid.bool() & tri_mask.unsqueeze(0)
                 text_out = bert(input_ids=b_input_ids, attention_mask=b_attn_mask).last_hidden_state
                 text_mask = b_attn_mask.float()
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    logits = model(text_out, text_mask)
-                    logits_valid = logits[loss_mask]
-                    labels_valid = batch_adj[loss_mask]
-                    loss = F.binary_cross_entropy_with_logits(
-                        logits_valid, labels_valid, pos_weight=pos_weight_t
-                    )
+                logits = model(text_out, text_mask)
+                logits_valid = logits[loss_mask]
+                labels_valid = batch_adj[loss_mask]
+                loss = F.binary_cross_entropy_with_logits(
+                    logits_valid, labels_valid, pos_weight=pos_weight_t
+                )
 
                 preds = (logits.sigmoid() > 0.5)
                 preds_valid = preds[loss_mask]

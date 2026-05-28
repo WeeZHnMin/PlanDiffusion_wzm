@@ -279,8 +279,6 @@ def parse_args():
     p.add_argument("--max-samples", type=int, default=0,
                    help="limit records loaded (0=all); skips tensor cache when set")
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--amp", action="store_true", default=True)
-    p.add_argument("--no-amp", action="store_false", dest="amp")
     p.add_argument("--pred-type", choices=["epsilon", "x0"], default="epsilon",
                    help="epsilon: predict noise  |  x0: predict original signal")
     return p.parse_args()
@@ -289,7 +287,6 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = args.amp and device.type == "cuda"
     torch.manual_seed(42)
 
     rel, adj, nmask = build_tensors(args.data, args.cache, args.n_max,
@@ -318,7 +315,6 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
                             weight_decay=args.weight_decay)
     sched  = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=1e-5)
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     alpha_bars = cosine_alpha_bars(args.timesteps).to(device)
 
     N = args.n_max
@@ -346,22 +342,19 @@ def main():
 
             valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                pred, logit = model(x_t, t_idx, b_nm)
-                if args.pred_type == "epsilon":
-                    target = noise
-                else:
-                    target = b_rel
-                loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
-                loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
-                loss = loss_diff + args.adj_lambda * loss_adj
+            pred, logit = model(x_t, t_idx, b_nm)
+            if args.pred_type == "epsilon":
+                target = noise
+            else:
+                target = b_rel
+            loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
+            loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
+            loss = loss_diff + args.adj_lambda * loss_adj
 
             opt.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
+            opt.step()
 
             # adj metrics (no grad needed)
             with torch.no_grad():
@@ -397,11 +390,10 @@ def main():
                 noise = torch.randn_like(b_rel)
                 x_t   = q_sample(b_rel, t_idx, noise, alpha_bars) * upper_tri[None, :, :, None].float()
                 valid = upper_tri[None] & (b_nm[:, :, None] * b_nm[:, None, :]).bool()
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    pred, logit = model(x_t, t_idx, b_nm)
-                    target = noise if args.pred_type == "epsilon" else b_rel
-                    loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
-                    loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
+                pred, logit = model(x_t, t_idx, b_nm)
+                target = noise if args.pred_type == "epsilon" else b_rel
+                loss_diff = ((pred - target)[valid.unsqueeze(-1).expand_as(pred)] ** 2).mean()
+                loss_adj  = F.binary_cross_entropy_with_logits(logit[valid], b_adj[valid])
 
                 pred_adj   = (logit[valid] > 0).float()
                 target_adj = b_adj[valid]

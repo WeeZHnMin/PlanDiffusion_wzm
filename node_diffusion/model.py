@@ -18,7 +18,8 @@ def timestep_embedding(timesteps, dim):
 def attention(q, k, v, d_k, mask=None, dropout=None):
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
-        scores = scores.masked_fill(mask.unsqueeze(1) == 1, -1e9)
+        # Use a dtype-safe minimum so AMP/fp16 masking does not overflow.
+        scores = scores.masked_fill(mask.unsqueeze(1) == 1, torch.finfo(scores.dtype).min)
     scores = F.softmax(scores, dim=-1)
     if dropout is not None:
         scores = dropout(scores)

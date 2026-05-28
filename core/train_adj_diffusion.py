@@ -30,8 +30,6 @@ def parse_args():
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--prefetch-factor", type=int, default=4)
-    parser.add_argument("--amp", action="store_true", default=True)
-    parser.add_argument("--no-amp", action="store_false", dest="amp")
     parser.add_argument("--timesteps", type=int, default=400)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-heads", type=int, default=8)
@@ -154,7 +152,6 @@ class AdjDiffusionModel(nn.Module):
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = bool(args.amp and device.type == "cuda")
     torch.manual_seed(42)
 
     print("loading records...")
@@ -235,7 +232,6 @@ def main():
         weight_decay=args.weight_decay,
     )
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs, eta_min=1e-5)
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     alpha_bars = cosine_alpha_bars(args.timesteps).to(device)
     best_val = float("inf")
     global_step = 0
@@ -263,18 +259,17 @@ def main():
             valid = b_nmask.unsqueeze(-1) * b_nmask.unsqueeze(-2)
             x_t = x_t * valid
 
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                text_enc = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
-                text_mask_f = b_mask.float()
-                pred_eps = model(x_t, t_idx, text_enc, text_mask_f, b_nmask)
-                # loss only on upper triangle of valid node pairs
-                valid_tri = valid.bool() & tri_mask.unsqueeze(0)
-                loss = ((pred_eps - noise)[valid_tri] ** 2).mean()
+            text_enc = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
+            text_mask_f = b_mask.float()
+            pred_eps = model(x_t, t_idx, text_enc, text_mask_f, b_nmask)
+            # loss only on upper triangle of valid node pairs
+            valid_tri = valid.bool() & tri_mask.unsqueeze(0)
+            loss = ((pred_eps - noise)[valid_tri] ** 2).mean()
 
             opt.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(opt)
-            scaler.update()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
 
             train_loss_sum += loss.item() * b_adj.size(0)
             train_items += b_adj.size(0)
@@ -301,11 +296,10 @@ def main():
                 x_t = q_sample(b_adj, t_idx, noise, alpha_bars) * valid
                 valid_tri = valid.bool() & tri_mask.unsqueeze(0)
 
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    text_enc = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
-                    text_mask_f = b_mask.float()
-                    pred_eps = model(x_t, t_idx, text_enc, text_mask_f, b_nmask)
-                    loss = ((pred_eps - noise)[valid_tri] ** 2).mean()
+                text_enc = bert(input_ids=b_ids, attention_mask=b_mask).last_hidden_state
+                text_mask_f = b_mask.float()
+                pred_eps = model(x_t, t_idx, text_enc, text_mask_f, b_nmask)
+                loss = ((pred_eps - noise)[valid_tri] ** 2).mean()
 
                 val_loss_sum += loss.item() * b_adj.size(0)
                 val_items += b_adj.size(0)
