@@ -68,24 +68,30 @@ def main() -> None:
 
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with OUT_FILE.open("w", encoding="utf-8") as out:
+        skipped = 0
+        written = 0
         for row in mapping_rows:
             key = (row["source_file"], int(row["source_line"]))
             src = source_rows.get(key)
             if src is None:
-                raise SystemExit(f"Missing mapped source row: {key}")
+                skipped += 1
+                continue
 
             out_obj = {
                 "prompt": src["prompt"],
                 "rooms": src["rooms"],
                 "vertices": src["vertices"],
+                "vertex_type": src["vertex_type"],
                 "adj_matrix": build_adj_matrix(n_max, src["vertex_adj"]),
                 "image": row["image"],
                 "source_file": row["source_file"],
                 "source_line": int(row["source_line"]),
             }
             out.write(json.dumps(out_obj, ensure_ascii=False) + "\n")
+            written += 1
 
-    print(f"Wrote {len(mapping_rows)} rows -> {OUT_FILE}")
+    print(f"Wrote {written} rows -> {OUT_FILE}")
+    print(f"Skipped {skipped} rows (line number mismatch)")
     print(f"n_max={n_max}")
 
 

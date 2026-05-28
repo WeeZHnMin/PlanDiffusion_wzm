@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+BERT_HIDDEN = 768
+
 
 def timestep_embedding(timesteps, dim):
     half = dim // 2
@@ -57,25 +59,34 @@ class FeedForward(nn.Module):
 
 class EncoderLayer(nn.Module):
     """
-    Two attention streams per layer:
-      adj_attn   — attends only to directly connected neighbors (adj_mask)
-      global_attn — attends to all valid nodes            (pad_mask)
-    Outputs are summed then fed to FFN, mirroring HouseDiffusion's triple-stream design.
+    三流注意力：
+      adj_attn    — 只看直接相邻节点（adj_mask）
+      global_attn — 看所有有效节点（pad_mask）
+      cross_attn  — cross-attend 到文本 hidden states（可选）
     """
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
         self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
         self.global_attn = MultiHeadAttention(heads, d_model, dropout)
+        self.cross_attn  = MultiHeadAttention(heads, d_model, dropout)
         self.ff      = FeedForward(d_model, dropout)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, adj_mask, pad_mask):
+    def forward(self, x, adj_mask, pad_mask, encoder_hidden=None):
+        # 图结构双流
         x2 = self.norm1(x)
         x  = x \
            + self.dropout(self.adj_attn(x2, x2, x2, adj_mask)) \
            + self.dropout(self.global_attn(x2, x2, x2, pad_mask))
+
+        # 文本 cross-attention（graph_only 模式传 None 跳过）
+        if encoder_hidden is not None:
+            x2 = self.norm3(x)
+            x  = x + self.dropout(self.cross_attn(x2, encoder_hidden, encoder_hidden))
+
         x2 = self.norm2(x)
         x  = x + self.dropout(self.ff(x2))
         return x
@@ -83,15 +94,24 @@ class EncoderLayer(nn.Module):
 
 class NodeDiffusionTransformer(nn.Module):
     """
-    ε-prediction Transformer for node-coordinate diffusion.
+    x0-prediction Transformer，支持两种条件模式：
 
-    Input  : x  [B, 2, 40]   noisy (x,y) coordinates
-    Cond   : adj_matrix [B, 40, 40]  adjacency (1=connected)
-             node_mask  [B, 40]      1=valid node, 0=padding
-    Output : ε  [B, 2, 40]   predicted noise
+    graph_only  (encoder_hidden=None):
+        只用邻接矩阵 + 节点掩码，退化成原有双流模型。
+
+    text+graph  (encoder_hidden 非 None):
+        BERT hidden states 通过 cross-attention 注入每一层，
+        adj_matrix 继续作为空间注意力掩码。
+
+    Input  : x               [B, 2, 40]  加噪坐标
+    Cond   : adj_matrix      [B, 40, 40]
+             node_mask       [B, 40]
+             encoder_hidden  [B, L, model_channels]  (可选，文本特征)
+    Output : x0_pred         [B, 2, 40]
     """
 
-    def __init__(self, model_channels=256, num_layers=6, num_heads=4, dropout=0.1):
+    def __init__(self, model_channels=256, num_layers=6, num_heads=4,
+                 dropout=0.1, text_hidden=BERT_HIDDEN):
         super().__init__()
         self.model_channels = model_channels
 
@@ -101,6 +121,9 @@ class NodeDiffusionTransformer(nn.Module):
             nn.Linear(model_channels, model_channels),
         )
         self.input_emb = nn.Linear(2, model_channels)
+
+        # BERT hidden → model_channels 投影（graph_only 时不用）
+        self.text_proj = nn.Linear(text_hidden, model_channels)
 
         self.layers = nn.ModuleList([
             EncoderLayer(model_channels, num_heads, dropout)
@@ -118,37 +141,34 @@ class NodeDiffusionTransformer(nn.Module):
         print(f"NodeDiffusionTransformer: {n_params:,} parameters")
 
     def _build_masks(self, adj_matrix, node_mask):
-        """
-        adj_mask [B,40,40]: 0 where nodes are adjacent (can attend), 1 elsewhere
-        pad_mask [B,40,40]: 0 for valid key nodes, 1 for padding key nodes
-        Both also block attending TO padding nodes.
-        """
-        # adj_mask: blocked where not adjacent
-        adj_mask = (1 - adj_matrix)                          # [B, 40, 40]
-        # ensure padding keys are always blocked
-        pad_keys = (1 - node_mask).unsqueeze(1)              # [B, 1, 40]
-        adj_mask = torch.clamp(adj_mask + pad_keys, 0, 1)   # [B, 40, 40]
-
-        # pad_mask: global attention, only block padding keys
-        pad_mask = pad_keys.expand_as(adj_mask)              # [B, 40, 40]
-
+        adj_mask = (1 - adj_matrix)
+        pad_keys = (1 - node_mask).unsqueeze(1)
+        adj_mask = torch.clamp(adj_mask + pad_keys, 0, 1)
+        pad_mask = pad_keys.expand_as(adj_mask)
         return adj_mask, pad_mask
 
-    def forward(self, x, timesteps, adj_matrix, node_mask, **kwargs):
-        x = x.permute(0, 2, 1).float()                       # [B, 40, 2]
+    def forward(self, x, timesteps, adj_matrix, node_mask,
+                encoder_hidden=None, **kwargs):
+        """
+        encoder_hidden : [B, L, BERT_HIDDEN] 或 None
+        """
+        x = x.permute(0, 2, 1).float()                        # [B, 40, 2]
 
         t_emb = self.time_embed(
             timestep_embedding(timesteps, self.model_channels)
-        ).unsqueeze(1)                                        # [B, 1, C]
+        ).unsqueeze(1)                                         # [B, 1, C]
 
-        out = self.input_emb(x) + t_emb                      # [B, 40, C]
+        out = self.input_emb(x) + t_emb                       # [B, 40, C]
 
         adj_mask, pad_mask = self._build_masks(
             adj_matrix.float(), node_mask.float()
         )
 
-        for layer in self.layers:
-            out = layer(out, adj_mask, pad_mask)
+        # 投影文本特征
+        enc = self.text_proj(encoder_hidden) if encoder_hidden is not None else None
 
-        out = self.output_head(out)                           # [B, 40, 2]
-        return out.permute(0, 2, 1)                           # [B, 2, 40]
+        for layer in self.layers:
+            out = layer(out, adj_mask, pad_mask, encoder_hidden=enc)
+
+        out = self.output_head(out)                            # [B, 40, 2]
+        return out.permute(0, 2, 1)                            # [B, 2, 40]

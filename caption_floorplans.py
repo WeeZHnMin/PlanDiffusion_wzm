@@ -22,6 +22,10 @@ from typing import Dict, List, Optional, Set, Tuple
 from openai import OpenAI
 
 DEFAULT_MODELS = [
+    "qwen3-vl-235b-a22b-thinking",
+    "qwen3-vl-32b-thinking",
+    "qwen-plus-2025-07-28",
+    "qwen-vl-plus-latest",
     "qwen3.5-122b-a10b",
     "qwen3.5-flash",
     "qwen3.5-35b-a3b",
@@ -35,6 +39,14 @@ DEFAULT_MODELS = [
     "kimi-k2.6",
     "qwen3.6-flash",
     "qwen3.6-27b",
+    "qwen-vl-plus",
+    "qwen-long",
+    "qwen3-vl-8b-thinking",
+    "qwen3-vl-flash-2025-10-15",
+    "qwen-vl-ocr-1028",
+    "qwen-plus-0112",
+    "qwen-plus",
+    "qwen-turbo",
 ]
 
 
@@ -43,14 +55,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.getenv("DASHSCOPE_API_KEY", ""))
     parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     parser.add_argument("--img-dir", type=Path, default=Path("data/viz_50000"))
-    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.jsonl"))
-    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.state.json"))
+    parser.add_argument("--out-file", type=Path, default=Path("data\\jsonl\\captions.jsonl"))
+    parser.add_argument("--state-file", type=Path, default=Path("data\\jsonl\\captions.state.json"))
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
-    parser.add_argument("--workers", type=int, default=10)
+    parser.add_argument("--workers", type=int, default=45)
     parser.add_argument("--limit", type=int, default=0, help="0 means all images")
     parser.add_argument(
         "--prompt",
-        default="一句话精炼地描述图中的各个房间的位置关系、布局关系、连接关系。一句话简洁精练地形容描述即可。",
+        default="用一句话完整描述空间布局与方位，重点详述各房间的相邻、连通关系，表述客观直白，全程不使用场景指代类语句，例如不要用类似“该空间布局显示”、“该房间布局”、“该图中”、“平面图中”、“房屋中”这样的指代性描述放在开头,不要有坐标。",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--retry-times", type=int, default=3)

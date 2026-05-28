@@ -256,6 +256,10 @@ def main():
                     visit_order, coords_raw, combo_ids, adj_n, n
                 )
 
+                # 中心化：有效节点坐标减去重心后取整，padding位保持0
+                centroid = coords_r[:n].mean(axis=0)
+                coords_r[:n] = np.round(coords_r[:n] - centroid).astype(np.float32)
+
                 all_tokens.append(padded)
                 all_lengths.append(length)
                 all_coords.append(coords_r)

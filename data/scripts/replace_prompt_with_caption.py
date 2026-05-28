@@ -11,9 +11,9 @@ import json
 from pathlib import Path
 
 DATA_DIR     = Path(__file__).resolve().parent.parent
-CAPTIONS_FILE = DATA_DIR / "jsonl" / "viz_50000_captions_multi.jsonl"
-SRC_FILE      = DATA_DIR / "jsonl" / "mapped_node_data.jsonl"
-OUT_FILE      = DATA_DIR / "jsonl" / "mapped_node_data_zh.jsonl"
+CAPTIONS_FILE = DATA_DIR / "jsonl" / "captions.jsonl"
+SRC_FILE      = DATA_DIR / "jsonl" / "mapped_type_data.jsonl"
+OUT_FILE      = DATA_DIR / "jsonl" / "mapped_type_data_zh.jsonl"
 
 
 def main():
@@ -44,12 +44,11 @@ def main():
                 rec["prompt"] = zh
                 rec["prompt_lang"] = "zh"
                 hit += 1
+                fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
             else:
-                rec["prompt_lang"] = "en"
                 miss += 1
-            fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    print(f"替换成功: {hit}  保留英文: {miss}  -> {OUT_FILE}")
+    print(f"替换成功: {hit}  跳过无caption: {miss}  -> {OUT_FILE}")
 
 
 if __name__ == "__main__":

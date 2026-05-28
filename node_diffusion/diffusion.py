@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from .dataset import COORD_SCALE
 
 
 class GaussianDiffusion:
@@ -71,7 +72,7 @@ class GaussianDiffusion:
         # unweighted coord RMSE in pixels (normalized coords * 128)
         with torch.no_grad():
             raw_mse    = ((pred_x0 - x0) ** 2 * mask).sum() / (mask.sum() * 2 + 1e-8)
-            coord_rmse = raw_mse.sqrt().item() * 160.0
+            coord_rmse = raw_mse.sqrt().item() * COORD_SCALE
 
         return weighted_loss, coord_rmse
 
