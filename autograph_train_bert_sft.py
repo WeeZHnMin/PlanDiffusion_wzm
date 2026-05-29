@@ -244,7 +244,7 @@ def build_parser():
     parser.add_argument("--prompts", type=Path, default=Path("data/processed/graph_prompts_combo_from_final_old.txt"))
     parser.add_argument("--vocab", type=Path, default=Path("data/processed/type_combo_vocab_old.json"))
     parser.add_argument("--bert_path", type=Path, default=Path("models/bert-base-chinese"))
-    parser.add_argument("--decoder_init_ckpt", type=Path, default=Path("checkpoints/autograph_combo/best.pt"))
+    parser.add_argument("--decoder_init_ckpt", type=Path, default=None)
     parser.add_argument("--save_dir", type=Path, default=Path("checkpoints/autograph_prefix_sft"))
     parser.add_argument("--subset_size", type=int, default=40000)
     parser.add_argument("--subset_seed", type=int, default=42)
