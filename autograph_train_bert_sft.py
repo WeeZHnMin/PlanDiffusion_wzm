@@ -401,7 +401,9 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
                 logits, loss = model(input_ids, attention_mask, decoder_input, decoder_attention_mask)
-            token_acc = masked_token_accuracy(logits.detach(), target_tokens, vocab.pad_id)
+            prefix_len = input_ids.shape[1]
+            graph_logits = logits[:, prefix_len - 1 : prefix_len - 1 + target_tokens.shape[1], :]
+            token_acc = masked_token_accuracy(graph_logits.detach(), target_tokens, vocab.pad_id)
 
             if use_scaler:
                 scaler.scale(loss).backward()
