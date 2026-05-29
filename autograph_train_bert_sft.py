@@ -165,6 +165,7 @@ class PrefixGraphModel(nn.Module):
         bert_path: Path,
         graph_vocab_size: int,
         max_target_len: int,
+        max_text_len: int = 256,
         bert_vocab_size: int = 21128,
         d_model: int = 384,
         nhead: int = 6,
@@ -179,12 +180,13 @@ class PrefixGraphModel(nn.Module):
         super().__init__()
         self.pad_id = pad_id
         self.encoder = LightTextEncoder(bert_vocab_size, d_model, nhead, num_encoder_layers, dropout)
+        self.max_text_len = max_text_len
         decoder_cfg = GPT2Config(
             vocab_size=graph_vocab_size,
             n_embd=d_model,
             n_layer=num_decoder_layers,
             n_head=nhead,
-            n_positions=max_target_len,
+            n_positions=max_target_len + max_text_len,
             bos_token_id=bos_id,
             eos_token_id=eos_id,
             pad_token_id=pad_id,
@@ -345,6 +347,7 @@ def main():
         bert_path=args.bert_path,
         graph_vocab_size=vocab.vocab_size,
         max_target_len=int(dataset.tokens.shape[1]),
+        max_text_len=args.max_text_len,
         bert_vocab_size=bert_vocab_size,
         d_model=args.d_model,
         nhead=args.nhead,
