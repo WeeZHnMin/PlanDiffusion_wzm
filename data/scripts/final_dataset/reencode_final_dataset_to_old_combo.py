@@ -319,7 +319,7 @@ def main():
 
     with prompt_output_path.open("w", encoding="utf-8") as f:
         for prompt in all_prompts:
-            f.write(prompt + "\n")
+            f.write(prompt.replace("\n", " ").replace("\r", " ") + "\n")
 
     lengths_arr = np.array(all_lengths, dtype=np.int32)
     print(f"written sequences: {len(all_tokens)}")
