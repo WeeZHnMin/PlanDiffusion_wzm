@@ -59,7 +59,7 @@ def build_parser():
     p.add_argument("--data",       type=Path, default=Path("data/processed/unified_dataset/graph_only.npz"))
     p.add_argument("--vocab",      type=Path, default=Path("data/processed/unified_vocab/vocab_config.json"))
     p.add_argument("--save-dir",   type=Path, default=Path("checkpoints/stage1_graph"))
-    p.add_argument("--batch-size", type=int,  default=64)
+    p.add_argument("--batch-size", type=int,  default=24)
     p.add_argument("--max-epochs", type=int,  default=100)
     p.add_argument("--lr",         type=float, default=6e-4)
     p.add_argument("--weight-decay", type=float, default=0.1)
