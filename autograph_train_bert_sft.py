@@ -1,10 +1,9 @@
 """
-Supervised fine-tuning for prompt -> graph token sequence generation.
+Prompt -> graph token sequence generation (prefix-concat, decoder-only).
 
 Setup:
-- Text encoder: local `models/bert-base-chinese`
-- Unfreeze only the last 2 BERT encoder layers
-- Decoder: Transformer decoder with cross-attention over BERT token features
+- Text encoder: lightweight random-init Transformer, using bert-base-chinese tokenizer vocab
+- Decoder: GPT-2 decoder-only (no cross-attention), conditioned via prefix concat
 - Training data: reproducibly sample 40k examples from the old prompt/token dataset
 
 Default inputs:
@@ -27,7 +26,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
-from transformers import BertModel, BertTokenizer, GPT2Config, GPT2LMHeadModel
+from transformers import BertTokenizer, GPT2Config, GPT2LMHeadModel
 
 
 @dataclass
@@ -142,37 +141,48 @@ def collate_batch(batch, pad_id: int):
     }
 
 
-class BertGraphAutoregModel(nn.Module):
+class LightTextEncoder(nn.Module):
+    """随机初始化的轻量文本编码器，借用BERT中文词汇表（21128 tokens）。"""
+    def __init__(self, bert_vocab_size=21128, d_model=384, nhead=6, num_layers=2, dropout=0.1):
+        super().__init__()
+        self.embed = nn.Embedding(bert_vocab_size, d_model, padding_idx=0)
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=dropout, batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(layer, num_layers=num_layers)
+
+    def forward(self, input_ids, attention_mask):
+        x = self.embed(input_ids)
+        pad_mask = (attention_mask == 0)  # True表示该位置被忽略
+        return self.transformer(x, src_key_padding_mask=pad_mask)
+
+
+class PrefixGraphModel(nn.Module):
     def __init__(
         self,
         bert_path: Path,
-        vocab_size: int,
+        graph_vocab_size: int,
         max_target_len: int,
-        d_model=384,
-        nhead=6,
-        num_layers=8,
-        dropout=0.1,
-        unfreeze_last_n_bert_layers=2,
+        bert_vocab_size: int = 21128,
+        d_model: int = 384,
+        nhead: int = 6,
+        num_encoder_layers: int = 2,
+        num_decoder_layers: int = 8,
+        dropout: float = 0.1,
         decoder_init_ckpt: Path | None = None,
         bos_id: int = 36,
         eos_id: int = 37,
         pad_id: int = 0,
     ):
         super().__init__()
-        self.bert = BertModel.from_pretrained(str(bert_path))
-        for p in self.bert.parameters():
-            p.requires_grad = False
-
-        if unfreeze_last_n_bert_layers > 0:
-            for layer in self.bert.encoder.layer[-unfreeze_last_n_bert_layers:]:
-                for p in layer.parameters():
-                    p.requires_grad = True
-
-        self.encoder_proj = nn.Linear(768, d_model)
+        self.pad_id = pad_id
+        self.encoder = LightTextEncoder(bert_vocab_size, d_model, nhead, num_encoder_layers, dropout)
         decoder_cfg = GPT2Config(
-            vocab_size=vocab_size,
+            vocab_size=graph_vocab_size,
             n_embd=d_model,
-            n_layer=num_layers,
+            n_layer=num_decoder_layers,
             n_head=nhead,
             n_positions=max_target_len,
             bos_token_id=bos_id,
@@ -181,8 +191,7 @@ class BertGraphAutoregModel(nn.Module):
             resid_pdrop=dropout,
             embd_pdrop=dropout,
             attn_pdrop=dropout,
-            add_cross_attention=True,
-            is_decoder=True,
+            add_cross_attention=False,
         )
         self.decoder = GPT2LMHeadModel(decoder_cfg)
 
@@ -198,20 +207,33 @@ class BertGraphAutoregModel(nn.Module):
             if unexpected:
                 print("  unexpected sample:", unexpected[:8])
 
-    def forward(self, input_ids, attention_mask, decoder_input_tokens, decoder_attention_mask):
-        encoder_hidden = self.bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        ).last_hidden_state
-        encoder_hidden = self.encoder_proj(encoder_hidden)
+    def forward(self, input_ids, attention_mask, target_tokens, target_mask):
+        # 1. 文本 → prefix embeddings  (B, text_len, d_model)
+        prefix = self.encoder(input_ids, attention_mask)
+
+        # 2. 图token → embeddings  (B, seq_len, d_model)
+        token_emb = self.decoder.transformer.wte(target_tokens)
+
+        # 3. prefix concat graph embeddings
+        inputs_embeds = torch.cat([prefix, token_emb], dim=1)
+
+        # 4. attention mask拼接
+        full_mask = torch.cat([attention_mask, target_mask], dim=1)
+
+        # 5. prefix部分label设为-100，不计入loss
+        prefix_labels = torch.full(
+            (target_tokens.shape[0], prefix.shape[1]), -100,
+            dtype=torch.long, device=target_tokens.device
+        )
+        full_labels = torch.cat([prefix_labels, target_tokens], dim=1)
+
         out = self.decoder(
-            input_ids=decoder_input_tokens,
-            attention_mask=decoder_attention_mask,
-            encoder_hidden_states=encoder_hidden,
-            encoder_attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            attention_mask=full_mask,
+            labels=full_labels,
             use_cache=False,
         )
-        return out.logits
+        return out.logits, out.loss
 
 
 def build_parser():
@@ -221,14 +243,13 @@ def build_parser():
     parser.add_argument("--vocab", type=Path, default=Path("data/processed/type_combo_vocab_old.json"))
     parser.add_argument("--bert_path", type=Path, default=Path("models/bert-base-chinese"))
     parser.add_argument("--decoder_init_ckpt", type=Path, default=Path("checkpoints/autograph_combo/best.pt"))
-    parser.add_argument("--save_dir", type=Path, default=Path("checkpoints/autograph_bert_sft"))
+    parser.add_argument("--save_dir", type=Path, default=Path("checkpoints/autograph_prefix_sft"))
     parser.add_argument("--subset_size", type=int, default=40000)
     parser.add_argument("--subset_seed", type=int, default=42)
-    parser.add_argument("--subset_index_out", type=Path, default=Path("checkpoints/autograph_bert_sft/subset_indices.npy"))
+    parser.add_argument("--subset_index_out", type=Path, default=Path("checkpoints/autograph_prefix_sft/subset_indices.npy"))
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_epochs", type=int, default=8)
-    parser.add_argument("--lr_decoder", type=float, default=3e-4)
-    parser.add_argument("--lr_bert", type=float, default=5e-5)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--log_every", type=int, default=100)
@@ -236,9 +257,9 @@ def build_parser():
     parser.add_argument("--max_text_len", type=int, default=256)
     parser.add_argument("--d_model", type=int, default=384)
     parser.add_argument("--nhead", type=int, default=6)
-    parser.add_argument("--num_layers", type=int, default=8)
+    parser.add_argument("--num_encoder_layers", type=int, default=4)
+    parser.add_argument("--num_decoder_layers", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--unfreeze_last_n_bert_layers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_amp", action="store_true", help="disable mixed precision training")
     parser.add_argument("--amp_dtype", choices=["auto", "bf16", "fp16"], default="auto")
@@ -264,15 +285,10 @@ def choose_amp_dtype(device: torch.device, amp_enabled: bool, amp_dtype: str):
     return torch.float16
 
 
-def build_optimizer(model: BertGraphAutoregModel, lr_decoder: float, lr_bert: float, weight_decay: float):
-    bert_params = [p for p in model.bert.parameters() if p.requires_grad]
-    decoder_params = [p for p in model.decoder.parameters() if p.requires_grad]
-    proj_params = [p for p in model.encoder_proj.parameters() if p.requires_grad]
+def build_optimizer(model: PrefixGraphModel, lr: float, weight_decay: float):
     return AdamW(
-        [
-            {"params": decoder_params + proj_params, "lr": lr_decoder},
-            {"params": bert_params, "lr": lr_bert},
-        ],
+        [p for p in model.parameters() if p.requires_grad],
+        lr=lr,
         weight_decay=weight_decay,
     )
 
@@ -322,15 +338,19 @@ def main():
         drop_last=True,
     )
 
-    model = BertGraphAutoregModel(
+    bert_tokenizer = BertTokenizer.from_pretrained(str(args.bert_path))
+    bert_vocab_size = bert_tokenizer.vocab_size  # 21128
+
+    model = PrefixGraphModel(
         bert_path=args.bert_path,
-        vocab_size=vocab.vocab_size,
+        graph_vocab_size=vocab.vocab_size,
         max_target_len=int(dataset.tokens.shape[1]),
+        bert_vocab_size=bert_vocab_size,
         d_model=args.d_model,
         nhead=args.nhead,
-        num_layers=args.num_layers,
+        num_encoder_layers=args.num_encoder_layers,
+        num_decoder_layers=args.num_decoder_layers,
         dropout=args.dropout,
-        unfreeze_last_n_bert_layers=args.unfreeze_last_n_bert_layers,
         decoder_init_ckpt=args.decoder_init_ckpt,
         bos_id=vocab.bos_id,
         eos_id=vocab.eos_id,
@@ -338,12 +358,11 @@ def main():
     ).to(device)
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    bert_trainable = sum(p.numel() for p in model.bert.parameters() if p.requires_grad)
-    decoder_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
-    print(f"trainable params: total={trainable_params:,} bert={bert_trainable:,} decoder={decoder_params:,}")
+    encoder_params = sum(p.numel() for p in model.encoder.parameters())
+    decoder_params = sum(p.numel() for p in model.decoder.parameters())
+    print(f"trainable params: total={trainable_params:,} encoder={encoder_params:,} decoder={decoder_params:,}")
 
-    optimizer = build_optimizer(model, args.lr_decoder, args.lr_bert, args.weight_decay)
-    loss_fn = nn.CrossEntropyLoss(ignore_index=vocab.pad_id)
+    optimizer = build_optimizer(model, args.lr, args.weight_decay)
     amp_dtype = choose_amp_dtype(device, not args.no_amp, args.amp_dtype)
     use_scaler = amp_dtype == torch.float16
     scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
@@ -378,8 +397,7 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
-                logits = model(input_ids, attention_mask, decoder_input, decoder_attention_mask)
-                loss = loss_fn(logits.reshape(-1, vocab.vocab_size), target_tokens.reshape(-1))
+                logits, loss = model(input_ids, attention_mask, decoder_input, decoder_attention_mask)
             token_acc = masked_token_accuracy(logits.detach(), target_tokens, vocab.pad_id)
 
             if use_scaler:
