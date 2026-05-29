@@ -1,0 +1,456 @@
+"""
+Supervised fine-tuning for prompt -> graph token sequence generation.
+
+Setup:
+- Text encoder: local `models/bert-base-chinese`
+- Unfreeze only the last 2 BERT encoder layers
+- Decoder: Transformer decoder with cross-attention over BERT token features
+- Training data: reproducibly sample 40k examples from the old prompt/token dataset
+
+Default inputs:
+- data/processed/graph_tokens_combo_from_final_old.npz
+- data/processed/graph_prompts_combo_from_final_old.txt
+- data/processed/type_combo_vocab_old.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.utils.data import DataLoader, Dataset
+from transformers import BertModel, BertTokenizer, GPT2Config, GPT2LMHeadModel
+
+
+@dataclass
+class VocabConfig:
+    pad_id: int
+    bos_id: int
+    eos_id: int
+    vocab_size: int
+    max_nodes: int
+    node_offset: int
+
+
+def load_vocab(path: Path) -> VocabConfig:
+    vocab = json.loads(path.read_text(encoding="utf-8"))
+    return VocabConfig(
+        pad_id=0,
+        bos_id=int(vocab["BOS_ID"]),
+        eos_id=int(vocab["EOS_ID"]),
+        vocab_size=int(vocab["VOCAB_SIZE"]),
+        max_nodes=int(vocab["MAX_NODES"]),
+        node_offset=int(vocab["NODE_OFFSET"]),
+    )
+
+
+class PromptTokenDataset(Dataset):
+    def __init__(
+        self,
+        npz_path: Path,
+        prompt_txt_path: Path,
+        bert_path: Path,
+        subset_size: int,
+        subset_seed: int,
+        max_text_len: int,
+        subset_index_out: Path | None = None,
+    ):
+        raw = np.load(npz_path, allow_pickle=True)
+        tokens = raw["tokens"].astype(np.int32)
+        lengths = raw["lengths"].astype(np.int32)
+
+        prompts = prompt_txt_path.read_text(encoding="utf-8").splitlines()
+        usable_n = min(len(tokens), len(prompts))
+        if len(tokens) != len(prompts):
+            print(
+                f"warning: prompt/token count mismatch, using first {usable_n} pairs "
+                f"(npz={len(tokens)}, txt={len(prompts)})"
+            )
+
+        tokens = tokens[:usable_n]
+        lengths = lengths[:usable_n]
+        prompts = prompts[:usable_n]
+
+        rng = np.random.default_rng(subset_seed)
+        subset_size = min(subset_size, usable_n)
+        subset_indices = np.sort(rng.choice(usable_n, size=subset_size, replace=False))
+        if subset_index_out is not None:
+            subset_index_out.parent.mkdir(parents=True, exist_ok=True)
+            np.save(subset_index_out, subset_indices.astype(np.int32))
+
+        self.tokens = tokens[subset_indices]
+        self.lengths = lengths[subset_indices]
+        self.prompts = [prompts[i] for i in subset_indices]
+        self.indices = subset_indices
+        self.max_text_len = max_text_len
+        self.tokenizer = BertTokenizer.from_pretrained(str(bert_path))
+        print(
+            f"PromptTokenDataset: total_pairs={usable_n}, subset={len(self.tokens)}, "
+            f"max_seq={self.tokens.shape[1]}, max_text_len={self.max_text_len}"
+        )
+
+    def __len__(self):
+        return len(self.tokens)
+
+    def __getitem__(self, idx):
+        seq_len = int(self.lengths[idx])
+        seq = self.tokens[idx, :seq_len]
+        enc = self.tokenizer(
+            self.prompts[idx],
+            max_length=self.max_text_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        return {
+            "input_ids": enc["input_ids"].squeeze(0),
+            "attention_mask": enc["attention_mask"].squeeze(0),
+            "target_tokens": torch.tensor(seq, dtype=torch.long),
+            "sample_index": int(self.indices[idx]),
+        }
+
+
+def collate_batch(batch, pad_id: int):
+    batch_size = len(batch)
+    max_tgt_len = max(item["target_tokens"].shape[0] for item in batch)
+
+    input_ids = torch.stack([item["input_ids"] for item in batch], dim=0)
+    attention_mask = torch.stack([item["attention_mask"] for item in batch], dim=0)
+    target_tokens = torch.full((batch_size, max_tgt_len), pad_id, dtype=torch.long)
+    target_mask = torch.zeros((batch_size, max_tgt_len), dtype=torch.long)
+    sample_indices = torch.tensor([item["sample_index"] for item in batch], dtype=torch.long)
+
+    for i, item in enumerate(batch):
+        seq = item["target_tokens"]
+        target_tokens[i, : seq.shape[0]] = seq
+        target_mask[i, : seq.shape[0]] = 1
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "target_tokens": target_tokens,
+        "target_mask": target_mask,
+        "sample_indices": sample_indices,
+    }
+
+
+class BertGraphAutoregModel(nn.Module):
+    def __init__(
+        self,
+        bert_path: Path,
+        vocab_size: int,
+        max_target_len: int,
+        d_model=384,
+        nhead=6,
+        num_layers=8,
+        dropout=0.1,
+        unfreeze_last_n_bert_layers=2,
+        decoder_init_ckpt: Path | None = None,
+        bos_id: int = 36,
+        eos_id: int = 37,
+        pad_id: int = 0,
+    ):
+        super().__init__()
+        self.bert = BertModel.from_pretrained(str(bert_path))
+        for p in self.bert.parameters():
+            p.requires_grad = False
+
+        if unfreeze_last_n_bert_layers > 0:
+            for layer in self.bert.encoder.layer[-unfreeze_last_n_bert_layers:]:
+                for p in layer.parameters():
+                    p.requires_grad = True
+
+        self.encoder_proj = nn.Linear(768, d_model)
+        decoder_cfg = GPT2Config(
+            vocab_size=vocab_size,
+            n_embd=d_model,
+            n_layer=num_layers,
+            n_head=nhead,
+            n_positions=max_target_len,
+            bos_token_id=bos_id,
+            eos_token_id=eos_id,
+            pad_token_id=pad_id,
+            resid_pdrop=dropout,
+            embd_pdrop=dropout,
+            attn_pdrop=dropout,
+            add_cross_attention=True,
+            is_decoder=True,
+        )
+        self.decoder = GPT2LMHeadModel(decoder_cfg)
+
+        if decoder_init_ckpt is not None:
+            ckpt = torch.load(decoder_init_ckpt, map_location="cpu")
+            missing, unexpected = self.decoder.load_state_dict(ckpt, strict=False)
+            print(
+                f"decoder init from {decoder_init_ckpt} | "
+                f"missing={len(missing)} unexpected={len(unexpected)}"
+            )
+            if missing:
+                print("  missing sample:", missing[:8])
+            if unexpected:
+                print("  unexpected sample:", unexpected[:8])
+
+    def forward(self, input_ids, attention_mask, decoder_input_tokens, decoder_attention_mask):
+        encoder_hidden = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        ).last_hidden_state
+        encoder_hidden = self.encoder_proj(encoder_hidden)
+        out = self.decoder(
+            input_ids=decoder_input_tokens,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_hidden,
+            encoder_attention_mask=attention_mask,
+            use_cache=False,
+        )
+        return out.logits
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--npz", type=Path, default=Path("data/processed/graph_tokens_combo_from_final_old.npz"))
+    parser.add_argument("--prompts", type=Path, default=Path("data/processed/graph_prompts_combo_from_final_old.txt"))
+    parser.add_argument("--vocab", type=Path, default=Path("data/processed/type_combo_vocab_old.json"))
+    parser.add_argument("--bert_path", type=Path, default=Path("models/bert-base-chinese"))
+    parser.add_argument("--decoder_init_ckpt", type=Path, default=Path("checkpoints/autograph_combo/best.pt"))
+    parser.add_argument("--save_dir", type=Path, default=Path("checkpoints/autograph_bert_sft"))
+    parser.add_argument("--subset_size", type=int, default=40000)
+    parser.add_argument("--subset_seed", type=int, default=42)
+    parser.add_argument("--subset_index_out", type=Path, default=Path("checkpoints/autograph_bert_sft/subset_indices.npy"))
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--max_epochs", type=int, default=8)
+    parser.add_argument("--lr_decoder", type=float, default=3e-4)
+    parser.add_argument("--lr_bert", type=float, default=5e-5)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--log_every", type=int, default=100)
+    parser.add_argument("--save_every", type=int, default=2000)
+    parser.add_argument("--max_text_len", type=int, default=256)
+    parser.add_argument("--d_model", type=int, default=384)
+    parser.add_argument("--nhead", type=int, default=6)
+    parser.add_argument("--num_layers", type=int, default=8)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--unfreeze_last_n_bert_layers", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--no_amp", action="store_true", help="disable mixed precision training")
+    parser.add_argument("--amp_dtype", choices=["auto", "bf16", "fp16"], default="auto")
+    return parser
+
+
+def set_seed(seed: int):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def choose_amp_dtype(device: torch.device, amp_enabled: bool, amp_dtype: str):
+    if not amp_enabled or device.type != "cuda":
+        return None
+    if amp_dtype == "bf16":
+        return torch.bfloat16
+    if amp_dtype == "fp16":
+        return torch.float16
+    if torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
+def build_optimizer(model: BertGraphAutoregModel, lr_decoder: float, lr_bert: float, weight_decay: float):
+    bert_params = [p for p in model.bert.parameters() if p.requires_grad]
+    decoder_params = [p for p in model.decoder.parameters() if p.requires_grad]
+    proj_params = [p for p in model.encoder_proj.parameters() if p.requires_grad]
+    return AdamW(
+        [
+            {"params": decoder_params + proj_params, "lr": lr_decoder},
+            {"params": bert_params, "lr": lr_bert},
+        ],
+        weight_decay=weight_decay,
+    )
+
+
+def shift_tokens_for_teacher_forcing(target_tokens: torch.Tensor, bos_id: int):
+    decoder_in = target_tokens.clone()
+    decoder_in[:, 1:] = target_tokens[:, :-1]
+    decoder_in[:, 0] = bos_id
+    return decoder_in
+
+
+def masked_token_accuracy(logits: torch.Tensor, target_tokens: torch.Tensor, pad_id: int) -> float:
+    pred = logits.argmax(dim=-1)
+    valid = target_tokens.ne(pad_id)
+    correct = pred.eq(target_tokens) & valid
+    denom = valid.sum().item()
+    if denom == 0:
+        return 0.0
+    return correct.sum().item() / denom
+
+
+def main():
+    args = build_parser().parse_args()
+    set_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"device: {device}")
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    vocab = load_vocab(args.vocab)
+    dataset = PromptTokenDataset(
+        npz_path=args.npz,
+        prompt_txt_path=args.prompts,
+        bert_path=args.bert_path,
+        subset_size=args.subset_size,
+        subset_seed=args.subset_seed,
+        max_text_len=args.max_text_len,
+        subset_index_out=args.subset_index_out,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=lambda batch: collate_batch(batch, vocab.pad_id),
+        drop_last=True,
+    )
+
+    model = BertGraphAutoregModel(
+        bert_path=args.bert_path,
+        vocab_size=vocab.vocab_size,
+        max_target_len=int(dataset.tokens.shape[1]),
+        d_model=args.d_model,
+        nhead=args.nhead,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        unfreeze_last_n_bert_layers=args.unfreeze_last_n_bert_layers,
+        decoder_init_ckpt=args.decoder_init_ckpt,
+        bos_id=vocab.bos_id,
+        eos_id=vocab.eos_id,
+        pad_id=vocab.pad_id,
+    ).to(device)
+
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    bert_trainable = sum(p.numel() for p in model.bert.parameters() if p.requires_grad)
+    decoder_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+    print(f"trainable params: total={trainable_params:,} bert={bert_trainable:,} decoder={decoder_params:,}")
+
+    optimizer = build_optimizer(model, args.lr_decoder, args.lr_bert, args.weight_decay)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=vocab.pad_id)
+    amp_dtype = choose_amp_dtype(device, not args.no_amp, args.amp_dtype)
+    use_scaler = amp_dtype == torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+    print(
+        f"amp: {'on' if amp_dtype is not None else 'off'}"
+        + (f" ({str(amp_dtype).replace('torch.', '')})" if amp_dtype is not None else "")
+    )
+    args.save_dir.mkdir(parents=True, exist_ok=True)
+
+    run_config = vars(args).copy()
+    run_config["vocab_size"] = vocab.vocab_size
+    run_config["bos_id"] = vocab.bos_id
+    run_config["eos_id"] = vocab.eos_id
+    with open(args.save_dir / "run_config.json", "w", encoding="utf-8") as f:
+        json.dump(run_config, f, ensure_ascii=False, indent=2, default=str)
+
+    global_step = 0
+    best_loss = float("inf")
+
+    for epoch in range(args.max_epochs):
+        model.train()
+        running_loss = 0.0
+        epoch_start = time.perf_counter()
+
+        for batch in loader:
+            step_start = time.perf_counter()
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            target_tokens = batch["target_tokens"].to(device)
+            decoder_input = shift_tokens_for_teacher_forcing(target_tokens, vocab.bos_id)
+            decoder_attention_mask = batch["target_mask"].to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
+                logits = model(input_ids, attention_mask, decoder_input, decoder_attention_mask)
+                loss = loss_fn(logits.reshape(-1, vocab.vocab_size), target_tokens.reshape(-1))
+            token_acc = masked_token_accuracy(logits.detach(), target_tokens, vocab.pad_id)
+
+            if use_scaler:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                optimizer.step()
+
+            running_loss += loss.item()
+            global_step += 1
+
+            if global_step % args.log_every == 0:
+                step_time = time.perf_counter() - step_start
+                samples_per_sec = args.batch_size / max(step_time, 1e-6)
+                print(
+                    f"epoch {epoch + 1:2d} | step {global_step:6d} | "
+                    f"loss {loss.item():.4f} | acc {token_acc:.4f} | {samples_per_sec:.1f} samples/s"
+                )
+
+            if global_step % args.save_every == 0:
+                ckpt_path = args.save_dir / f"step_{global_step:07d}.pt"
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "step": global_step,
+                        "epoch": epoch + 1,
+                        "args": run_config,
+                    },
+                    ckpt_path,
+                )
+                print(f"  saved -> {ckpt_path}")
+
+        avg_loss = running_loss / len(loader)
+        epoch_time = time.perf_counter() - epoch_start
+        print(f"=== epoch {epoch + 1} done | avg_loss={avg_loss:.4f} | epoch_time={epoch_time:.1f}s ===")
+
+        epoch_ckpt = args.save_dir / f"epoch_{epoch + 1:03d}.pt"
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": global_step,
+                "epoch": epoch + 1,
+                "args": run_config,
+            },
+            epoch_ckpt,
+        )
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_path = args.save_dir / "best.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                    "args": run_config,
+                },
+                best_path,
+            )
+            print(f"  best updated -> {best_path} | best_loss={best_loss:.4f}")
+
+    print(f"training done | best_loss={best_loss:.4f}")
+
+
+if __name__ == "__main__":
+    main()
