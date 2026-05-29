@@ -12,6 +12,7 @@ env/
 runs/
 remote_runs/
 build/
+checkpoints/
 *.pt
 *.pth
 *.onnx
