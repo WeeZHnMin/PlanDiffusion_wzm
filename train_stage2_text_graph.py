@@ -92,12 +92,13 @@ def build_parser():
     p.add_argument("--stage1-ckpt",type=Path, default=Path("checkpoints/stage1_graph/best.pt"))
     p.add_argument("--save-dir",   type=Path, default=Path("checkpoints/stage2_text_graph"))
     p.add_argument("--batch-size", type=int,  default=24)
-    p.add_argument("--max-epochs", type=int,  default=20)
+    p.add_argument("--max-epochs", type=int,  default=100)
     p.add_argument("--lr",         type=float, default=1e-4)
     p.add_argument("--weight-decay",type=float,default=0.01)
     p.add_argument("--grad-clip",  type=float, default=1.0)
     p.add_argument("--log-every",  type=int,  default=200)
     p.add_argument("--save-every", type=int,  default=2000)
+    p.add_argument("--resume",     type=Path, default=None)
     p.add_argument("--seed",       type=int,  default=42)
     # 模型配置（需与第一阶段一致）
     p.add_argument("--hidden-size",    type=int, default=512)
@@ -168,10 +169,21 @@ def main():
     use_scaler = use_amp and amp_dtype == torch.float16
     scaler     = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
-    global_step = 0
-    best_loss   = float("inf")
+    global_step  = 0
+    start_epoch  = 0
+    best_loss    = float("inf")
 
-    for epoch in range(args.max_epochs):
+    if args.resume is not None and args.resume.exists():
+        ckpt = torch.load(args.resume, map_location="cpu")
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        global_step = ckpt["step"]
+        start_epoch = ckpt["epoch"]
+        best_loss   = ckpt.get("best_loss", float("inf"))
+        print(f"resumed from {args.resume} | step={global_step} epoch={start_epoch}")
+
+    for epoch in range(start_epoch, args.max_epochs):
         model.train()
         epoch_loss = 0.0
         t0 = time.perf_counter()
@@ -212,8 +224,15 @@ def main():
                       f"lr {scheduler.get_last_lr()[0]:.2e}")
 
             if global_step % args.save_every == 0:
-                ckpt_path = args.save_dir / f"step_{global_step:07d}.pt"
-                torch.save(model.state_dict(), ckpt_path)
+                ckpt_path = args.save_dir / "latest.pt"
+                torch.save({
+                    "model":     model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "step":      global_step,
+                    "epoch":     epoch,
+                    "best_loss": best_loss,
+                }, ckpt_path)
                 print(f"  saved -> {ckpt_path}")
 
         avg_loss   = epoch_loss / len(loader)
@@ -222,7 +241,14 @@ def main():
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), args.save_dir / "best.pt")
+            torch.save({
+                "model":     model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "step":      global_step,
+                "epoch":     epoch + 1,
+                "best_loss": best_loss,
+            }, args.save_dir / "best.pt")
             print(f"  best -> {args.save_dir}/best.pt | loss={best_loss:.4f}\n")
 
     print(f"训练完成，最优 loss: {best_loss:.4f}")
