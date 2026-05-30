@@ -47,6 +47,9 @@ openvla/
 Thumbs.db
 viz_output
 outputs/
+
+# Kaggle upload staging directory
+kaggle_upload/
 tmp_*.jsonl
 
 /参考文章

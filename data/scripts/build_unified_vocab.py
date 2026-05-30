@@ -196,6 +196,18 @@ def main():
     prompts = extract_prompts(args.jsonl)
     tokenizer = train_bpe(prompts, args.bpe_vocab_size, args.min_frequency)
     build_unified_vocab(tokenizer, args.old_vocab, args.output_dir)
+
+    # 同步镜像到 node_diffusion/unified_vocab
+    mirror_dir = Path("node_diffusion/unified_vocab")
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    for fname in ["bpe_tokenizer.json", "vocab_config.json"]:
+        src = args.output_dir / fname
+        dst = mirror_dir / fname
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"镜像 -> {dst}")
+
     print("\n完成！")
 
 

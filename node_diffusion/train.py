@@ -16,7 +16,7 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/nodes_train.npz"))
+    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/unified_dataset/layout_dataset.npz"))
     parser.add_argument("--save_dir", default=defaults.get("save_dir", "checkpoints/node_diffusion"))
     parser.add_argument("--resume", default="", help="path to checkpoint .pt")
     parser.add_argument("--batch_size", type=int, default=defaults.get("batch_size", 64))
@@ -25,9 +25,9 @@ def build_parser(defaults=None):
     parser.add_argument("--total_steps", type=int, default=defaults.get("total_steps", 200000))
     parser.add_argument("--log_interval", type=int, default=defaults.get("log_interval", 100))
     parser.add_argument("--save_interval", type=int, default=defaults.get("save_interval", 10000))
-    parser.add_argument("--model_channels", type=int, default=defaults.get("model_channels", 256))
+    parser.add_argument("--model_channels", type=int, default=defaults.get("model_channels", 384))
     parser.add_argument("--num_layers", type=int, default=defaults.get("num_layers", 6))
-    parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 4))
+    parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 6))
     parser.add_argument("--timesteps", type=int, default=defaults.get("timesteps", 1000))
     return parser
 
@@ -47,6 +47,7 @@ def main(argv=None, defaults=None):
         model_channels=args.model_channels,
         num_layers=args.num_layers,
         num_heads=args.num_heads,
+        bpe_vocab_size=12000,
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)

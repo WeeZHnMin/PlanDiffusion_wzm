@@ -42,7 +42,7 @@ def parse_args():
                         default=Path("data/processed/unified_vocab/bpe_tokenizer.json"))
     parser.add_argument("--output-dir", type=Path,
                         default=Path("data/processed/unified_dataset"))
-    parser.add_argument("--augment", type=int, default=5)
+    parser.add_argument("--augment", type=int, default=15)
     parser.add_argument("--max-graph-len", type=int, default=256,
                         help="图序列最大长度（含BOS_G和EOS_G）")
     parser.add_argument("--max-text-len", type=int, default=128,
