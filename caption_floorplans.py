@@ -22,19 +22,65 @@ from typing import Dict, List, Optional, Set, Tuple
 from openai import OpenAI
 
 DEFAULT_MODELS = [
-    "qwen3.5-122b-a10b",
-    "qwen3.5-flash",
-    "qwen3.5-35b-a3b",
-    "qwen3.6-flash-2026-04-16",
-    "qwen3.6-35b-a3b",
-    "qwen3.5-27b",
-    "qwen3.6-plus-2026-04-02",
-    "qwen3.6-plus",
-    "qwen3.5-plus-2026-04-20",
-    "qwen3.5-flash-2026-02-23",
+    # qwen-vl dedicated vision models
+    "qwen-vl-plus",
+    "qwen-vl-plus-latest",
+    "qwen-vl-max",
+    "qwen-vl-ocr",
+    # "qwen-vl-ocr-1028",
+    "qwen-vl-ocr-latest",
+    "qwen-vl-ocr-2025-04-13",
+    "qwen-vl-ocr-2025-08-28",
+    "qwen-vl-ocr-2025-11-20",
+    # qwen3-vl dedicated vision models
+    "qwen3-vl-flash",
+    "qwen3-vl-flash-2025-10-15",
+    "qwen3-vl-flash-2026-01-22",
+    "qwen3-vl-8b-instruct",
+    "qwen3-vl-30b-a3b-instruct",
+    "qwen3-vl-32b-instruct",
+    "qwen3-vl-plus",
+    "qwen3-vl-plus-2025-09-23",
+    "qwen3-vl-plus-2025-12-19",
+    "qwen3-vl-235b-a22b-instruct",
+    # gui models (vision capable)
+    "gui-plus",
+    "gui-plus-2026-02-26",
+    # kimi vision models
     "kimi-k2.6",
+    "kimi-k2.5",
+    "Moonshot-Kimi-K2-Instruct",
+    # qwen3.x multimodal (confirmed vision)
+    "qwen3.5-flash",
+    "qwen3.5-flash-2026-02-23",
+    "qwen3.5-27b",
+    "qwen3.5-35b-a3b",
+    "qwen3.5-122b-a10b",
+    "qwen3.5-397b-a17b",
+    "qwen3.5-plus",
+    "qwen3.5-plus-2026-02-15",
+    "qwen3.5-plus-2026-04-20",
     "qwen3.6-flash",
+    "qwen3.6-flash-2026-04-16",
     "qwen3.6-27b",
+    "qwen3.6-35b-a3b",
+    "qwen3.6-plus",
+    "qwen3.6-plus-2026-04-02",
+    "qwen3.6-max-preview",
+    "qwen3-32b",
+    "qwen3-max",
+    "qwen3-max-preview",
+    "qwen3-max-2025-09-23",
+    "qwen3-max-2026-01-23",
+    "qwen3-235b-a22b",
+    "qwen3-30b-a3b",
+    # deepseek vision-capable
+    "deepseek-v3",
+    "deepseek-v3.1",
+    "deepseek-v3.2",
+    # "deepseek-v3.2-exp",
+    # tongyi
+    "tongyi-xiaomi-analysis-pro",
 ]
 
 
@@ -42,15 +88,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-key", default=os.getenv("DASHSCOPE_API_KEY", ""))
     parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    parser.add_argument("--img-dir", type=Path, default=Path("data/viz_50000"))
-    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.jsonl"))
-    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.state.json"))
+    parser.add_argument("--img-dir", type=Path, default=Path("data/viz_100000"))
+    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_100000_captions_multi.jsonl"))
+    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_100000_captions_multi.state.json"))
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
-    parser.add_argument("--workers", type=int, default=10)
+    parser.add_argument("--workers", type=int, default=200)
     parser.add_argument("--limit", type=int, default=0, help="0 means all images")
     parser.add_argument(
         "--prompt",
-        default="一句话精炼地描述图中的各个房间的位置关系、布局关系、连接关系。一句话简洁精练地形容描述即可。",
+        default='直接用一句话描述各房间的位置关系和连接关系，不要出现"图中"、"图片"、"布局"、"该"等指代词，不要描述颜色，直接陈述事实。',
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--retry-times", type=int, default=3)
