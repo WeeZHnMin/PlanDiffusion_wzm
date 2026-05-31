@@ -39,7 +39,7 @@ def parse_args():
     p.add_argument("--resume",     default=None)
 
     # 训练超参数
-    p.add_argument("--batch-size", type=int,   default=128)
+    p.add_argument("--batch-size", type=int,   default=64)
     p.add_argument("--total-steps",type=int,   default=500_000)
     p.add_argument("--lr",         type=float, default=1e-4)
     p.add_argument("--weight-decay",type=float,default=1e-4)
@@ -244,7 +244,7 @@ def main():
         opt.zero_grad()
         with torch.autocast(device_type='cuda', dtype=torch.float16):
             pred_X, pred_E = model(Xt, Et, node_mask, ptokens, plens, t_float)
-            loss_x, loss_e, acc_x, acc_e = compute_loss_and_acc(pred_X, pred_E, X, E, node_mask)
+            loss_x, loss_e, acc_x, recall_e = compute_loss_and_acc(pred_X, pred_E, X, E, node_mask)
             loss = loss_x + 5.0 * loss_e   # 边损失权重更高（稀疏问题）
 
         scaler.scale(loss).backward()
