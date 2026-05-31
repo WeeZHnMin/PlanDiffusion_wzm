@@ -139,9 +139,14 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    start_step   = 0
-    best_loss    = float('inf')
-    running_loss = 0.0
+    start_step    = 0
+    best_loss     = float('inf')
+    running_loss  = 0.0
+    running_loss_x = 0.0
+    running_loss_e = 0.0
+
+    log_path = save_dir / 'train_log.jsonl'
+    log_file = open(log_path, 'a', encoding='utf-8', buffering=1)  # 行缓冲
 
     if args.resume and Path(args.resume).exists():
         ckpt = torch.load(args.resume, map_location=device)
@@ -189,14 +194,32 @@ def main():
         scaler.step(opt)
         scaler.update()
 
-        running_loss += loss.item()
+        running_loss   += loss.item()
+        running_loss_x += loss_x.item()
+        running_loss_e += loss_e.item()
 
         if step % args.log_every == 0 and step > 0:
-            avg = running_loss / args.log_every
-            running_loss = 0.0
+            avg   = running_loss   / args.log_every
+            avg_x = running_loss_x / args.log_every
+            avg_e = running_loss_e / args.log_every
+            running_loss = running_loss_x = running_loss_e = 0.0
             elapsed = time.perf_counter() - t0
-            print(f'step {step:7d} | loss {avg:.4f} | x {loss_x.item():.4f} | e {loss_e.item():.4f} | {elapsed:.1f}s')
             t0 = time.perf_counter()
+
+            msg = (f'step {step:7d} | loss {avg:.4f} '
+                   f'| loss_x {avg_x:.4f} | loss_e {avg_e:.4f} '
+                   f'| {elapsed:.1f}s')
+            print(msg)
+
+            # 写日志文件
+            import json as _json
+            log_file.write(_json.dumps({
+                'step':    step,
+                'loss':    round(avg,   4),
+                'loss_x':  round(avg_x, 4),
+                'loss_e':  round(avg_e, 4),
+                'elapsed': round(elapsed, 1),
+            }, ensure_ascii=False) + '\n')
 
         if step % args.save_every == 0 and step > 0:
             path = save_dir / 'latest.pt'
@@ -214,6 +237,7 @@ def main():
         'scaler': scaler.state_dict(),
         'step':   args.total_steps,
     }, save_dir / 'final.pt')
+    log_file.close()
     print('训练完成')
 
 
