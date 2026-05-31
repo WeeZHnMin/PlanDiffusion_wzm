@@ -101,18 +101,13 @@ def apply_noise(X: torch.Tensor, E: torch.Tensor, node_mask: torch.Tensor,
     Qt_bar_x, Qt_bar_e = transition.get_Qt_bar(alpha_bar_t, device)
 
     # X_t ~ Categorical(X_0 @ Q̄_t)
-    prob_x = torch.bmm(X.reshape(B * X.shape[1], 1, X.shape[2]),
-                       Qt_bar_x.unsqueeze(1).expand(B, X.shape[1], -1, -1)
-                       .reshape(B * X.shape[1], Qt_bar_x.shape[-2], Qt_bar_x.shape[-1]))
-    prob_x = prob_x.squeeze(1).reshape(B, X.shape[1], -1)    # (B, N, Kx)
+    # Qt_bar_x: (B, Kx, Kx), X: (B, N, Kx) → prob_x: (B, N, Kx)
+    prob_x = torch.einsum('bnk,bkj->bnj', X, Qt_bar_x)
     Xt = F.one_hot(sample_discrete(prob_x), num_classes=X.shape[-1]).float()
 
-    # E_t ~ Categorical(E_0 @ Q̄_t)，对每条边独立
-    N = E.shape[1]
-    prob_e = torch.bmm(E.reshape(B * N * N, 1, E.shape[-1]),
-                       Qt_bar_e.unsqueeze(1).expand(B, N * N, -1, -1)
-                       .reshape(B * N * N, Qt_bar_e.shape[-2], Qt_bar_e.shape[-1]))
-    prob_e = prob_e.squeeze(1).reshape(B, N, N, -1)           # (B, N, N, Ke)
+    # E_t ~ Categorical(E_0 @ Q̄_t)
+    # Qt_bar_e: (B, Ke, Ke), E: (B, N, N, Ke) → prob_e: (B, N, N, Ke)
+    prob_e = torch.einsum('bijk,bkl->bijl', E, Qt_bar_e)
     Et = F.one_hot(sample_discrete(prob_e), num_classes=E.shape[-1]).float()
 
     # 保证对称（无向图）

@@ -262,6 +262,9 @@ def main():
         save_window_loss  += loss.item()
         save_window_steps += 1
 
+        if step % 100 == 0:
+            torch.cuda.empty_cache()
+
         if step % args.log_every == 0 and step > 0:
             n = args.log_every
             avg   = running_loss   / n
