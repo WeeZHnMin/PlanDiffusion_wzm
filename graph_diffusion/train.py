@@ -178,8 +178,19 @@ def main():
     if args.resume and Path(args.resume).exists():
         ckpt = torch.load(args.resume, map_location=device)
         sd   = ckpt['model']
-        sd   = {k.replace('module.', ''): v for k, v in sd.items()}
-        (model.module if hasattr(model, 'module') else model).load_state_dict(sd)
+        # 去掉 torch.compile 的 _orig_mod. 前缀和 DataParallel 的 module. 前缀
+        def clean_key(k):
+            k = k.replace('_orig_mod.', '')
+            k = k.replace('module.', '')
+            return k
+        sd = {clean_key(k): v for k, v in sd.items()}
+        # 找到原始模型（剥离 compile 和 DataParallel 包装）
+        raw_model = model
+        if hasattr(raw_model, '_orig_mod'):   # torch.compile
+            raw_model = raw_model._orig_mod
+        if hasattr(raw_model, 'module'):      # DataParallel
+            raw_model = raw_model.module
+        raw_model.load_state_dict(sd, strict=True)
         opt.load_state_dict(ckpt['opt'])
         scaler.load_state_dict(ckpt['scaler'])
         if 'scheduler' in ckpt:
@@ -261,8 +272,12 @@ def main():
 
         if step % args.save_every == 0 and step > 0:
             path = save_dir / 'latest.pt'
+            # 保存原始模型权重（剥离 compile/DataParallel 包装）
+            _m = model
+            if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
+            if hasattr(_m, 'module'):    _m = _m.module
             torch.save({
-                'model':     model.state_dict(),
+                'model':     _m.state_dict(),
                 'opt':       opt.state_dict(),
                 'scaler':    scaler.state_dict(),
                 'scheduler': scheduler.state_dict(),
@@ -270,11 +285,15 @@ def main():
             }, path)
             print(f'  saved → {path}')
 
+    _m = model
+    if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
+    if hasattr(_m, 'module'):    _m = _m.module
     torch.save({
-        'model':  model.state_dict(),
-        'opt':    opt.state_dict(),
-        'scaler': scaler.state_dict(),
-        'step':   args.total_steps,
+        'model':     _m.state_dict(),
+        'opt':       opt.state_dict(),
+        'scaler':    scaler.state_dict(),
+        'scheduler': scheduler.state_dict(),
+        'step':      args.total_steps,
     }, save_dir / 'final.pt')
     log_file.close()
     print('训练完成')
