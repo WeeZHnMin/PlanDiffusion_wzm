@@ -182,6 +182,8 @@ def main():
         (model.module if hasattr(model, 'module') else model).load_state_dict(sd)
         opt.load_state_dict(ckpt['opt'])
         scaler.load_state_dict(ckpt['scaler'])
+        if 'scheduler' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler'])
         start_step = ckpt['step'] + 1
         print(f'resumed from step {start_step}')
 
@@ -260,10 +262,11 @@ def main():
         if step % args.save_every == 0 and step > 0:
             path = save_dir / 'latest.pt'
             torch.save({
-                'model':  model.state_dict(),
-                'opt':    opt.state_dict(),
-                'scaler': scaler.state_dict(),
-                'step':   step,
+                'model':     model.state_dict(),
+                'opt':       opt.state_dict(),
+                'scaler':    scaler.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'step':      step,
             }, path)
             print(f'  saved → {path}')
 
