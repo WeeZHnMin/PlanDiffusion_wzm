@@ -53,7 +53,7 @@ def parse_args():
     p.add_argument("--dx",         type=int,   default=256)
     p.add_argument("--de",         type=int,   default=64)
     p.add_argument("--dy",         type=int,   default=256)
-    p.add_argument("--n-head",     type=int,   default=4)
+    p.add_argument("--n-head",     type=int,   default=8)
     p.add_argument("--dropout",    type=float, default=0.1)
     p.add_argument("--seed",       type=int,   default=42)
     return p.parse_args()
