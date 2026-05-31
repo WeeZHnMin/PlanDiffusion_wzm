@@ -64,3 +64,6 @@ data/convert_rs/target/
 /data/*
 !/data/scripts/
 /额外的代码
+
+# 草稿方案文件夹
+/drafts/
