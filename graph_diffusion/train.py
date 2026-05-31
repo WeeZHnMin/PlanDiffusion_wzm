@@ -12,6 +12,7 @@ Kaggle 路径示例：
 """
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -264,6 +265,7 @@ def main():
 
         if step % 100 == 0:
             torch.cuda.empty_cache()
+            gc.collect()
 
         if step % args.log_every == 0 and step > 0:
             n = args.log_every
