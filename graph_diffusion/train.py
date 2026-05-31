@@ -120,8 +120,11 @@ def main():
     bpe_vocab    = vocab_cfg['bpe_vocab_size']
 
     # 数据
+    # Windows 下 num_workers>0 会报错，自动降为 0
+    import platform
+    nw = 0 if platform.system() == 'Windows' else 4
     loader = make_loader(args.data, args.batch_size, shuffle=True,
-                         num_workers=4, persistent_workers=True)
+                         num_workers=nw, persistent_workers=(nw > 0))
 
     # 模型
     model = GraphTransformer(
