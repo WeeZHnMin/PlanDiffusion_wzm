@@ -59,20 +59,23 @@ def parse_args():
     return p.parse_args()
 
 
-def compute_loss(pred_X, pred_E, true_X, true_E, node_mask):
+def compute_loss_and_acc(pred_X, pred_E, true_X, true_E, node_mask):
     """
     pred_X : (B, N, Kx) logits
     true_X : (B, N, Kx) one-hot
     pred_E : (B, N, N, Ke) logits
     true_E : (B, N, N, Ke) one-hot
+    返回: loss_x, loss_e, acc_x, acc_e
     """
     B, N, Kx = pred_X.shape
     Ke = pred_E.shape[-1]
-    x_mask = node_mask.float()                                     # (B, N)
-    e_mask = (node_mask.unsqueeze(2) * node_mask.unsqueeze(1)).float()  # (B, N, N)
+    x_mask = node_mask.float()
+    e_mask = (node_mask.unsqueeze(2) * node_mask.unsqueeze(1)).float()
 
-    # 节点损失
-    true_X_idx = true_X.argmax(-1)                                 # (B, N)
+    true_X_idx = true_X.argmax(-1)   # (B, N)
+    true_E_idx = true_E.argmax(-1)   # (B, N, N)
+
+    # ── 节点损失 + 准确率 ──────────────────────────────────────────
     loss_x = F.cross_entropy(
         pred_X.reshape(B * N, Kx),
         true_X_idx.reshape(B * N),
@@ -80,20 +83,26 @@ def compute_loss(pred_X, pred_E, true_X, true_E, node_mask):
     ).reshape(B, N)
     loss_x = (loss_x * x_mask).sum() / (x_mask.sum() + 1e-8)
 
-    # 边损失（对称，只算上三角避免重复）
-    true_E_idx = true_E.argmax(-1)                                 # (B, N, N)
+    with torch.no_grad():
+        pred_X_idx = pred_X.argmax(-1)
+        acc_x = ((pred_X_idx == true_X_idx).float() * x_mask).sum() / (x_mask.sum() + 1e-8)
+
+    # ── 边损失 + 准确率（只算上三角）─────────────────────────────
+    triu = torch.triu(torch.ones(N, N, device=pred_E.device, dtype=torch.bool), diagonal=1)
+    triu_mask = e_mask * triu.unsqueeze(0)
+
     loss_e = F.cross_entropy(
         pred_E.reshape(B * N * N, Ke),
         true_E_idx.reshape(B * N * N),
         reduction='none'
     ).reshape(B, N, N)
-
-    # 只取上三角
-    triu = torch.triu(torch.ones(N, N, device=pred_E.device, dtype=torch.bool), diagonal=1)
-    triu_mask = e_mask * triu.unsqueeze(0)
     loss_e = (loss_e * triu_mask).sum() / (triu_mask.sum() + 1e-8)
 
-    return loss_x, loss_e
+    with torch.no_grad():
+        pred_E_idx = pred_E.argmax(-1)
+        acc_e = ((pred_E_idx == true_E_idx).float() * triu_mask).sum() / (triu_mask.sum() + 1e-8)
+
+    return loss_x, loss_e, acc_x.item(), acc_e.item()
 
 
 def main():
@@ -139,11 +148,13 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    start_step    = 0
-    best_loss     = float('inf')
-    running_loss  = 0.0
+    start_step     = 0
+    best_loss      = float('inf')
+    running_loss   = 0.0
     running_loss_x = 0.0
     running_loss_e = 0.0
+    running_acc_x  = 0.0
+    running_acc_e  = 0.0
 
     log_path = save_dir / 'train_log.jsonl'
     log_file = open(log_path, 'a', encoding='utf-8', buffering=1)  # 行缓冲
@@ -185,7 +196,7 @@ def main():
         opt.zero_grad()
         with torch.autocast(device_type='cuda', dtype=torch.float16):
             pred_X, pred_E = model(Xt, Et, node_mask, ptokens, plens, t_float)
-            loss_x, loss_e = compute_loss(pred_X, pred_E, X, E, node_mask)
+            loss_x, loss_e, acc_x, acc_e = compute_loss_and_acc(pred_X, pred_E, X, E, node_mask)
             loss = loss_x + 5.0 * loss_e   # 边损失权重更高（稀疏问题）
 
         scaler.scale(loss).backward()
@@ -197,27 +208,35 @@ def main():
         running_loss   += loss.item()
         running_loss_x += loss_x.item()
         running_loss_e += loss_e.item()
+        running_acc_x  += acc_x
+        running_acc_e  += acc_e
 
         if step % args.log_every == 0 and step > 0:
-            avg   = running_loss   / args.log_every
-            avg_x = running_loss_x / args.log_every
-            avg_e = running_loss_e / args.log_every
+            n = args.log_every
+            avg   = running_loss   / n
+            avg_x = running_loss_x / n
+            avg_e = running_loss_e / n
+            avg_ax = running_acc_x / n
+            avg_ae = running_acc_e / n
             running_loss = running_loss_x = running_loss_e = 0.0
+            running_acc_x = running_acc_e = 0.0
             elapsed = time.perf_counter() - t0
             t0 = time.perf_counter()
 
             msg = (f'step {step:7d} | loss {avg:.4f} '
-                   f'| loss_x {avg_x:.4f} | loss_e {avg_e:.4f} '
+                   f'| loss_x {avg_x:.4f} acc_x {avg_ax:.3f} '
+                   f'| loss_e {avg_e:.4f} acc_e {avg_ae:.3f} '
                    f'| {elapsed:.1f}s')
             print(msg)
 
-            # 写日志文件
             import json as _json
             log_file.write(_json.dumps({
                 'step':    step,
                 'loss':    round(avg,   4),
                 'loss_x':  round(avg_x, 4),
                 'loss_e':  round(avg_e, 4),
+                'acc_x':   round(avg_ax, 4),
+                'acc_e':   round(avg_ae, 4),
                 'elapsed': round(elapsed, 1),
             }, ensure_ascii=False) + '\n')
 
