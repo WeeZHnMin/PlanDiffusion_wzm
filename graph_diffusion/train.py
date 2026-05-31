@@ -100,12 +100,18 @@ def compute_loss_and_acc(pred_X, pred_E, true_X, true_E, node_mask):
 
     with torch.no_grad():
         pred_E_idx = pred_E.argmax(-1)
-        acc_e = ((pred_E_idx == true_E_idx).float() * triu_mask).sum() / (triu_mask.sum() + 1e-8)
+        # recall_e：实际存在的边中预测对了多少（避免全预测0的虚高准确率）
+        actual_pos  = (true_E_idx == 1).float() * triu_mask
+        correct_pos = ((pred_E_idx == 1) & (true_E_idx == 1)).float() * triu_mask
+        recall_e = correct_pos.sum() / (actual_pos.sum() + 1e-8)
 
-    return loss_x, loss_e, acc_x.item(), acc_e.item()
+    return loss_x, loss_e, acc_x.item(), recall_e.item()
 
 
 def main():
+    import warnings
+    warnings.filterwarnings('ignore', category=UserWarning, module='torch.optim.lr_scheduler')
+
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -250,7 +256,7 @@ def main():
         running_loss_x += loss_x.item()
         running_loss_e += loss_e.item()
         running_acc_x  += acc_x
-        running_acc_e  += acc_e
+        running_acc_e  += recall_e
         save_window_loss  += loss.item()
         save_window_steps += 1
 
@@ -268,19 +274,19 @@ def main():
 
             msg = (f'step {step:7d} | loss {avg:.4f} '
                    f'| loss_x {avg_x:.4f} acc_x {avg_ax:.3f} '
-                   f'| loss_e {avg_e:.4f} acc_e {avg_ae:.3f} '
+                   f'| loss_e {avg_e:.4f} recall_e {avg_ae:.3f} '
                    f'| {elapsed:.1f}s')
             print(msg)
 
             import json as _json
             log_file.write(_json.dumps({
-                'step':    step,
-                'loss':    round(avg,   4),
-                'loss_x':  round(avg_x, 4),
-                'loss_e':  round(avg_e, 4),
-                'acc_x':   round(avg_ax, 4),
-                'acc_e':   round(avg_ae, 4),
-                'elapsed': round(elapsed, 1),
+                'step':     step,
+                'loss':     round(avg,   4),
+                'loss_x':   round(avg_x, 4),
+                'loss_e':   round(avg_e, 4),
+                'acc_x':    round(avg_ax, 4),
+                'recall_e': round(avg_ae, 4),
+                'elapsed':  round(elapsed, 1),
             }, ensure_ascii=False) + '\n')
 
         if step % args.save_every == 0 and step > 0:
