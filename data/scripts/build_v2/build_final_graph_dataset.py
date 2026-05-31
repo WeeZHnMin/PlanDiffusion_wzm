@@ -5,16 +5,17 @@
   data/viz_50000/mapping.jsonl          + data/jsonl/viz_50000_captions_multi.jsonl
   data/viz_100000/mapping.jsonl         + data/jsonl/viz_100000_captions_multi.jsonl
   data/Architext_v1/train_jsonl/        （两批共用）
+  data/processed/type_combo_vocab_old.json  （固定 combo→ID 映射，32种类型）
 
 输出：
   data/jsonl/final_graph_dataset_v2.jsonl
-  data/processed/type_combo_vocab_v2.json
+    每条记录包含 node_combo_ids（整数列表，对应32种combo类型ID）
 
 模型优先级：
   每张图从多个模型的描述中选质量最高的一条（跳过 OCR 类模型）。
 
 用法：
-  python data/scripts/unified_dataset/build_final_graph_dataset_v2.py
+  python -m data.scripts.build_v2.build_final_graph_dataset
 """
 
 from __future__ import annotations
@@ -85,11 +86,29 @@ def parse_args():
         "data/viz_50000/mapping.jsonl:data/jsonl/viz_50000_captions_multi.jsonl",
         "data/viz_100000/mapping.jsonl:data/jsonl/viz_100000_captions_multi.jsonl",
     ], help="mapping:captions 对，用冒号分隔")
-    p.add_argument("--src-dir",  default="data/Architext_v1/train_jsonl")
-    p.add_argument("--output",   default="data/jsonl/final_graph_dataset_v2.jsonl")
-    p.add_argument("--vocab-output", default="data/processed/type_combo_vocab_v2.json")
-    p.add_argument("--seed",     type=int, default=42)
+    p.add_argument("--src-dir",   default="data/Architext_v1/train_jsonl")
+    p.add_argument("--combo-vocab", default="data/processed/type_combo_vocab_old.json",
+                   help="固定的 combo→ID 映射文件，保证与现有训练一致")
+    p.add_argument("--output",    default="data/jsonl/final_graph_dataset_v2.jsonl")
+    p.add_argument("--seed",      type=int, default=42)
     return p.parse_args()
+
+
+def load_combo_vocab(vocab_path: Path) -> dict[tuple, int]:
+    """从 type_combo_vocab_old.json 加载固定的 combo→ID 映射"""
+    import ast
+    raw = json.loads(vocab_path.read_text(encoding="utf-8"))
+    combo_to_id = {}
+    for key_str, cid in raw["combo_to_id"].items():
+        bases = ast.literal_eval(key_str)   # "[1, 2]" → [1, 2]
+        # 转换：数字ID → 房间类型名称
+        id_to_name = {v: k for k, v in raw["base_type_names"].items()}
+        # base_type_names 里 key 是字符串数字
+        name_map = {int(k): v for k, v in raw["base_type_names"].items()}
+        combo_names = tuple(name_map[b] for b in bases)
+        combo_to_id[combo_names] = cid
+    print(f"载入 combo vocab: {len(combo_to_id)} 种组合类型（共32种）")
+    return combo_to_id
 
 
 # ── 工具函数（与 v1 相同）──────────────────────────────────────────────────────
@@ -261,7 +280,7 @@ def load_source_data(src_dir: Path) -> dict[tuple[str, int], dict]:
 
 
 # ── 构建单条记录 ────────────────────────────────────────────────────────────────
-def build_record(mapping_row, source_row, caption_text, seed_offset):
+def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id):
     vertices = source_row["vertices"]
     rooms    = source_row["rooms"]
     n_nodes  = len(vertices)
@@ -270,23 +289,36 @@ def build_record(mapping_row, source_row, caption_text, seed_offset):
     node_mask   = [1] * n_nodes + [0] * (MAX_NODES - n_nodes)
     node_types  = extract_node_type_combos(rooms, vertices) + [[] for _ in range(MAX_NODES - n_nodes)]
     adj_matrix  = build_adj_matrix(source_row["vertex_adj"], MAX_NODES)
+
+    # node_combo_ids：用固定 vocab 映射，0 表示 padding
+    node_combo_ids = []
+    for combo in node_types:
+        if not combo:
+            node_combo_ids.append(0)
+        else:
+            key = tuple(combo)
+            # 未知组合退回到 "other"
+            cid = combo_to_id.get(key, combo_to_id.get(("other",), 7))
+            node_combo_ids.append(cid)
+
     adj_n = [row[:n_nodes] for row in adj_matrix[:n_nodes]]
     for i in range(n_nodes):
         adj_n[i][i] = 0
     rng    = random.Random(seed_offset)
     tokens = sent_to_tokens(sample_sent(adj_n, n_nodes, rng))
     return {
-        "prompt":      caption_text,
-        "image":       mapping_row["image"],
-        "source_file": mapping_row["source_file"],
-        "source_line": mapping_row["source_line"],
-        "n_nodes":     n_nodes,
-        "node_coords": node_coords,
-        "node_types":  node_types,
-        "node_mask":   node_mask,
-        "adj_matrix":  adj_matrix,
-        "tokens":      tokens,
-        "length":      len(tokens),
+        "prompt":         caption_text,
+        "image":          mapping_row["image"],
+        "source_file":    mapping_row["source_file"],
+        "source_line":    mapping_row["source_line"],
+        "n_nodes":        n_nodes,
+        "node_coords":    node_coords,
+        "node_types":     node_types,       # 原始字符串列表，便于调试
+        "node_combo_ids": node_combo_ids,   # 整数 ID（1-32），与 type_combo_vocab_old 对齐
+        "node_mask":      node_mask,
+        "adj_matrix":     adj_matrix,
+        "tokens":         tokens,
+        "length":         len(tokens),
     }
 
 
@@ -297,6 +329,9 @@ def main():
     src_dir = Path(args.src_dir)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 加载固定 combo vocab（32种类型，与现有训练对齐）
+    combo_to_id = load_combo_vocab(Path(args.combo_vocab))
 
     # 一次性加载所有源数据
     source_data = load_source_data(src_dir)
@@ -333,7 +368,7 @@ def main():
             if src_row is None:
                 missing_src += 1
                 continue
-            record = build_record(row, src_row, caption, args.seed + total_written + idx)
+            record = build_record(row, src_row, caption, args.seed + total_written + idx, combo_to_id)
             all_records.append(record)
             batch_written += 1
 
@@ -343,33 +378,17 @@ def main():
         total_written += batch_written
         print(f"  批次完成：{batch_written} 条，耗时 {time.perf_counter()-t0:.1f}s")
 
-    # 构建 combo vocab 并写入 node_combo_ids
-    print(f"\n构建 combo vocab...")
-    combo_to_id = build_combo_vocab(all_records)
-    for record in all_records:
-        record["node_combo_ids"] = [
-            combo_to_id[tuple(combo)] if combo else 0
-            for combo in record["node_types"]
-        ]
-
     # 写出
-    print(f"写出 {total_written} 条记录 → {output_path}")
+    print(f"\n写出 {total_written} 条记录 → {output_path}")
     with output_path.open("w", encoding="utf-8") as out:
         for record in all_records:
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    vocab_path = Path(args.vocab_output)
-    vocab_path.parent.mkdir(parents=True, exist_ok=True)
-    vocab_path.write_text(
-        json.dumps(serialize_vocab(combo_to_id), ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
 
     print(f"\n完成")
     print(f"  总写入：{total_written}")
     print(f"  缺描述：{missing_cap}")
     print(f"  缺源数据：{missing_src}")
-    print(f"  vocab → {vocab_path}")
+    print(f"  combo vocab：{args.combo_vocab}（固定，32种类型）")
 
 
 if __name__ == "__main__":
