@@ -151,15 +151,7 @@ def main():
         print(f'使用 {torch.cuda.device_count()} 张 GPU')
         model = nn.DataParallel(model)
 
-    # PyTorch 2.0+ 编译加速（Windows 不支持 Triton，跳过）
-    if platform.system() != 'Windows':
-        try:
-            model = torch.compile(model)
-            print('torch.compile 已启用')
-        except Exception:
-            pass
-    else:
-        print('Windows：跳过 torch.compile')
+    print('跳过 torch.compile（稳定性优先）')
 
     # 扩散过程
     schedule   = GaussianNoiseSchedule(T=args.timesteps)
