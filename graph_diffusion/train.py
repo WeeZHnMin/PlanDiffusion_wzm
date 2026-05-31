@@ -163,9 +163,12 @@ def main():
                    betas=(0.9, 0.95))
     scaler = torch.amp.GradScaler('cuda')
 
-    # Cosine LR 衰减
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=args.total_steps, eta_min=args.lr * 0.1)
+    # Cosine LR 衰减（last_epoch=-1 避免 init 时触发 step 警告）
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=args.total_steps, eta_min=args.lr * 0.1)
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
