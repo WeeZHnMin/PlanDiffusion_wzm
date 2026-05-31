@@ -171,6 +171,8 @@ def main():
     running_loss_e = 0.0
     running_acc_x  = 0.0
     running_acc_e  = 0.0
+    save_window_loss  = 0.0   # 用于 best 判断的独立窗口
+    save_window_steps = 0
 
     log_path = save_dir / 'train_log.jsonl'
     log_file = open(log_path, 'a', encoding='utf-8', buffering=1)  # 行缓冲
@@ -240,6 +242,8 @@ def main():
         running_loss_e += loss_e.item()
         running_acc_x  += acc_x
         running_acc_e  += acc_e
+        save_window_loss  += loss.item()
+        save_window_steps += 1
 
         if step % args.log_every == 0 and step > 0:
             n = args.log_every
@@ -271,19 +275,22 @@ def main():
             }, ensure_ascii=False) + '\n')
 
         if step % args.save_every == 0 and step > 0:
-            path = save_dir / 'latest.pt'
-            # 保存原始模型权重（剥离 compile/DataParallel 包装）
-            _m = model
-            if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
-            if hasattr(_m, 'module'):    _m = _m.module
-            torch.save({
-                'model':     _m.state_dict(),
-                'opt':       opt.state_dict(),
-                'scaler':    scaler.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'step':      step,
-            }, path)
-            print(f'  saved → {path}')
+            window_avg = save_window_loss / max(save_window_steps, 1)
+            save_window_loss  = 0.0
+            save_window_steps = 0
+            if window_avg < best_loss:
+                best_loss = window_avg
+                _m = model
+                if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
+                if hasattr(_m, 'module'):    _m = _m.module
+                torch.save({
+                    'model':     _m.state_dict(),
+                    'opt':       opt.state_dict(),
+                    'scaler':    scaler.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'step':      step,
+                }, save_dir / 'best.pt')
+                print(f'  best saved → step={step} loss={best_loss:.4f}')
 
     _m = model
     if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
