@@ -55,6 +55,10 @@ def parse_args():
                         help="BPE文本词表大小（不含图token）")
     parser.add_argument("--min-frequency", type=int, default=2,
                         help="BPE合并的最低频率")
+    parser.add_argument("--mirror-dirs", nargs="*",
+                        default=["node_diffusion/unified_vocab",
+                                 "checkpoints/stage2_text_graph"],
+                        help="同步镜像到这些目录（会覆盖已有文件）")
     return parser.parse_args()
 
 
@@ -197,16 +201,17 @@ def main():
     tokenizer = train_bpe(prompts, args.bpe_vocab_size, args.min_frequency)
     build_unified_vocab(tokenizer, args.old_vocab, args.output_dir)
 
-    # 同步镜像到 node_diffusion/unified_vocab
-    mirror_dir = Path("node_diffusion/unified_vocab")
-    mirror_dir.mkdir(parents=True, exist_ok=True)
+    # 同步镜像到指定目录
     import shutil
-    for fname in ["bpe_tokenizer.json", "vocab_config.json"]:
-        src = args.output_dir / fname
-        dst = mirror_dir / fname
-        if src.exists():
-            shutil.copy2(src, dst)
-            print(f"镜像 -> {dst}")
+    for mirror in (args.mirror_dirs or []):
+        mirror_dir = Path(mirror)
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        for fname in ["bpe_tokenizer.json", "vocab_config.json"]:
+            src = args.output_dir / fname
+            dst = mirror_dir / fname
+            if src.exists():
+                shutil.copy2(src, dst)
+                print(f"镜像 -> {dst}")
 
     print("\n完成！")
 
