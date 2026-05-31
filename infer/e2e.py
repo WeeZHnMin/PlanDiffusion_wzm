@@ -45,6 +45,9 @@ def parse_args():
     p.add_argument("--prompts",      nargs="+", default=[
         "客厅位于中央，连接卧室、厨房和浴室。",
         "两间卧室在左侧，浴室居中，厨房在右侧与走廊相连。",
+        "走廊居中，左侧连接三间卧室和一间浴室，右侧连接客厅和厨房。",
+        "客厅在左上方，厨房在右侧，两间浴室分别位于左下和右下，卧室在中央。",
+        "入口连接走廊，走廊通向客厅、两间卧室和浴室，厨房与客厅相邻。",
     ])
     p.add_argument("--out",          default="outputs/e2e_results.png")
     p.add_argument("--timesteps",    type=int, default=1000)

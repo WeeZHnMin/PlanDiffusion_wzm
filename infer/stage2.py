@@ -21,13 +21,15 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt",       default="checkpoints/stage2_text_graph/best.pt")
-    p.add_argument("--vocab",      default="node_diffusion/unified_vocab/vocab_config.json")
-    p.add_argument("--bpe",        default="node_diffusion/unified_vocab/bpe_tokenizer.json")
-    p.add_argument("--combo-vocab",default="data/processed/type_combo_vocab_old.json")
+    p.add_argument("--stage2-dir", default="checkpoints/stage2_text_graph",
+                   help="包含 best.pt / bpe_tokenizer.json / vocab_config.json 的目录")
+    p.add_argument("--combo-vocab", default="data/processed/type_combo_vocab_old.json")
     p.add_argument("--prompts",    nargs="+", default=[
         "客厅位于中央，连接卧室、厨房和浴室。",
         "两间卧室在左侧，浴室居中，厨房在右侧与走廊相连。",
+        "走廊居中，左侧连接三间卧室和一间浴室，右侧连接客厅和厨房。",
+        "客厅在左上方，厨房在右侧，两间浴室分别位于左下和右下，卧室在中央。",
+        "入口连接走廊，走廊通向客厅、两间卧室和浴室，厨房与客厅相邻。",
     ])
     p.add_argument("--max-new-tokens", type=int, default=256)
     return p.parse_args()
@@ -162,10 +164,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("device:", device)
 
-    vocab_cfg        = json.loads(open(args.vocab, encoding="utf-8").read())
-    bpe_tok          = Tokenizer.from_file(args.bpe)
+    d = args.stage2_dir
+    vocab_cfg        = json.loads(open(os.path.join(d, "vocab_config.json"), encoding="utf-8").read())
+    bpe_tok          = Tokenizer.from_file(os.path.join(d, "bpe_tokenizer.json"))
     combo_bases, combo_label = build_combo_maps(args.combo_vocab)
-    model            = load_stage2(args.ckpt, vocab_cfg, device)
+    model            = load_stage2(os.path.join(d, "best.pt"), vocab_cfg, device)
 
     for prompt in args.prompts:
         print("\n" + "=" * 60)
