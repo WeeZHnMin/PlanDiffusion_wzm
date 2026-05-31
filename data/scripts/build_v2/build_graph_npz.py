@@ -9,12 +9,13 @@
   data/processed/graph_diffusion/graph_dataset.npz
 
 字段：
-  adj_matrix    : (N, 40, 40)  int32  二值邻接矩阵（无自环）
-  node_mask     : (N, 40)      int32  1=有效节点，0=padding
-  node_combo_ids: (N, 40)      int32  节点类型 ID（1~32），padding=0
-  prompt_tokens : (N, 128)     int32  BPE token IDs
-  prompt_lens   : (N,)         int32  文本实际长度
-  n_nodes       : (N,)         int32  有效节点数
+  adj_matrix    : (N, 40, 40)  int32   二值邻接矩阵（无自环）
+  node_mask     : (N, 40)      int32   1=有效节点，0=padding
+  node_combo_ids: (N, 40)      int32   节点类型 ID（1~32），padding=0
+  node_coords   : (N, 40, 2)   int32   节点坐标（中心化后取整），padding=0
+  prompt_tokens : (N, 128)     int32   BPE token IDs
+  prompt_lens   : (N,)         int32   文本实际长度
+  n_nodes       : (N,)         int32   有效节点数
 
 增强：
   每张图做 augment 次随机节点重排，增加数据多样性。
@@ -52,14 +53,14 @@ def parse_args():
     return p.parse_args()
 
 
-def permute_graph(adj: np.ndarray, combo_ids: np.ndarray,
-                  n: int, perm: list[int]) -> tuple[np.ndarray, np.ndarray]:
+def permute_graph(adj: np.ndarray, combo_ids: np.ndarray, coords: np.ndarray,
+                  n: int, perm: list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """按 perm 重排前 n 个节点，padding 部分不动。"""
-    full_perm = perm + list(range(n, MAX_NODES))   # padding 节点保持不动
-
-    new_adj = adj[np.ix_(full_perm, full_perm)]
-    new_ids = combo_ids[full_perm]
-    return new_adj, new_ids
+    full_perm = perm + list(range(n, MAX_NODES))
+    new_adj    = adj[np.ix_(full_perm, full_perm)]
+    new_ids    = combo_ids[full_perm]
+    new_coords = coords[full_perm]
+    return new_adj, new_ids, new_coords
 
 
 def main():
@@ -72,6 +73,7 @@ def main():
     adj_list    = []
     mask_list   = []
     ids_list    = []
+    coords_list = []
     ptok_list   = []
     plen_list   = []
     nnodes_list = []
@@ -94,8 +96,13 @@ def main():
             np.fill_diagonal(adj_full, 0)
 
             # 节点类型 ID（长度 40，padding=0）
-            raw_ids = rec["node_combo_ids"]
+            raw_ids   = rec["node_combo_ids"]
             combo_ids = np.array(raw_ids[:MAX_NODES], dtype=np.int32)
+
+            # 节点坐标（中心化整数坐标，shape (40,2)，padding=0）
+            raw_coords = rec["node_coords"][:MAX_NODES]   # list of [x, y]
+            coords = np.zeros((MAX_NODES, 2), dtype=np.int32)
+            coords[:len(raw_coords)] = raw_coords
 
             # 节点掩码
             mask = np.zeros(MAX_NODES, dtype=np.int32)
@@ -117,10 +124,12 @@ def main():
                 perms.append(p)
 
             for perm in perms:
-                new_adj, new_ids = permute_graph(adj_full, combo_ids, n, perm)
+                new_adj, new_ids, new_coords = permute_graph(
+                    adj_full, combo_ids, coords, n, perm)
                 adj_list.append(new_adj)
                 mask_list.append(mask)
                 ids_list.append(new_ids)
+                coords_list.append(new_coords)
                 ptok_list.append(padded)
                 plen_list.append(text_len)
                 nnodes_list.append(n)
@@ -139,12 +148,13 @@ def main():
 
     np.savez_compressed(
         out_path,
-        adj_matrix     = np.stack(adj_list,  axis=0),   # (N, 40, 40)
-        node_mask      = np.stack(mask_list, axis=0),   # (N, 40)
-        node_combo_ids = np.stack(ids_list,  axis=0),   # (N, 40)
-        prompt_tokens  = np.stack(ptok_list, axis=0),   # (N, 128)
-        prompt_lens    = np.array(plen_list, dtype=np.int32),  # (N,)
-        n_nodes        = np.array(nnodes_list, dtype=np.int32),# (N,)
+        adj_matrix     = np.stack(adj_list,    axis=0),  # (N, 40, 40)
+        node_mask      = np.stack(mask_list,   axis=0),  # (N, 40)
+        node_combo_ids = np.stack(ids_list,    axis=0),  # (N, 40)
+        node_coords    = np.stack(coords_list, axis=0),  # (N, 40, 2)
+        prompt_tokens  = np.stack(ptok_list,   axis=0),  # (N, 128)
+        prompt_lens    = np.array(plen_list,   dtype=np.int32),
+        n_nodes        = np.array(nnodes_list, dtype=np.int32),
     )
 
     elapsed = time.perf_counter() - t0
