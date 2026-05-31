@@ -190,7 +190,9 @@ def main():
     save_window_steps = 0
 
     log_path = save_dir / 'train_log.jsonl'
-    log_file = open(log_path, 'a', encoding='utf-8', buffering=1)  # 行缓冲
+    # 续训时追加，全新训练时新建
+    log_mode = 'a' if args.resume and Path(args.resume).exists() else 'w'
+    log_file = open(log_path, log_mode, encoding='utf-8', buffering=1)
 
     if args.resume and Path(args.resume).exists():
         ckpt = torch.load(args.resume, map_location=device)
