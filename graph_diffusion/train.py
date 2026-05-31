@@ -112,12 +112,16 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'device: {device}')
 
+    # cuDNN 自动选最优卷积算法
+    torch.backends.cudnn.benchmark = True
+
     # 词表配置
     vocab_cfg    = json.loads(open(args.vocab, encoding='utf-8').read())
     bpe_vocab    = vocab_cfg['bpe_vocab_size']
 
     # 数据
-    loader = make_loader(args.data, args.batch_size, shuffle=True, num_workers=4)
+    loader = make_loader(args.data, args.batch_size, shuffle=True,
+                         num_workers=4, persistent_workers=True)
 
     # 模型
     model = GraphTransformer(
@@ -137,13 +141,25 @@ def main():
         print(f'使用 {torch.cuda.device_count()} 张 GPU')
         model = nn.DataParallel(model)
 
+    # PyTorch 2.0+ 编译加速（不支持时自动跳过）
+    try:
+        model = torch.compile(model)
+        print('torch.compile 已启用')
+    except Exception:
+        pass
+
     # 扩散过程
     schedule   = GaussianNoiseSchedule(T=args.timesteps)
     transition = DiscreteUniformTransition(x_classes=32, e_classes=2)
 
     # 优化器
-    opt    = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt    = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+                   betas=(0.9, 0.95))
     scaler = torch.amp.GradScaler('cuda')
+
+    # Cosine LR 衰减
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=args.total_steps, eta_min=args.lr * 0.1)
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +220,7 @@ def main():
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         scaler.step(opt)
         scaler.update()
+        scheduler.step()
 
         running_loss   += loss.item()
         running_loss_x += loss_x.item()

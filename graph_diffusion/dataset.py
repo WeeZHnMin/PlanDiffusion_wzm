@@ -49,7 +49,10 @@ class FloorplanGraphDataset(Dataset):
         return X, E, node_mask, ptokens, plen
 
 
-def make_loader(npz_path, batch_size, shuffle=True, num_workers=4):
+def make_loader(npz_path, batch_size, shuffle=True,
+                num_workers=4, persistent_workers=True):
     ds = FloorplanGraphDataset(npz_path)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                      num_workers=num_workers, drop_last=True, pin_memory=True)
+                      num_workers=num_workers, drop_last=True,
+                      pin_memory=True,
+                      persistent_workers=(persistent_workers and num_workers > 0))
