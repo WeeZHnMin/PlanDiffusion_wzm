@@ -48,12 +48,10 @@ class TreeGraphDataset(Dataset):
                     text_len)
 
 
-MAX_SEQ_LEN = 384   # 固定长度，显存稳定
-
 def collate_fn(batch, pad_id: int):
     seqs      = [b[0] for b in batch]
     text_lens = [b[1] for b in batch]
-    max_len   = MAX_SEQ_LEN   # 固定 padding 长度，避免显存忽高忽低
+    max_len   = max(s.shape[0] for s in seqs)  # 动态 padding，节省显存
 
     tokens = torch.full((len(seqs), max_len), pad_id, dtype=torch.long)
     mask   = torch.zeros((len(seqs), max_len), dtype=torch.long)
