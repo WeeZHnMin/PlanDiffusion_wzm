@@ -112,7 +112,7 @@ def main():
         sd   = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
         missing, unexpected = model.load_state_dict(sd, strict=False)
         print(f'stage1 ckpt loaded | missing={len(missing)} unexpected={len(unexpected)}')
-    else:
+    elif not args.resume:
         print('警告: 未提供 stage1 checkpoint，从零初始化')
 
     if torch.cuda.device_count() > 1:
