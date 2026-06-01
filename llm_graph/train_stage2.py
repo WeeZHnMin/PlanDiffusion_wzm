@@ -46,7 +46,7 @@ def parse_args():
     p.add_argument("--resume",        default=None)
 
     p.add_argument("--batch-size",    type=int,   default=24)
-    p.add_argument("--total-steps",   type=int,   default=500_000)
+    p.add_argument("--epochs",        type=int,   default=100)
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
@@ -86,6 +86,13 @@ def main():
     nw = 0 if platform.system() == 'Windows' else 4
     loader = make_loader(args.data, args.batch_size, stage=2,
                          pad_id=PAD_ID, shuffle=True, num_workers=nw)
+    steps_per_epoch = len(loader.dataset) // args.batch_size
+    total_steps     = args.epochs * steps_per_epoch
+    print(f'数据集: {len(loader.dataset)} 条  '
+          f'batch={args.batch_size}  '
+          f'steps/epoch={steps_per_epoch}  '
+          f'epochs={args.epochs}  '
+          f'total_steps={total_steps}')
 
     cfg = LlamaConfig(
         vocab_size=VOCAB_SIZE,
@@ -119,7 +126,7 @@ def main():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=args.total_steps, eta_min=args.lr * 0.1)
+            opt, T_max=total_steps, eta_min=args.lr * 0.1)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
     save_dir = Path(args.save_dir)
@@ -148,7 +155,8 @@ def main():
             scheduler.load_state_dict(ckpt['scheduler'])
         start_step = ckpt['step'] + 1
         best_loss  = ckpt.get('best_loss', float('inf'))
-        print(f'resumed from step {start_step}')
+        print(f'resumed from step {start_step} / {total_steps}  '
+              f'({start_step/steps_per_epoch:.1f} epochs done)')
 
     def infinite():
         while True:
@@ -158,7 +166,7 @@ def main():
     t0 = time.perf_counter()
     model.train()
 
-    for step in range(start_step, args.total_steps):
+    for step in range(start_step, total_steps):
         tokens, mask, text_lens = next(data_iter)
         tokens    = tokens.to(device)
         mask      = mask.to(device)
@@ -232,7 +240,7 @@ def main():
     raw = model.module if hasattr(model, 'module') else model
     torch.save({'model': raw.state_dict(), 'opt': opt.state_dict(),
                 'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
-                'step': args.total_steps, 'best_loss': best_loss},
+                'step': total_steps, 'best_loss': best_loss},
                save_dir / 'final.pt')
     log_file.close()
     print('Stage2 训练完成')
