@@ -10,7 +10,6 @@ Stage1：纯图序列自回归预训练（不含文本条件）。
 import argparse
 import gc
 import json
-import os
 import platform
 import time
 import warnings
@@ -173,6 +172,10 @@ def main():
         scaler.step(opt)
         scaler.update()
         scheduler.step()
+
+        if step % 100 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
 
         with torch.no_grad():
             m = compute_metrics(logits.float(), y, text_lens)
