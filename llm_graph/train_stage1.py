@@ -39,7 +39,7 @@ def parse_args():
     p.add_argument("--save-dir",   default="checkpoints/llm_graph/stage1")
     p.add_argument("--resume",     default=None)
 
-    p.add_argument("--batch-size",    type=int,   default=32)
+    p.add_argument("--batch-size",    type=int,   default=48)
     p.add_argument("--epochs",        type=int,   default=50)
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--weight-decay",  type=float, default=0.01)

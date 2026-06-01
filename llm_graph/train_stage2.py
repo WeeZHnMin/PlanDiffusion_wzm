@@ -45,7 +45,7 @@ def parse_args():
                    help="Stage1 checkpoint 初始化权重")
     p.add_argument("--resume",        default=None)
 
-    p.add_argument("--batch-size",    type=int,   default=24)
+    p.add_argument("--batch-size",    type=int,   default=48)
     p.add_argument("--epochs",        type=int,   default=100)
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--weight-decay",  type=float, default=0.01)
