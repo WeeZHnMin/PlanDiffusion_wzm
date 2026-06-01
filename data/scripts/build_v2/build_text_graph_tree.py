@@ -89,6 +89,13 @@ def bfs_spanning_tree(adj: list, n: int,
                 orig_parent[u] = v
                 queue.append(u)
 
+    # 处理多连通分量：未访问节点强制连接到已访问的第一个节点
+    for u in range(n):
+        if not visited[u]:
+            visited[u] = True
+            orig_parent[u] = visit_order[0]   # 连到根节点
+            visit_order.append(u)
+
     # 重编号：visit_order[i] → 新编号 i
     new_id = {orig: new for new, orig in enumerate(visit_order)}
 
