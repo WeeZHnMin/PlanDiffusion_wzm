@@ -16,7 +16,7 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/unified_dataset/layout_dataset.npz"))
+    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/graph_diffusion/graph_dataset.npz"))
     parser.add_argument("--save_dir", default=defaults.get("save_dir", "checkpoints/node_diffusion"))
     parser.add_argument("--resume", default="", help="path to checkpoint .pt")
     parser.add_argument("--batch_size", type=int, default=defaults.get("batch_size", 64))
@@ -73,7 +73,7 @@ def main(argv=None, defaults=None):
         cond = move_cond(cond, device)
 
         t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
-        loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
+        loss, coord_rmse, type_acc = diffusion.training_losses(model, x, t, cond)
 
         opt.zero_grad()
         loss.backward()
@@ -84,11 +84,11 @@ def main(argv=None, defaults=None):
         running_coord_rmse += coord_rmse
 
         if step % args.log_interval == 0:
-            avg = running_loss / args.log_interval if step > 0 else running_loss
+            avg      = running_loss / args.log_interval if step > 0 else running_loss
             avg_rmse = running_coord_rmse / args.log_interval if step > 0 else running_coord_rmse
             running_loss = 0.0
             running_coord_rmse = 0.0
-            print(f"step {step:6d} | loss {avg:.4f} | coord_rmse {avg_rmse:.2f} px")
+            print(f"step {step:6d} | loss {avg:.4f} | coord_rmse {avg_rmse:.2f} px | type_acc {type_acc:.3f}")
 
         if step > 0 and step % args.save_interval == 0:
             path = os.path.join(args.save_dir, f"model_{step:07d}.pt")

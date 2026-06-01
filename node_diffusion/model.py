@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+N_TYPES = 32  # 节点类型数量（combo ID 1-32，0=padding）
+
 
 def timestep_embedding(timesteps, dim):
     half = dim // 2
@@ -17,8 +19,8 @@ def timestep_embedding(timesteps, dim):
 def attention(q, k, v, d_k, mask=None, dropout=None):
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
-        scores = scores.masked_fill(mask.unsqueeze(1) == 1, -1e9)
-    scores = F.softmax(scores, dim=-1)
+        scores = scores.masked_fill(mask.unsqueeze(1) == 1, -1e4)
+    scores = F.softmax(scores.float(), dim=-1).to(q.dtype)
     if dropout is not None:
         scores = dropout(scores)
     return torch.matmul(scores, v)
@@ -73,28 +75,17 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, adj_mask, pad_mask, text_kv=None, text_key_mask=None):
-        """
-        x            : (B, 40, d)
-        adj_mask     : (B, 40, 40)  1=ignore
-        pad_mask     : (B, 40, 40)  1=ignore（节点padding）
-        text_kv      : (B, T, d)    文本token嵌入，T=max_text_len
-        text_key_mask: (B, T)       1=PAD文本token，0=有效
-        """
         x2 = self.norm1(x)
 
         if text_kv is not None:
-            # 拼接节点和文本作为 K/V
-            kv = torch.cat([x2, text_kv], dim=1)          # (B, 40+T, d)
-
-            # 组合 mask：节点padding + 文本padding → (B, 40, 40+T)
-            # pad_mask 当前是 (B, 40, 40)，取第一行（每个query看到相同的key padding）
-            node_key_pad = pad_mask[:, :1, :]              # (B, 1, 40)
-            text_key_pad = text_key_mask.unsqueeze(1)      # (B, 1, T)
+            kv = torch.cat([x2, text_kv], dim=1)
+            node_key_pad = pad_mask[:, :1, :]
+            text_key_pad = text_key_mask.unsqueeze(1)
             combined_mask = torch.cat(
                 [node_key_pad.expand(-1, x.shape[1], -1),
                  text_key_pad.expand(-1, x.shape[1], -1)],
                 dim=2
-            )                                              # (B, 40, 40+T)
+            )
             global_out = self.global_attn(x2, kv, kv, combined_mask)
         else:
             global_out = self.global_attn(x2, x2, x2, pad_mask)
@@ -112,13 +103,15 @@ class EncoderLayer(nn.Module):
 class NodeDiffusionTransformer(nn.Module):
     """
     Epsilon-prediction Transformer for node-coordinate diffusion.
+    Also predicts node type (room type) as an auxiliary classification head.
 
     Input  : x             [B, 2, 40]    noisy (x,y) coordinates
     Cond   : adj_matrix    [B, 40, 40]   adjacency (1=connected)
              node_mask     [B, 40]       1=valid node, 0=padding
              prompt_tokens [B, T]        BPE token IDs (optional)
              prompt_mask   [B, T]        1=valid token, 0=PAD (optional)
-    Output : epsilon [B, 2, 40]  predicted noise
+    Output : epsilon       [B, 2, 40]    predicted noise
+             type_logits   [B, 40, 33]   predicted node type logits (0=pad, 1-32=types)
     """
 
     def __init__(self, model_channels=256, num_layers=6, num_heads=4,
@@ -131,21 +124,23 @@ class NodeDiffusionTransformer(nn.Module):
             nn.SiLU(),
             nn.Linear(model_channels, model_channels),
         )
-        self.input_emb = nn.Linear(2, model_channels)
-
-        # 文本token嵌入（BPE词表部分，ID 0~bpe_vocab_size-1）
+        self.input_emb  = nn.Linear(2, model_channels)
         self.text_embed = nn.Embedding(bpe_vocab_size, model_channels, padding_idx=0)
 
         self.layers = nn.ModuleList(
             [EncoderLayer(model_channels, num_heads, dropout) for _ in range(num_layers)]
         )
 
-        self.output_head = nn.Sequential(
+        # 坐标噪声预测头
+        self.coord_head = nn.Sequential(
             nn.Linear(model_channels, model_channels),
             nn.ReLU(),
             nn.Linear(model_channels, model_channels // 2),
             nn.Linear(model_channels // 2, 2),
         )
+
+        # 节点类型预测头（0=padding，1-32=房间类型）
+        self.type_head = nn.Linear(model_channels, N_TYPES + 1)
 
         n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"NodeDiffusionTransformer: {n_params:,} parameters")
@@ -169,18 +164,18 @@ class NodeDiffusionTransformer(nn.Module):
         out = self.input_emb(x) + t_emb
         adj_mask, pad_mask = self._build_masks(adj_matrix.float(), node_mask.float())
 
-        # 文本嵌入
-        text_kv       = None
-        text_key_mask = None
+        text_kv = text_key_mask = None
         if prompt_tokens is not None:
-            text_kv = self.text_embed(prompt_tokens)           # (B, T, d)
+            text_kv = self.text_embed(prompt_tokens)
             if prompt_mask is not None:
-                text_key_mask = (1 - prompt_mask.float())      # 1=PAD，0=有效
+                text_key_mask = (1 - prompt_mask.float())
             else:
-                text_key_mask = (prompt_tokens == 0).float()   # 用PAD ID推断
+                text_key_mask = (prompt_tokens == 0).float()
 
         for layer in self.layers:
             out = layer(out, adj_mask, pad_mask, text_kv, text_key_mask)
 
-        out = self.output_head(out)
-        return out.permute(0, 2, 1)
+        epsilon    = self.coord_head(out).permute(0, 2, 1)   # [B, 2, 40]
+        type_logits = self.type_head(out)                     # [B, 40, 33]
+
+        return epsilon, type_logits
