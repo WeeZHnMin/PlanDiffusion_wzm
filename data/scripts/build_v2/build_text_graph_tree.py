@@ -60,7 +60,7 @@ def parse_args():
     p.add_argument("--bpe",       default="node_diffusion/unified_vocab/bpe_tokenizer.json")
     p.add_argument("--output",    default="data/processed/graph_tree/text_graph_tree.npz")
     p.add_argument("--vocab-out", default="data/processed/graph_tree/vocab_config.json")
-    p.add_argument("--augment",   type=int, default=3,
+    p.add_argument("--augment",   type=int, default=4,
                    help="每张图随机节点重排次数（1=只用原始顺序，3=推荐）")
     p.add_argument("--seed",      type=int, default=42)
     return p.parse_args()
@@ -187,10 +187,12 @@ def main():
             n   = int(rec["n_nodes"])
             n_graphs += 1
 
-            # 邻接矩阵（去除自环）
-            adj = rec["adj_matrix"][:n]
-            adj = [row[:n] for row in adj]
+            # 邻接矩阵（对称化 + 去除自环）
+            adj = [list(row[:n]) for row in rec["adj_matrix"][:n]]
             for i in range(n):
+                for j in range(n):
+                    if adj[i][j]:
+                        adj[j][i] = 1   # 确保无向
                 adj[i][i] = 0
 
             # BPE 文本编码（所有增强共用同一文本）
