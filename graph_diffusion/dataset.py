@@ -54,5 +54,6 @@ def make_loader(npz_path, batch_size, shuffle=True,
     ds = FloorplanGraphDataset(npz_path)
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                       num_workers=num_workers, drop_last=True,
-                      pin_memory=True,
+                      pin_memory=(num_workers > 0),
+                      prefetch_factor=(2 if num_workers > 0 else None),
                       persistent_workers=(persistent_workers and num_workers > 0))

@@ -147,11 +147,7 @@ def main():
         dropout        = args.dropout,
     ).to(device)
 
-    if torch.cuda.device_count() > 1:
-        print(f'使用 {torch.cuda.device_count()} 张 GPU')
-        model = nn.DataParallel(model)
-
-    print('跳过 torch.compile（稳定性优先）')
+    print(f'参数量: {sum(p.numel() for p in model.parameters())/1e6:.1f}M')
 
     # 扩散过程
     schedule   = GaussianNoiseSchedule(T=args.timesteps)
@@ -190,19 +186,9 @@ def main():
     if args.resume and Path(args.resume).exists():
         ckpt = torch.load(args.resume, map_location=device)
         sd   = ckpt['model']
-        # 去掉 torch.compile 的 _orig_mod. 前缀和 DataParallel 的 module. 前缀
-        def clean_key(k):
-            k = k.replace('_orig_mod.', '')
-            k = k.replace('module.', '')
-            return k
-        sd = {clean_key(k): v for k, v in sd.items()}
-        # 找到原始模型（剥离 compile 和 DataParallel 包装）
-        raw_model = model
-        if hasattr(raw_model, '_orig_mod'):   # torch.compile
-            raw_model = raw_model._orig_mod
-        if hasattr(raw_model, 'module'):      # DataParallel
-            raw_model = raw_model.module
-        raw_model.load_state_dict(sd, strict=True)
+        # 兼容旧 checkpoint 的 module. 前缀
+        sd = {k.replace('module.', '').replace('_orig_mod.', ''): v for k, v in sd.items()}
+        model.load_state_dict(sd, strict=True)
         opt.load_state_dict(ckpt['opt'])
         scaler.load_state_dict(ckpt['scaler'])
         if 'scheduler' in ckpt:
@@ -294,11 +280,8 @@ def main():
             save_window_steps = 0
             if window_avg < best_loss:
                 best_loss = window_avg
-                _m = model
-                if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
-                if hasattr(_m, 'module'):    _m = _m.module
                 torch.save({
-                    'model':     _m.state_dict(),
+                    'model':     model.state_dict(),
                     'opt':       opt.state_dict(),
                     'scaler':    scaler.state_dict(),
                     'scheduler': scheduler.state_dict(),
@@ -306,11 +289,8 @@ def main():
                 }, save_dir / 'best.pt')
                 print(f'  best saved → step={step} loss={best_loss:.4f}')
 
-    _m = model
-    if hasattr(_m, '_orig_mod'): _m = _m._orig_mod
-    if hasattr(_m, 'module'):    _m = _m.module
     torch.save({
-        'model':     _m.state_dict(),
+        'model':     model.state_dict(),
         'opt':       opt.state_dict(),
         'scaler':    scaler.state_dict(),
         'scheduler': scheduler.state_dict(),
