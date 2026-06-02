@@ -115,7 +115,7 @@ class NodeDiffusionTransformer(nn.Module):
     """
 
     def __init__(self, model_channels=256, num_layers=6, num_heads=4,
-                 dropout=0.1, bpe_vocab_size=12000):
+                 dropout=0.1, bpe_vocab_size=10000):
         super().__init__()
         self.model_channels = model_channels
 
