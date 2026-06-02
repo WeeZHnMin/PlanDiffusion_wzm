@@ -144,7 +144,15 @@ class NodeDiffusionTransformer(nn.Module):
             nn.Linear(model_channels, model_channels // 2),
             nn.Linear(model_channels // 2, 2),
         )
-        self.type_head = nn.Linear(model_channels, N_TYPES + 1)
+
+        # 节点类型预测头：自注意力 + MLP
+        self.type_norm  = nn.LayerNorm(model_channels)
+        self.type_attn  = MultiHeadAttention(num_heads, model_channels, dropout)
+        self.type_head  = nn.Sequential(
+            nn.Linear(model_channels, model_channels),
+            nn.ReLU(),
+            nn.Linear(model_channels, N_TYPES + 1),
+        )
 
         n_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         print(f"NodeDiffusionTransformer: {n_params:,} parameters")
@@ -194,8 +202,14 @@ class NodeDiffusionTransformer(nn.Module):
         for layer in self.layers:
             seq = layer(seq, T, adj_mask, pad_mask)
 
-        node_out    = seq[:, T:, :]                                 # [B, N, d]
-        epsilon     = self.coord_head(node_out).permute(0, 2, 1)    # [B, 2, N]
-        type_logits = self.type_head(node_out)                      # [B, N, 33]
+        node_out = seq[:, T:, :]                                    # [B, N, d]
+        epsilon  = self.coord_head(node_out).permute(0, 2, 1)       # [B, 2, N]
+
+        # 节点类型：先做节点间自注意力，再 MLP
+        node_pad_mask = node_pad.unsqueeze(1).expand(
+            -1, node_out.shape[1], -1)                              # [B, N, N]
+        n2 = self.type_norm(node_out)
+        node_typed  = node_out + self.type_attn(n2, n2, n2, node_pad_mask)
+        type_logits = self.type_head(node_typed)                    # [B, N, 33]
 
         return epsilon, type_logits
