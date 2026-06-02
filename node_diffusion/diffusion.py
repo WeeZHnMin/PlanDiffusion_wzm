@@ -43,15 +43,8 @@ class GaussianDiffusion:
         """加噪，支持 [B,2,N] 和 [B,N,d] 两种形状。"""
         if noise is None:
             noise = torch.randn_like(x0)
-        # 根据维度自动 reshape scale
-        if x0.dim() == 3 and x0.shape[1] != x0.shape[2]:
-            # [B, 2, N] → scale [B, 1, 1]
-            s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
-            s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
-        else:
-            # [B, N, d] → scale [B, 1, 1]
-            s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
-            s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
+        s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
+        s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         return s1 * x0 + s2 * noise, noise
 
     def training_losses(self, model, x0, t, model_kwargs):
@@ -105,7 +98,7 @@ class GaussianDiffusion:
             coord_rmse = raw_mse.sqrt().item() * 160.0
 
             # 类型准确率：还原预测的 type embedding，最近邻找类别
-            pred_type_emb_0 = (type_xt - s2 * pred_type_noise) / s1    # [B, N, d]
+            pred_type_emb_0 = (type_xt - s2 * pred_type_noise.float()) / s1  # [B, N, d]
             all_embs        = model.type_embed.weight.float()            # [33, d]
             B_, N_ = node_types.shape
             dists       = torch.cdist(
