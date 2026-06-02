@@ -81,7 +81,7 @@ def parse_args():
     p.add_argument("--intermediate-size", type=int, default=1536)
     p.add_argument("--max-pos-emb",       type=int, default=384)
     p.add_argument("--seed",              type=int, default=42)
-    p.add_argument("--n-aux-weight",      type=float, default=1.0,
+    p.add_argument("--n-aux-weight",      type=float, default=0.05,
                    help="辅助节点数分类 loss 的权重系数")
     return p.parse_args()
 
