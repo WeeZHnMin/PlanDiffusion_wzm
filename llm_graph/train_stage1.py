@@ -29,7 +29,7 @@ from llm_graph.metrics import compute_metrics
 VOCAB_SIZE = 10084
 PAD_ID     = 10000
 BOS_ID     = 10001
-EOS_ID     = 12002
+EOS_ID     = 10002
 
 
 def parse_args():

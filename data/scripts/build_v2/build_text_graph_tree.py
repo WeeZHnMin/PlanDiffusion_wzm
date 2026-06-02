@@ -212,7 +212,7 @@ def main():
             tl       = len(text_ids) + 1   # +1 for BOS_G
 
             # 增强：每次从不同节点出发BFS
-            starts = [0] + rng.sample(range(n), min(args.augment - 1, n))
+            starts = [0] + rng.sample(range(1, n), min(args.augment - 1, n - 1))
 
             for start in starts:
                 parents, tree_edges, new_id = bfs_spanning_tree(adj, n, start)
@@ -221,8 +221,8 @@ def main():
                 seq = graph_to_tokens(n, parents, extra_edges, text_ids)
 
                 if len(seq) > MAX_SEQ_LEN:
-                    seq = seq[:MAX_SEQ_LEN]
                     truncated += 1
+                    continue
 
                 seq_len = len(seq)
                 padded  = np.full(MAX_SEQ_LEN, PAD_ID, dtype=np.int32)
