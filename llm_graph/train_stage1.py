@@ -26,16 +26,16 @@ from llm_graph.dataset import make_loader
 from llm_graph.metrics import compute_metrics
 
 
-VOCAB_SIZE = 12084
-PAD_ID     = 12000
-BOS_ID     = 12001
+VOCAB_SIZE = 10084
+PAD_ID     = 10000
+BOS_ID     = 10001
 EOS_ID     = 12002
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data",       default="data/processed/graph_tree/text_graph_tree.npz")
-    p.add_argument("--vocab",      default="data/processed/graph_tree/vocab_config.json")
+    p.add_argument("--vocab",      default="llm_graph/vocab/vocab_config.json")
     p.add_argument("--save-dir",   default="checkpoints/llm_graph/stage1")
     p.add_argument("--resume",     default=None)
 

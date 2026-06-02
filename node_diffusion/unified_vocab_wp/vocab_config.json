@@ -1,15 +1,3 @@
 {
-  "wp_vocab_size": 10000,
-  "graph_offset": 10000,
-  "total_vocab_size": 10078,
-  "PAD_ID": 10000,
-  "BOS_ID": 10001,
-  "EOS_ID": 10002,
-  "TOK_OPEN": 10003,
-  "TOK_CLOSE": 10004,
-  "TOK_BREAK": 10005,
-  "TYPE_START": 10006,
-  "NODE_START": 10038,
-  "MAX_NODES": 40,
-  "N_TYPES": 32
+  "wp_vocab_size": 10000
 }

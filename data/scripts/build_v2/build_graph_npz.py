@@ -47,7 +47,7 @@ def parse_args():
     p.add_argument("--jsonl",    default="data/jsonl/final_graph_dataset_v2.jsonl")
     p.add_argument("--bpe",      default="node_diffusion/unified_vocab_wp/wp_tokenizer.json")
     p.add_argument("--output",   default="data/processed/graph_diffusion/graph_dataset.npz")
-    p.add_argument("--augment",  type=int, default=3,
+    p.add_argument("--augment",  type=int, default=4,
                    help="每张图随机节点重排次数（1=不增强，只用原始顺序）")
     p.add_argument("--seed",     type=int, default=42)
     return p.parse_args()

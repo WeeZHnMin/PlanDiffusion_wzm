@@ -8,18 +8,18 @@
   父节点 pi : 节点 i 的父节点 j → NODE_START + j
   补边 (i,j): 两个 token → NODE_START+i, NODE_START+j
 
-词表布局（12084个token）：
-  0 ~ 11999  : BPE 文本
-  12000      : PAD
-  12001      : BOS_G
-  12002      : EOS_G
-  12003      : SEP
-  12004~12043: N_START（N=1~40）
-  12044~12083: NODE_START（节点0~39）
+词表布局（10084个token）：
+  0 ~ 9999   : WordPiece 文本（BERT 前10k）
+  10000      : PAD
+  10001      : BOS_G
+  10002      : EOS_G
+  10003      : SEP
+  10004~10043: N_START（N=1~40）
+  10044~10083: NODE_START（节点0~39）
 
 输入：
   data/jsonl/final_graph_dataset_v2.jsonl
-  node_diffusion/unified_vocab/bpe_tokenizer.json
+  llm_graph/vocab/wp_tokenizer.json
 
 输出：
   data/processed/graph_tree/text_graph_tree.npz
@@ -45,19 +45,19 @@ MAX_NODES    = 40
 MAX_TEXT_LEN = 128
 MAX_SEQ_LEN  = 384    # 文本128 + BOS + N + 父节点39 + SEP + 补边最多~60×2 + EOS
 
-PAD_ID    = 12000
-BOS_ID    = 12001
-EOS_ID    = 12002
-SEP_ID    = 12003
-N_START   = 12004   # N=k → N_START + (k-1)
-NODE_START = 12044  # 节点j → NODE_START + j
-VOCAB_SIZE = 12084
+PAD_ID    = 10000
+BOS_ID    = 10001
+EOS_ID    = 10002
+SEP_ID    = 10003
+N_START   = 10004   # N=k → N_START + (k-1)
+NODE_START = 10044  # 节点j → NODE_START + j
+VOCAB_SIZE = 10084
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--jsonl",     default="data/jsonl/final_graph_dataset_v2.jsonl")
-    p.add_argument("--bpe",       default="node_diffusion/unified_vocab/bpe_tokenizer.json")
+    p.add_argument("--bpe",       default="llm_graph/vocab/wp_tokenizer.json")
     p.add_argument("--output",    default="data/processed/graph_tree/text_graph_tree.npz")
     p.add_argument("--vocab-out", default="data/processed/graph_tree/vocab_config.json")
     p.add_argument("--augment",   type=int, default=4,
@@ -152,7 +152,7 @@ def graph_to_tokens(n: int, parents: list[int],
 
 def save_vocab_config(output_path: Path):
     cfg = {
-        "bpe_vocab_size":  12000,
+        "wp_vocab_size":   10000,
         "PAD_ID":          PAD_ID,
         "BOS_ID":          BOS_ID,
         "EOS_ID":          EOS_ID,
@@ -181,6 +181,7 @@ def main():
     lengths_list   = []
     text_lens_list = []
     n_graphs  = 0
+    n_skipped = 0
     truncated = 0
     t0 = time.perf_counter()
 
@@ -190,7 +191,14 @@ def main():
             if not line:
                 continue
 
-            rec = json.loads(line)
+            rec    = json.loads(line)
+            prompt   = rec.get("prompt", "").replace("\n", " ").strip()
+            text_ids = bpe.encode(prompt).ids
+            if len(text_ids) > MAX_TEXT_LEN:
+                n_skipped += 1
+                continue
+            text_ids = text_ids[:MAX_TEXT_LEN]
+
             n   = int(rec["n_nodes"])
             n_graphs += 1
 
@@ -201,10 +209,6 @@ def main():
                     if adj[i][j]:
                         adj[j][i] = 1   # 确保无向
                 adj[i][i] = 0
-
-            # BPE 文本编码（所有增强共用同一文本）
-            prompt   = rec.get("prompt", "").replace("\n", " ").strip()
-            text_ids = bpe.encode(prompt).ids[:MAX_TEXT_LEN]
             tl       = len(text_ids) + 1   # +1 for BOS_G
 
             # 增强：每次从不同节点出发BFS
@@ -233,7 +237,7 @@ def main():
                 total = len(tokens_list)
                 print(f"  {line_no+1} 张图 → {total} 条序列  ({elapsed:.1f}s)")
 
-    print(f"\n共 {n_graphs} 张图，增强后 {len(tokens_list)} 条，截断 {truncated} 条")
+    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >128），增强后 {len(tokens_list)} 条，截断 {truncated} 条")
     print("打包保存...")
 
     np.savez_compressed(
