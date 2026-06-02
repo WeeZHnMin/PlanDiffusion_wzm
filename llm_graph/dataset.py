@@ -62,7 +62,7 @@ def collate_fn(batch, pad_id: int):
     return tokens, mask, torch.tensor(text_lens, dtype=torch.long)
 
 
-def make_loader(npz_path, batch_size, stage=2, pad_id=12000,
+def make_loader(npz_path, batch_size, stage=2, pad_id=10000,
                 shuffle=True, num_workers=0):
     ds = TreeGraphDataset(npz_path, stage=stage)
     return DataLoader(

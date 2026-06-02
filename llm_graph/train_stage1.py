@@ -173,10 +173,6 @@ def main():
         scaler.update()
         scheduler.step()
 
-        if step % 100 == 0:
-            torch.cuda.empty_cache()
-            gc.collect()
-
         with torch.no_grad():
             m = compute_metrics(logits.float(), y, text_lens)
 

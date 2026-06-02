@@ -4,22 +4,22 @@
 序列结构（stage2）：
   [text tokens] BOS_G [N_tok] [parent_1 ... parent_{N-1}] SEP [i1 j1 ...] EOS_G
 
-vocab 常量（和 vocab_config.json 对应）：
-  N_START   = 12004   N=k → 12003+k
-  SEP_ID    = 12003
-  NODE_START= 12044
-  EOS_ID    = 12002
-  BOS_ID    = 12001
+vocab 常量（WordPiece 10k 词表）：
+  N_START   = 10004   N=k → N_START+(k-1)
+  SEP_ID    = 10003
+  NODE_START= 10044
+  EOS_ID    = 10002
+  BOS_ID    = 10001
 """
 
 import torch
 
 
-N_START    = 12004
-SEP_ID     = 12003
-NODE_START = 12044
-EOS_ID     = 12002
-BOS_ID     = 12001
+N_START    = 10004
+SEP_ID     = 10003
+NODE_START = 10044
+EOS_ID     = 10002
+BOS_ID     = 10001
 
 
 def compute_metrics(logits: torch.Tensor,
