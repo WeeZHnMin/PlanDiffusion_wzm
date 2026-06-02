@@ -162,7 +162,7 @@ class GraphTransformer(nn.Module):
     def __init__(self,
                  x_classes:      int   = 32,
                  e_classes:      int   = 2,
-                 bpe_vocab_size: int   = 12000,
+                 bpe_vocab_size: int   = 10000,
                  text_embed_dim: int   = 128,
                  n_layers:       int   = 6,
                  dx:             int   = 256,

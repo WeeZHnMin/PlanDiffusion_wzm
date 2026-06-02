@@ -88,19 +88,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.getenv("DASHSCOPE_API_KEY", ""))
     parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     parser.add_argument("--img-dir", type=Path, default=Path("data/viz_50000"), help="Directory containing floor plan images")
-    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.jsonl"), help="Output JSONL file for captions")
-    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi.state.json"), help="State file for resuming processing")
+    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi_en.jsonl"), help="Output JSONL file for captions")
+    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_50000_captions_multi_en.state.json"), help="State file for resuming processing")
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
     parser.add_argument("--workers", type=int, default=200)
     parser.add_argument("--limit", type=int, default=0, help="0 means all images")
     parser.add_argument(
         "--prompt",
-        default='直接用一句话描述各房间的位置关系和连接关系，不要出现"图中"、"图片"、"布局"、"该"等指代词，不要描述颜色，直接陈述事实。',
+        default='Describe the positional and connecting relationships of each room in one single sentence without using demonstrative words such as "in the picture", "layout" or "this", and simply state the facts instead of describing colors.',
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--retry-times", type=int, default=3)
     parser.add_argument("--retry-delay", type=float, default=1.0)
-    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--timeout", type=float, default=6.0)
     parser.add_argument(
         "--restart-from",
         type=int,
@@ -421,12 +421,11 @@ def main() -> None:
                             "base_url": args.base_url,
                         }
 
-                    with write_lock:
-                        with args.out_file.open("a", encoding="utf-8") as f:
-                            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
                     counters["finished"] += 1
                     if row["ok"]:
+                        with write_lock:
+                            with args.out_file.open("a", encoding="utf-8") as f:
+                                f.write(json.dumps(row, ensure_ascii=False) + "\n")
                         counters["ok"] += 1
                         done_files.add(row["file"])
                         model_done[row["model"]] = model_done.get(row["model"], 0) + 1

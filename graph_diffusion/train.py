@@ -35,7 +35,7 @@ from graph_diffusion.diffusion import (
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data",       default="data/processed/graph_diffusion/graph_dataset.npz")
-    p.add_argument("--vocab",      default="node_diffusion/unified_vocab/vocab_config.json")
+    p.add_argument("--vocab",      default="node_diffusion/unified_vocab_wp/vocab_config.json")
     p.add_argument("--save-dir",   default="checkpoints/graph_diffusion")
     p.add_argument("--resume",     default=None)
 
@@ -124,7 +124,7 @@ def main():
 
     # 词表配置
     vocab_cfg    = json.loads(open(args.vocab, encoding='utf-8').read())
-    bpe_vocab    = vocab_cfg['bpe_vocab_size']
+    bpe_vocab    = vocab_cfg['wp_vocab_size']
 
     # 数据
     # Windows 下 num_workers>0 会报错，自动降为 0

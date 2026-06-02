@@ -73,18 +73,21 @@ MODEL_RANK: dict[str, int] = {
     "tongyi-xiaomi-analysis-pro":41,
     "qwen-vl-max":               42,
     "qwen-vl-plus":              43,
+    # OCR 模型优先级最低，仅在无其他模型时使用
+    "qwen-vl-ocr":              100,
+    "qwen-vl-ocr-latest":       101,
+    "qwen-vl-ocr-1028":         102,
+    "qwen-vl-ocr-2025-04-13":   103,
+    "qwen-vl-ocr-2025-08-28":   104,
+    "qwen-vl-ocr-2025-11-20":   105,
 }
-
-# OCR 类模型跳过（输出是 OCR 识别结果，不是描述）
-def is_ocr_model(model: str) -> bool:
-    return "ocr" in model.lower()
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--batches", nargs="+", default=[
-        "data/viz_50000/mapping.jsonl:data/jsonl/viz_50000_captions_multi.jsonl",
-        "data/viz_100000/mapping.jsonl:data/jsonl/viz_100000_captions_multi.jsonl",
+        "data/viz_50000/mapping.jsonl:data/jsonl/translated_en/viz_50000_captions_multi_en.jsonl",
+        "data/viz_100000/mapping.jsonl:data/jsonl/translated_en/viz_100000_captions_multi_en.jsonl",
     ], help="mapping:captions 对，用冒号分隔")
     p.add_argument("--src-dir",   default="data/Architext_v1/train_jsonl")
     p.add_argument("--combo-vocab", default="data/processed/type_combo_vocab_old.json",
@@ -254,8 +257,6 @@ def load_best_captions(captions_path: Path) -> dict[str, str]:
             if not row.get("ok") or not row.get("caption"):
                 continue
             model   = row.get("model", "")
-            if is_ocr_model(model):
-                continue
             rank    = MODEL_RANK.get(model, 999)
             imgfile = row["file"]
             if imgfile not in best or rank < best[imgfile][0]:
@@ -342,9 +343,19 @@ def main():
     all_records    = []
 
     for batch_spec in args.batches:
+        if ":" not in batch_spec:
+            raise SystemExit(
+                f"Invalid --batches item: {batch_spec}\n"
+                "Expected format: mapping_path:captions_path"
+            )
         mapping_path_str, captions_path_str = batch_spec.split(":", 1)
         mapping_path  = Path(mapping_path_str)
         captions_path = Path(captions_path_str)
+
+        if not mapping_path.exists():
+            raise SystemExit(f"Mapping file not found: {mapping_path}")
+        if not captions_path.exists():
+            raise SystemExit(f"Captions file not found: {captions_path}")
 
         print(f"\n处理批次：{mapping_path.parent.name}")
         t0 = time.perf_counter()

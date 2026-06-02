@@ -3,6 +3,7 @@ Train NodeDiffusionTransformer on preprocessed node-coordinate data.
 """
 
 import argparse
+import json
 import os
 
 import torch
@@ -29,6 +30,7 @@ def build_parser(defaults=None):
     parser.add_argument("--num_layers", type=int, default=defaults.get("num_layers", 6))
     parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 6))
     parser.add_argument("--timesteps", type=int, default=defaults.get("timesteps", 1000))
+    parser.add_argument("--vocab", default=defaults.get("vocab", "node_diffusion/unified_vocab_wp/vocab_config.json"))
     return parser
 
 
@@ -43,11 +45,14 @@ def main(argv=None, defaults=None):
 
     os.makedirs(args.save_dir, exist_ok=True)
 
+    vocab_cfg = json.loads(open(args.vocab, encoding="utf-8").read())
+    bpe_vocab = vocab_cfg["wp_vocab_size"]
+
     model = NodeDiffusionTransformer(
         model_channels=args.model_channels,
         num_layers=args.num_layers,
         num_heads=args.num_heads,
-        bpe_vocab_size=12000,
+        bpe_vocab_size=bpe_vocab,
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)

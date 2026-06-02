@@ -51,7 +51,7 @@ def parse_args():
                         default=Path("data/processed/type_combo_vocab_old.json"))
     parser.add_argument("--output-dir", type=Path,
                         default=Path("data/processed/unified_vocab"))
-    parser.add_argument("--bpe-vocab-size", type=int, default=12000,
+    parser.add_argument("--bpe-vocab-size", type=int, default=21000,
                         help="BPE文本词表大小（不含图token）")
     parser.add_argument("--min-frequency", type=int, default=2,
                         help="BPE合并的最低频率")

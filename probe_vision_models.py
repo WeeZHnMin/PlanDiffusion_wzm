@@ -172,7 +172,7 @@ def parse_args():
     p.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     p.add_argument("--img", type=Path, default=Path("data/viz_50000/00001.png"))
     p.add_argument("--workers", type=int, default=20)
-    p.add_argument("--timeout", type=float, default=30.0)
+    p.add_argument("--timeout", type=float, default=4)
     p.add_argument("--max-elapsed", type=float, default=15.0, help="exclude models slower than this (seconds)")
     p.add_argument("--out", type=Path, default=Path("probe_vision_results.jsonl"))
     p.add_argument("--summary", type=Path, default=Path("probe_vision_summary.txt"))

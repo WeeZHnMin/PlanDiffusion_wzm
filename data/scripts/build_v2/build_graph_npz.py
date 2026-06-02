@@ -45,7 +45,7 @@ MAX_TEXT_LEN = 128
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--jsonl",    default="data/jsonl/final_graph_dataset_v2.jsonl")
-    p.add_argument("--bpe",      default="node_diffusion/unified_vocab/bpe_tokenizer.json")
+    p.add_argument("--bpe",      default="node_diffusion/unified_vocab_wp/wp_tokenizer.json")
     p.add_argument("--output",   default="data/processed/graph_diffusion/graph_dataset.npz")
     p.add_argument("--augment",  type=int, default=3,
                    help="每张图随机节点重排次数（1=不增强，只用原始顺序）")
@@ -79,7 +79,8 @@ def main():
     nnodes_list = []
 
     t0 = time.perf_counter()
-    n_graphs = 0
+    n_graphs   = 0
+    n_skipped  = 0
 
     with open(args.jsonl, encoding="utf-8") as f:
         for line_no, line in enumerate(f):
@@ -87,7 +88,12 @@ def main():
             if not line:
                 continue
 
-            rec     = json.loads(line)
+            rec    = json.loads(line)
+            prompt = rec.get("prompt", "").replace("\n", " ").strip()
+            if len(bpe.encode(prompt).ids) > MAX_TEXT_LEN:
+                n_skipped += 1
+                continue
+
             n       = int(rec["n_nodes"])
             n_graphs += 1
 
@@ -108,8 +114,7 @@ def main():
             mask = np.zeros(MAX_NODES, dtype=np.int32)
             mask[:n] = 1
 
-            # BPE 编码文本
-            prompt   = rec.get("prompt", "").replace("\n", " ").strip()
+            # WordPiece 编码文本（已过滤 >128，此处直接截取）
             text_ids = bpe.encode(prompt).ids[:MAX_TEXT_LEN]
             text_len = len(text_ids)
             padded   = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
@@ -140,7 +145,7 @@ def main():
                 print(f"  {line_no+1} 张图 → {total_records} 条记录  ({elapsed:.1f}s)")
 
     total_records = len(adj_list)
-    print(f"\n共 {n_graphs} 张图，增强后 {total_records} 条记录")
+    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >128），增强后 {total_records} 条记录")
     print("打包为 numpy 数组...")
 
     out_path = Path(args.output)
