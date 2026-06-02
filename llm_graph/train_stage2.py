@@ -154,11 +154,11 @@ def main():
     loss_fn   = nn.CrossEntropyLoss(ignore_index=-100)
     n_loss_fn = nn.CrossEntropyLoss()
 
-    save_dir = Path(args.save_dir)
+    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_dir = Path(args.save_dir) / run_id
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_path = save_dir / f'log_{run_id}.jsonl'
+    log_path = save_dir / 'log.jsonl'
     log_file = open(log_path, 'w', encoding='utf-8', buffering=1)
     print(f'日志: {log_path}')
 
@@ -225,10 +225,6 @@ def main():
         scaler.step(opt)
         scaler.update()
         scheduler.step()
-
-        if step % 100 == 0:
-            torch.cuda.empty_cache()
-            gc.collect()
 
         with torch.no_grad():
             m = compute_metrics(logits.float(), y, text_lens)

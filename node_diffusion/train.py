@@ -17,7 +17,7 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/graph_diffusion/graph_dataset.npz"))
+    parser.add_argument("--data_path", default=defaults.get("data_path", "node_diffusion/graph_dataset.npz"))
     parser.add_argument("--save_dir", default=defaults.get("save_dir", "checkpoints/node_diffusion"))
     parser.add_argument("--resume", default="", help="path to checkpoint .pt")
     parser.add_argument("--batch_size", type=int, default=defaults.get("batch_size", 64))
