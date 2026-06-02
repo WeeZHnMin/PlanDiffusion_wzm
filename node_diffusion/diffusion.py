@@ -62,7 +62,8 @@ class GaussianDiffusion:
 
         # ── 类型嵌入加噪 ──────────────────────────────────────────────────
         node_types  = model_kwargs['node_types'].long()              # [B, N]
-        type_emb_0  = model.type_embed(node_types).float()          # [B, N, d]
+        raw_model   = model.module if hasattr(model, 'module') else model
+        type_emb_0  = raw_model.type_embed(node_types).float()      # [B, N, d]
         type_noise  = torch.randn_like(type_emb_0)
         type_xt, _  = self.q_sample(type_emb_0, t, type_noise)      # [B, N, d]
 
@@ -99,7 +100,7 @@ class GaussianDiffusion:
 
             # 类型准确率：还原预测的 type embedding，最近邻找类别
             pred_type_emb_0 = (type_xt - s2 * pred_type_noise.float()) / s1  # [B, N, d]
-            all_embs        = model.type_embed.weight.float()            # [33, d]
+            all_embs        = raw_model.type_embed.weight.float()         # [33, d]
             B_, N_ = node_types.shape
             dists       = torch.cdist(
                 pred_type_emb_0.reshape(B_ * N_, -1), all_embs
