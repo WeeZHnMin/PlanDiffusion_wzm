@@ -5,6 +5,9 @@ Train NodeDiffusionTransformer on preprocessed node-coordinate data.
 import argparse
 import json
 import os
+import time
+from datetime import datetime
+from pathlib import Path
 
 import torch
 from torch.optim import AdamW
@@ -43,7 +46,13 @@ def main(argv=None, defaults=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
-    os.makedirs(args.save_dir, exist_ok=True)
+    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_dir = Path(args.save_dir) / run_id
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = save_dir / 'log.jsonl'
+    log_file = open(log_path, 'w', encoding='utf-8', buffering=1)
+    print(f'日志: {log_path}')
 
     vocab_cfg = json.loads(open(args.vocab, encoding="utf-8").read())
     bpe_vocab = vocab_cfg["wp_vocab_size"]
@@ -69,8 +78,8 @@ def main(argv=None, defaults=None):
     data = load_node_data(args.data_path, args.batch_size, shuffle=True)
 
     model.train()
-    running_loss = 0.0
-    running_coord_rmse = 0.0
+    running_loss = running_rmse = running_type_acc = 0.0
+    t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
         x, cond = next(data)
@@ -85,24 +94,35 @@ def main(argv=None, defaults=None):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
 
-        running_loss += loss.item()
-        running_coord_rmse += coord_rmse
+        running_loss     += loss.item()
+        running_rmse     += coord_rmse
+        running_type_acc += type_acc
 
-        if step % args.log_interval == 0:
-            avg      = running_loss / args.log_interval if step > 0 else running_loss
-            avg_rmse = running_coord_rmse / args.log_interval if step > 0 else running_coord_rmse
-            running_loss = 0.0
-            running_coord_rmse = 0.0
-            print(f"step {step:6d} | loss {avg:.4f} | coord_rmse {avg_rmse:.2f} px | type_acc {type_acc:.3f}")
+        if step % args.log_interval == 0 and step > 0:
+            n        = args.log_interval
+            avg_loss = running_loss     / n
+            avg_rmse = running_rmse     / n
+            avg_acc  = running_type_acc / n
+            running_loss = running_rmse = running_type_acc = 0.0
+            elapsed  = time.perf_counter() - t0
+            t0       = time.perf_counter()
+
+            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | type_acc {avg_acc:.3f} | {elapsed:.1f}s")
+            log_file.write(json.dumps({
+                'step': step, 'loss': round(avg_loss, 4),
+                'coord_rmse': round(avg_rmse, 2), 'type_acc': round(avg_acc, 4),
+                'elapsed': round(elapsed, 1),
+            }) + '\n')
 
         if step > 0 and step % args.save_interval == 0:
-            path = os.path.join(args.save_dir, f"model_{step:07d}.pt")
-            torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": step}, path)
-            print(f"  saved -> {path}")
+            ckpt_path = save_dir / f"model_{step:07d}.pt"
+            torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": step}, ckpt_path)
+            print(f"  saved -> {ckpt_path}")
 
-    path = os.path.join(args.save_dir, f"model_{args.total_steps:07d}.pt")
-    torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": args.total_steps}, path)
-    print(f"training done. saved -> {path}")
+    ckpt_path = save_dir / f"model_{args.total_steps:07d}.pt"
+    torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": args.total_steps}, ckpt_path)
+    log_file.close()
+    print(f"training done. saved -> {ckpt_path}")
 
 
 if __name__ == "__main__":
