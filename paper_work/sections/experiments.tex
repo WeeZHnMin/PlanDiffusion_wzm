@@ -4,7 +4,45 @@
 \subsection{实验设置}
 \label{subsec:setup}
 
-\todo{待写。}
+\paragraph{评估指标}
+我们从几何质量、拓扑合法性和文本一致性三个维度评估生成结果：
+
+\begin{itemize}
+    \item \textbf{图有效率（Graph Validity Rate, GVR）}：
+    生成图中连通且无孤立节点的样本占比，反映 Stage~1 的拓扑合法性。
+
+    \item \textbf{坐标 RMSE（Coord-RMSE）}：
+    在已知真实坐标的情况下，去噪预测坐标与真实坐标的均方根误差（像素单位），
+    衡量 Stage~2 的坐标回归精度。
+
+    \item \textbf{类型准确率（Type Acc.）}：
+    最近邻恢复的节点类型与真实类型的匹配率，
+    衡量类型嵌入扩散的语义保持能力。
+
+    \item \textbf{FID}：
+    在渲染后的平面图图像上计算 Fréchet Inception Distance，
+    衡量生成分布与真实分布的整体视觉相似度。
+\end{itemize}
+
+\paragraph{基线方法}
+由于本文与现有方法在输入模态上存在根本差异，对比以方法特性说明为主：
+
+\begin{itemize}
+    \item \textbf{Architext}~\cite{galanos2023architext}：
+    在 Architext\_v1 数据集上微调 GPT 系列模型，以自然语言描述直接生成平面图。
+    其文本描述由规则模板生成，语言单一，且不建模显式图结构。
+
+    \item \textbf{HouseDiffusion}~\cite{shabani2023housediffusion}：
+    以气泡图（bubble diagram）为条件，通过混合扩散模型生成矢量多边形平面图。
+    几何质量优秀，但需手工绘制气泡图，不支持自然语言输入。
+
+    \item \textbf{ChatHouseDiffusion}~\cite{qin2025chathousediffusion}：
+    在 HouseDiffusion 基础上引入 prompt 引导，支持文本条件生成与编辑，
+    但缺乏对拓扑结构的显式约束。
+\end{itemize}
+
+\paragraph{实现细节}
+\todo{待补充：训练硬件、训练时长、推理时间。}
 
 \subsection{主实验结果}
 \label{subsec:main_results}

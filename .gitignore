@@ -32,6 +32,7 @@ generated_data/
 *.rar
 *.7z
 *.pdf
+!paper_work/**/*.pdf
 思路fromGemini.md
 
 
@@ -58,6 +59,7 @@ type_predictor_exp/node_viz
 type_predictor_exp/verify_viz
 type_predictor_exp/node_diffusion_results/
 *.png
+!paper_work/**/*.png
 *.jsonl
 data/convert_rs/target/
 

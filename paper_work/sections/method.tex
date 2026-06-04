@@ -152,6 +152,25 @@ ID 范围 & Token & 说明 \\
 且任意连通图均可唯一表示。
 为增强多样性，对每张图从不同起始节点执行 BFS（增强 ${\times}4$）。
 
+图~\ref{fig:seq_graph} 展示了自回归生成过程中图结构的逐步构建：
+从部分父节点序列对应的局部生成树，到完整生成树，再逐步添加补边，
+最终恢复完整图拓扑。
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/seq_graph.pdf}
+    \caption{
+        图序列化的自回归生成过程（真实数据，$N=10$）。
+        蓝色实线为 BFS 生成树边，红色虚线为补边。
+        从左至右依次为：
+        （1）生成部分父节点 token 后的局部生成树；
+        （2）父节点序列生成完毕（\texttt{SEP} 前）的完整生成树；
+        （3）生成前两条补边后的图；
+        （4）所有补边生成完毕（\texttt{EOS\_G} 前）的完整图。
+    }
+    \label{fig:seq_graph}
+\end{figure}
+
 令 $\mathbf{s} = (s_1, \ldots, s_K)$ 为完整序列（含文本前缀），
 模型建模：
 \begin{equation}
@@ -219,6 +238,18 @@ grad clip $= 1.0$，FP16 混合精度。
     &\boldsymbol{\delta}^{(i)} &\sim \mathcal{N}(\mathbf{0}, \mathbf{I})
     \label{eq:fwd_type}
 \end{align}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/diffusion_process.pdf}
+    \caption{
+        节点图的前向扩散过程（$t=0 \to t=1000$）。
+        $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
+        至 $t=1000$ 时坐标分布退化为标准正态分布。
+        节点颜色表示组合类型。
+    }
+    \label{fig:diffusion}
+\end{figure}
 
 \subsubsection{去噪网络}
 
@@ -373,3 +404,46 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 从 $(\mathbf{x}_T, \{\mathbf{e}_T^{(i)}\}) \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
 出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$ 与类型 $\hat{\mathbf{y}}$；
 （3）反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
+
+\paragraph{最小度约束}
+Stage~1 在生成补边序列（\texttt{SEP} 之后）时，
+施加\textbf{最小度约束}：若当前图中存在度数小于 2 的节点，
+则在 logit 采样前将 \texttt{EOS\_G} 对应的 logit 置为 $-\infty$，
+强制模型继续生成补边，直至所有节点满足 $\deg(v_i) \geq 2$。
+
+该约束的几何动机在于：顶点图中每个节点代表房间多边形的一个角点，
+角点至少需连接两条边才能构成有效的多边形转角。
+度数为 1 的悬挂节点无法参与闭合多边形的构造，
+会导致后处理渲染时出现孤立线段或破碎轮廓。
+通过在推理阶段以零额外训练代价强制施加此约束，
+可显著提升生成图的几何合法率。
+
+完整推理流程如算法~\ref{alg:inference} 所示。
+
+\begin{algorithm}[t]
+\caption{PlanDiffusion 推理}
+\label{alg:inference}
+\begin{algorithmic}[1]
+\REQUIRE 文本描述 $\mathcal{T}$
+\ENSURE 节点坐标 $\hat{\mathbf{X}}$，节点类型 $\hat{\mathbf{y}}$，邻接矩阵 $\mathbf{A}$
+\STATE \textbf{Stage 1：图拓扑生成}
+\STATE 以 $\mathcal{T}$ 为条件，自回归采样生成树序列 token
+\WHILE{未采样到 \texttt{EOS\_G}}
+    \STATE 采样下一个 token $s \sim p_{\theta_1}(\cdot \mid s_{<k})$
+    \IF{$s = \texttt{EOS\_G}$ \AND $\exists\, i: \deg(v_i) < 2$}
+        \STATE 将 \texttt{EOS\_G} 的 logit 置为 $-\infty$，重新采样  \COMMENT{最小度约束}
+    \ENDIF
+\ENDWHILE
+\STATE 解析序列得 $\mathbf{A} \in \{0,1\}^{N \times N}$，节点掩码 $\mathbf{m}$
+\STATE \textbf{Stage 2：坐标与类型扩散}
+\STATE 采样初始噪声 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$，$\mathbf{E}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+\FOR{$t = T, T{-}1, \ldots, 1$}
+    \STATE $(\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}, \hat{\boldsymbol{\epsilon}}_{\mathrm{type}}) = f_\theta(\mathbf{x}_t, \mathbf{E}_t, t, \mathbf{A}, \mathbf{m}, \mathcal{T})$
+    \STATE $\mathbf{x}_{t-1} \leftarrow$ DDPM 逆步（$\mathbf{x}_t$，$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$，$t$）
+    \STATE $\mathbf{E}_{t-1} \leftarrow$ DDPM 逆步（$\mathbf{E}_t$，$\hat{\boldsymbol{\epsilon}}_{\mathrm{type}}$，$t$）
+\ENDFOR
+\STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_0$
+\STATE $\hat{y}_i = \arg\min_{k} \|\hat{\mathbf{e}}_0^{(i)} - \mathrm{Emb}(k)\|_2$，$\forall i$
+\RETURN $\hat{\mathbf{X}},\; \hat{\mathbf{y}},\; \mathbf{A}$
+\end{algorithmic}
+\end{algorithm}
