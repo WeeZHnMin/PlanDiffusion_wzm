@@ -1,0 +1,61 @@
+\section{相关工作}
+\label{sec:related_work}
+
+\subsection{平面图生成}
+\label{subsec:floorplan_gen}
+
+平面图生成方法大致可分为三类。
+
+\textbf{图约束方法。}
+House-GAN~\cite{nauata2020housegan} 将房间邻接图作为条件，
+以关系生成对抗网络生成各房间的边界框，
+开创了以图约束驱动布局生成的范式。
+该类方法对拓扑结构有强控制能力，
+但需要用户预先提供手绘气泡图，限制了易用性。
+
+\textbf{扩散模型方法。}
+HouseDiffusion~\cite{shabani2023housediffusion} 提出混合扩散模型，
+在连续坐标与离散房间标签上联合去噪，
+直接生成矢量多边形，取得了当时最优的几何质量。
+其同样以气泡图为输入条件，不支持自然语言驱动。
+
+\textbf{语言驱动方法。}
+Architext~\cite{galanos2023architext} 在 250k 合成平面图上微调 GPT 系列模型，
+实现了从自然语言描述到平面图的直接生成。
+Tell2Design~\cite{leng2023tell2design} 构建了语言引导平面图数据集并探索了多种基线方法。
+ChatHouseDiffusion~\cite{qin2025chathousediffusion} 将扩散模型与 prompt 引导相结合，
+支持生成与编辑，但仍缺乏对拓扑结构的显式约束。
+
+与上述工作不同，本文在文本和坐标之间引入显式图结构作为中间表示，
+同时具备语言可控性和拓扑保证。
+
+\subsection{自回归图结构生成}
+\label{subsec:autoregressive_graph}
+
+将图结构序列化后用自回归模型建模是图生成的经典思路。
+You et al.~\cite{you2018graphrnn} 提出 GraphRNN，
+以节点-边交替序列逐步生成图结构。
+近年来，基于 Transformer 的方法进一步提升了序列建模能力。
+DiGress~\cite{vignac2022digress} 将图生成建模为离散扩散过程，
+在分子图和场景图上取得了优秀结果。
+GRAN~\cite{liao2019gran} 通过自回归块生成稠密图，提升了效率。
+
+本文的图序列化方案受"将图展平为序列"思路的启发~\cite{you2018graphrnn}，
+采用"BFS 生成树 + 补边"格式，
+使生成树部分（长度固定为 $N-1$）与补边部分（长度可变）结构清晰，
+便于自回归模型学习。
+
+\subsection{扩散模型在布局生成中的应用}
+\label{subsec:diffusion_layout}
+
+DDPM~\cite{ho2020ddpm} 提出去噪扩散概率模型后，
+扩散过程被广泛应用于图像、点云、分子构象等结构化数据的生成。
+在布局生成方向，LayoutDM、DiffLayout 等工作将扩散模型引入
+UI 布局、文档排版等任务，取得了较好的多样性与质量均衡。
+HouseDiffusion~\cite{shabani2023housediffusion} 将其引入矢量平面图，
+验证了扩散模型在几何生成上的优越性。
+
+本文的节点坐标扩散模块在 DDPM 框架下，
+以图结构（邻接矩阵）和文本（WordPiece token）为双重条件，
+通过双流注意力机制同时捕捉局部几何约束和全局语义信息，
+与上述工作在条件化方式上存在本质区别。

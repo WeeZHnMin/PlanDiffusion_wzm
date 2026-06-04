@@ -1,0 +1,124 @@
+% ============================================================
+%  PlanDiffusion 论文草稿
+%  编译器：pdflatex / xelatex（推荐 xelatex，支持中文字体）
+%  中文字体：宋体正文 / 黑体标题（需远端编译器安装 fandol 或系统中文字体）
+% ============================================================
+
+\documentclass[10pt,twocolumn,a4paper]{article}
+
+% ── 中文支持（远端 Linux 编译器请确保安装 fandol 字体包）────────────────────
+\usepackage[UTF8, fontset=fandol]{ctex}
+% fandol 字体说明：
+%   正文（宋体）→ FandolSong，等效宋体
+%   粗体（黑体）→ FandolHei
+%   斜体（楷体）→ FandolKai
+% 若本地使用 xelatex + Windows 字体，可替换为：
+%   \usepackage[UTF8]{ctex}
+%   \setCJKmainfont{SimSun}[BoldFont=SimHei, ItalicFont=KaiTi   ]
+
+% ── 页面设置（标准会议纸张：双栏，页边距约 1 inch）────────────────────────
+\usepackage[
+    a4paper,
+    top=2.54cm, bottom=2.54cm,
+    left=1.91cm, right=1.91cm,
+    columnsep=0.64cm
+]{geometry}
+
+% ── 数学与符号 ──────────────────────────────────────────────────────────────
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}          % 粗体数学符号
+
+% ── 图表 ────────────────────────────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{booktabs}    % 三线表
+\usepackage{multirow}
+\usepackage{array}
+\usepackage[labelfont=bf, font=small, skip=4pt]{caption}
+\usepackage{subcaption}
+
+% ── 排版工具 ─────────────────────────────────────────────────────────────────
+\usepackage{microtype}   % 微排版优化（西文）
+\usepackage{xcolor}
+\usepackage{verbatim}
+\usepackage{enumitem}    % 列表间距控制
+\setlist[itemize]{noitemsep, topsep=2pt}
+\setlist[enumerate]{noitemsep, topsep=2pt}
+
+% ── 算法 ────────────────────────────────────────────────────────────────────
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% ── 超链接（草稿用，投稿前检查是否需要去掉）─────────────────────────────────
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+
+% ── 节标题格式：黑体，间距紧凑 ──────────────────────────────────────────────
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.5em}{}
+\titlespacing{\section}{0pt}{6pt}{3pt}
+\titlespacing{\subsection}{0pt}{4pt}{2pt}
+\titlespacing{\subsubsection}{0pt}{3pt}{1pt}
+
+% ── 段落与行距 ───────────────────────────────────────────────────────────────
+\usepackage{setspace}
+\setstretch{1.05}        % 行距约 1.05 倍（会议标准为单倍，可调为 1.0）
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{1em}
+
+% ── 摘要样式（双栏摘要）────────────────────────────────────────────────────
+\usepackage{abstract}
+\renewcommand{\abstractnamefont}{\normalfont\bfseries}
+\renewcommand{\abstracttextfont}{\normalfont\small}
+\setlength{\absleftindent}{0pt}
+\setlength{\absrightindent}{0pt}
+
+% ── 参考文献间距 ────────────────────────────────────────────────────────────
+\usepackage[numbers,sort&compress]{natbib}
+\setlength{\bibsep}{2pt}
+
+% ── 草稿辅助命令 ────────────────────────────────────────────────────────────
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ============================================================
+%  标题 / 作者
+% ============================================================
+\title{
+    \vspace{-1em}
+    {\large \textbf{PlanDiffusion：基于自回归图结构生成与}}\\[2pt]
+    {\large \textbf{坐标扩散的文本驱动住宅平面图生成}}
+    \vspace{-0.5em}
+}
+
+\author{
+    \todo{作者信息}
+}
+
+\date{}
+
+% ============================================================
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+% ── 摘要 ────────────────────────────────────────────────────────────────────
+\begin{abstract}
+\todo{等实验结果后填写。三句话结构：问题与现有局限 → 本文方法 → 实验结果。}
+\end{abstract}
+
+% ── 正文各节 ────────────────────────────────────────────────────────────────
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/method}
+\input{sections/experiments}
+\input{sections/conclusion}
+
+% ── 参考文献 ─────────────────────────────────────────────────────────────────
+{\small
+\bibliographystyle{abbrvnat}
+\bibliography{references}
+}
+
+\end{document}

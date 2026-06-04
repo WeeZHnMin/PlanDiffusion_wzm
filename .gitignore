@@ -67,4 +67,4 @@ data/convert_rs/target/
 
 # 草稿方案文件夹
 /drafts/
-paper_work/
+.playwright-mcp/

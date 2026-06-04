@@ -1,0 +1,375 @@
+\section{方法}
+\label{sec:method}
+
+\subsection{问题定义}
+\label{subsec:problem}
+
+给定自然语言描述 $\mathcal{T}$，目标是生成对应的住宅平面图。
+我们将平面图表示为带属性的图 $\mathcal{G} = (\mathcal{V}, \mathcal{E})$，
+其中 $\mathcal{V}$ 为节点集合（房间多边形的角点），
+$\mathcal{E}$ 为边集合（相邻角点间的连接关系）。
+每个节点 $v_i$ 附带二维坐标 $\mathbf{c}_i \in \mathbb{R}^2$ 和
+组合类型标签 $y_i \in \{1, \ldots, 32\}$，
+令 $\mathbf{X} = [\mathbf{c}_1, \ldots, \mathbf{c}_N]^\top \in \mathbb{R}^{N \times 2}$，
+邻接矩阵 $\mathbf{A} \in \{0,1\}^{N \times N}$。
+
+目标是学习联合分布 $p(\mathbf{A}, \mathbf{X}, \mathbf{y} \mid \mathcal{T})$，
+我们将其分解为两个串联子问题：
+\begin{equation}
+    p(\mathbf{A},\mathbf{X},\mathbf{y} \mid \mathcal{T})
+    = \underbrace{p_{\theta_1}(\mathbf{A} \mid \mathcal{T})}_{\text{Stage 1}}
+    \cdot
+    \underbrace{p_{\theta_2}(\mathbf{X}, \mathbf{y} \mid \mathbf{A}, \mathcal{T})}_{\text{Stage 2}}
+    \label{eq:factorize}
+\end{equation}
+（1）\textbf{图拓扑生成}：自回归建模 $p_{\theta_1}(\mathbf{A} \mid \mathcal{T})$，
+输出图的连接结构；
+（2）\textbf{节点坐标与类型扩散}：以 $(\mathbf{A}, \mathcal{T})$ 为条件，
+通过扩散模型建模 $p_{\theta_2}(\mathbf{X}, \mathbf{y} \mid \mathbf{A}, \mathcal{T})$。
+
+% -----------------------------------------------------------------------------
+\subsection{数据集}
+\label{subsec:dataset}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{figures/dataset_fig.pdf}
+    \caption{
+        数据集样例。每条样本包含住宅平面图渲染（左）、
+        对应顶点图表示（中）及 VLM 自动生成的自然语言描述（右）。
+        顶点颜色表示组合类型，边表示几何连接关系。
+    }
+    \label{fig:dataset}
+\end{figure}
+
+现有平面图数据集的文本标注普遍依赖规则模板，语言单一，且缺乏结构化的图表示。
+Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
+但其描述仅为简单模板句（如 ``a house with two bedrooms and one bathroom''），
+不足以支撑文本条件生成的训练。
+为此，我们在 Architext\_v1 基础上构建了新的训练数据集，
+引入顶点图表示与 VLM 生成的自然语言描述，如图~\ref{fig:dataset} 所示。
+
+\paragraph{顶点图表示}
+我们将平面图表示为\textbf{顶点图}：
+以房间多边形的全部角点为节点，以多边形边上相邻顶点的连接为边。
+由于多个房间可能共享同一顶点（如卧室与走廊的公共墙角），
+每个节点的类型定义为其所属全部房间类型的有序组合，
+称为\textbf{组合类型（combo type）}。
+与使用房间中心点的方案相比，
+顶点图保留了平面图完整的几何拓扑信息，
+并使图结构与几何形状之间保持一一对应。
+全部训练样本中共出现 32 种组合类型，每种分配唯一整数 ID（1--32）。
+
+\paragraph{自然语言标注}
+我们将顶点图渲染为彩色平面图图像，
+调用多个视觉语言模型（Qwen 系列、DeepSeek-V3、Kimi 等，共 40 余个）
+对每张图生成自然语言描述，并按模型质量优先级选取最佳结果。
+标注要求直接陈述各房间的位置关系与连通关系，
+回避视觉指代词，使描述可独立于图像作为文本条件使用。
+
+\paragraph{统计}
+最终数据集包含 \textbf{149,609} 条样本，
+每条样本含邻接矩阵（$40{\times}40$）、节点坐标（$40{\times}2$）、
+组合类型 ID（$40$）及文本描述（WordPiece 编码，训练截断至 128 token）。
+数据集关键统计如表~\ref{tab:dataset_stats} 所示。
+
+\begin{table}[h]
+\centering
+\caption{数据集统计}
+\label{tab:dataset_stats}
+\small
+\begin{tabular}{lrrr}
+\toprule
+统计项 & 最小 & 均值 & 最大 \\
+\midrule
+样本总数           & \multicolumn{3}{c}{149,609} \\
+节点数             & 9    & 22.4 & 40  \\
+边数               & 12   & 28.6 & 49  \\
+文本长度（token）  & 33   & 81.8 & 145 \\
+单类型节点占比     & \multicolumn{3}{c}{60.7\%} \\
+多类型节点占比     & \multicolumn{3}{c}{39.3\%} \\
+Combo 类型总数     & \multicolumn{3}{c}{32} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsection{统一词表}
+\label{subsec:vocab}
+
+为使文本 token 与图结构 token 共存于同一序列空间，
+我们采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
+并在其后追加 84 个图结构专用 token，构成大小为 10,084 的统一词表，
+具体如表~\ref{tab:vocab} 所示。
+该词表同时被 Stage~1 和 Stage~2 共享。
+相较于在领域数据上重新训练 BPE，直接复用 BERT WordPiece 词表使系统更易与
+预训练语言模型对接，且对英文建筑描述具有良好的覆盖率。
+
+\begin{table}[h]
+\centering
+\caption{统一词表布局}
+\label{tab:vocab}
+\small
+\begin{tabular}{lll}
+\toprule
+ID 范围 & Token & 说明 \\
+\midrule
+0 -- 9999    & WordPiece token & 文本词表（BERT 前 10k）\\
+10000        & \texttt{PAD}    & 填充 \\
+10001        & \texttt{BOS\_G} & 图序列起始 \\
+10002        & \texttt{EOS\_G} & 图序列终止 \\
+10003        & \texttt{SEP}    & 生成树与补边分隔符 \\
+10004--10043 & $N_k$           & 节点数量（$N=1{\sim}40$） \\
+10044--10083 & 节点 token       & 节点编号（$0{\sim}39$） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% -----------------------------------------------------------------------------
+\subsection{阶段一：自回归图拓扑生成}
+\label{subsec:llm_graph}
+
+\subsubsection{图序列化格式}
+
+给定含 $N$ 个节点的图，我们将其序列化为：
+
+\begin{equation}
+\small
+\underbrace{t_1 \cdots t_L}_{\text{BPE 文本}}\;
+\texttt{BOS\_G}\;
+\underbrace{N_k}_{N \text{ 个节点}}\;
+\underbrace{p_1 \cdots p_{N-1}}_{\text{生成树父节点}}\;
+\texttt{SEP}\;
+\underbrace{i_1\, j_1 \cdots}_{\text{补边}}\;
+\texttt{EOS\_G}
+\label{eq:seq}
+\end{equation}
+
+其中生成树通过 BFS 遍历构建，父节点序列 $p_i = \texttt{NODE} + \mathrm{parent}(i)$
+记录每个节点在 BFS 树中的父节点；
+补边为不属于生成树的额外边，每条边用两个 token 表示。
+这一"生成树 + 补边"格式结构规整（父节点序列长度固定为 $N-1$），
+且任意连通图均可唯一表示。
+为增强多样性，对每张图从不同起始节点执行 BFS（增强 ${\times}4$）。
+
+令 $\mathbf{s} = (s_1, \ldots, s_K)$ 为完整序列（含文本前缀），
+模型建模：
+\begin{equation}
+    p_{\theta_1}(\mathbf{A} \mid \mathcal{T})
+    = \prod_{k \in \mathcal{I}_g} p_{\theta_1}(s_k \mid s_{<k})
+    \label{eq:ar}
+\end{equation}
+其中 $\mathcal{I}_g$ 为 $\texttt{BOS\_G}$ 之后的图 token 下标集合；
+文本部分 label 置 $-100$，不计入 loss。
+
+\subsubsection{模型结构}
+
+本阶段采用 \texttt{LlamaForCausalLM}~\cite{touvron2023llama} 为自回归主干，
+配置为：隐藏层维度 512，8 层，8 头，前馈维度 1536，
+词表大小 10,084，约 20M 参数。
+
+\subsubsection{两阶段训练策略}
+
+直接在文本+图联合序列上训练易导致模型难以同时学习语言理解与图结构生成。
+为此，我们采用两阶段训练：
+
+\textbf{预训练（图结构预训练）}：
+仅使用图序列部分（\texttt{BOS\_G} 之后），
+令模型在不依赖文本条件的情况下先学习图结构语法，
+训练 50 epoch。
+
+\textbf{微调（文本条件微调）}：
+以预训练权重初始化，输入完整文本+图联合序列，
+loss 仅在图序列部分计算，训练 100 epoch。
+
+两阶段均采用 AdamW（$\beta_1{=}0.9$，$\beta_2{=}0.95$，
+lr $= 10^{-4}$，余弦退火至 $10^{-5}$），
+grad clip $= 1.0$，FP16 混合精度。
+
+% -----------------------------------------------------------------------------
+\subsection{阶段二：节点坐标与类型联合扩散}
+\label{subsec:node_diffusion}
+
+\subsubsection{联合扩散对象}
+
+坐标 $\mathbf{x}_0 \in \mathbb{R}^{2 \times N}$ 可直接在欧氏空间扩散。
+类型标签 $y_i \in \{1,\ldots,32\}$ 为离散量，无法直接施加高斯噪声；
+为此，我们将其映射到连续嵌入空间：
+\begin{equation}
+    \mathbf{e}_0^{(i)} = \mathrm{Emb}(y_i) \in \mathbb{R}^{d},
+    \quad d = 384
+    \label{eq:type_emb}
+\end{equation}
+并在嵌入空间对 $\mathbf{e}_0^{(i)}$ 施加高斯扩散。
+这使坐标与类型可在统一的 Gaussian DDPM 框架下联合训练，
+无需引入离散扩散机制。
+
+\subsubsection{前向过程}
+
+采用线性 beta 调度（$\beta_t \in [10^{-4},\, 0.02]$，$T=1000$），
+令 $\alpha_t = 1 - \beta_t$，$\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$。
+两路前向过程为：
+\begin{align}
+    \mathbf{x}_t &= \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
+                  + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon},
+    &\boldsymbol{\epsilon} &\sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+    \label{eq:fwd_coord} \\
+    \mathbf{e}_t^{(i)} &= \sqrt{\bar{\alpha}_t}\,\mathbf{e}_0^{(i)}
+                  + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\delta}^{(i)},
+    &\boldsymbol{\delta}^{(i)} &\sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+    \label{eq:fwd_type}
+\end{align}
+
+\subsubsection{去噪网络}
+
+去噪网络 $f_\theta$ 为双流注意力 Transformer，
+接收加噪坐标、加噪类型嵌入、时间步、邻接矩阵和文本，
+预测两路噪声：
+\begin{equation}
+    \bigl(\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}},\,
+          \hat{\boldsymbol{\epsilon}}_{\mathrm{type}}\bigr)
+    = f_\theta\!\left(\mathbf{x}_t,\,\mathbf{E}_t,\,
+                      t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T}\right)
+    \label{eq:model}
+\end{equation}
+其中 $\mathbf{E}_t = \{\mathbf{e}_t^{(i)}\}_{i=1}^{N}$ 为加噪类型嵌入矩阵。
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/node_diffusion_arch.pdf}
+    \caption{
+        NodeDiffusionTransformer 架构图。
+        输入的加噪坐标、加噪类型嵌入和时间步在 Fusion 模块融合为节点隐向量，
+        拼接文本嵌入后经 6 层双流注意力编码器处理；
+        最终节点特征分别经 Coordinate Head 和 Type Embedding Head
+        预测两路噪声 $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$ 和
+        $\hat{\boldsymbol{\epsilon}}_{\mathrm{type}}$。
+    }
+    \label{fig:arch}
+\end{figure}
+
+\paragraph{节点特征融合}
+坐标特征与类型嵌入并非两条独立序列，而是在输入阶段直接相加，
+与时间步嵌入共同构成每个节点的\textbf{单一共享隐向量}：
+\begin{equation}
+    \mathbf{h}_i^{(0)} = W_c\,\mathbf{x}_t^{(i)}
+                       + \mathbf{e}_t^{(i)}
+                       + \mathrm{MLP}\!\left(\gamma(t)\right)
+    \label{eq:node_init}
+\end{equation}
+其中 $\gamma(t)$ 为正弦时间步编码，$W_c \in \mathbb{R}^{d \times 2}$。
+这一设计的关键在于：坐标与类型信息在同一表示空间内相互耦合，
+后续所有注意力计算均作用于这一融合向量。
+因此，坐标与类型之间并无独立的 cross-attention 流，
+而是通过共享向量在每一次注意力计算中隐式耦合。
+具体而言，每个注意力头的 Q/K/V 均由融合向量线性投影得到：
+\begin{equation}
+    \mathbf{Q}_i = W_Q\,\mathbf{h}_i^{(\ell)},\quad
+    \mathbf{K}_j = W_K\,\mathbf{h}_j^{(\ell)},\quad
+    \mathbf{V}_j = W_V\,\mathbf{h}_j^{(\ell)}
+    \label{eq:qkv}
+\end{equation}
+由于 $\mathbf{h}_j^{(\ell)}$ 同时携带坐标与类型信息，
+注意力分数 $\mathbf{Q}_i \cdot \mathbf{K}_j^\top$ 及聚合值
+$\sum_j \alpha_{ij}\mathbf{V}_j$ 均隐含了两者的联合感知。
+两个输出 head 也均从同一 $\mathbf{h}_i^{(L)}$ 读取，
+使坐标噪声预测与类型噪声预测在整个去噪过程中保持相互感知。
+
+\paragraph{双流注意力层}
+每层包含两条并行注意力流，输出残差相加后经 FFN 处理：
+\begin{equation}
+\begin{split}
+    \mathbf{h}_i^{(\ell+1)} = \mathbf{h}_i^{(\ell)}
+    &+ \mathrm{Dropout}\!\left(\mathrm{AdjAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)})\right)_{\!i} \\
+    &+ \mathrm{Dropout}\!\left(\mathrm{GlobalAttn}(\mathbf{H}_{\mathrm{full}}^{(\ell)})\right)_{\!i}
+\end{split}
+    \label{eq:dual_attn}
+\end{equation}
+
+\begin{itemize}
+    \item \textbf{邻接局部注意力 $\mathrm{AdjAttn}$}：
+    仅对节点序列 $\mathbf{H}_{\mathrm{node}}$ 计算，
+    注意力掩码由邻接矩阵决定：
+    \begin{equation}
+        M_{ij}^{\mathrm{adj}} =
+        \begin{cases}
+            0       & \text{若 } \mathbf{A}_{ij} = 1 \\
+            -\infty & \text{其他}
+        \end{cases}
+        \label{eq:adj_mask}
+    \end{equation}
+    每个节点仅能关注直连邻居，在保证图结构约束的同时，
+    使相邻节点之间的坐标与类型特征得以局部交换。
+
+    \item \textbf{全局注意力 $\mathrm{GlobalAttn}$}：
+    对拼接序列 $\mathbf{H}_{\mathrm{full}} = [\mathbf{H}_{\mathrm{text}};
+    \mathbf{H}_{\mathrm{node}}]$ 做无约束注意力，
+    使每个节点能跨越图结构感知全局布局与文本语义，
+    并使所有节点的融合特征（含坐标与类型）之间形成完全连接。
+    文本嵌入通过可学习 BPE 嵌入层（维度 $d=384$）获得，
+    无需预训练语言模型。
+\end{itemize}
+
+共堆叠 6 层，model\_channels $= 384$，6 头，dropout $= 0.1$。
+
+\subsubsection{训练目标}
+
+联合训练目标为：
+\begin{equation}
+    \mathcal{L} = \mathcal{L}_{\mathrm{coord}} + \lambda\,\mathcal{L}_{\mathrm{type}}
+    \label{eq:loss}
+\end{equation}
+\begin{align}
+    \mathcal{L}_{\mathrm{coord}}
+        &= \frac{\displaystyle\sum_{i} m_i
+                 \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{coord},i}
+                       - \boldsymbol{\epsilon}_i\right\|^2}
+                {2\displaystyle\sum_i m_i}
+    \label{eq:loss_coord} \\[6pt]
+    \mathcal{L}_{\mathrm{type}}
+        &= \frac{\displaystyle\sum_{i} m_i
+                 \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{type},i}
+                       - \boldsymbol{\delta}_i\right\|^2}
+                {d\displaystyle\sum_i m_i}
+    \label{eq:loss_type}
+\end{align}
+其中 $m_i$ 为节点有效掩码，$\lambda = 1.0$。
+$\mathcal{L}_{\mathrm{type}}$ 在嵌入空间预测类型噪声，
+与 $\mathcal{L}_{\mathrm{coord}}$ 共享扩散时间步，
+同时起到对坐标预测的语义正则化作用。
+
+优化器为 AdamW（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
+grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精度。
+
+\subsubsection{推理：坐标采样与类型恢复}
+
+逆过程执行标准 DDPM 采样（1000 步）：
+\begin{equation}
+    p_{\theta_2}(\mathbf{x}_{t-1} \mid \mathbf{x}_t, \mathbf{A}, \mathcal{T})
+    = \mathcal{N}\!\left(\mathbf{x}_{t-1};\,\boldsymbol{\mu}_\theta,\,\tilde{\beta}_t\mathbf{I}\right)
+    \label{eq:reverse}
+\end{equation}
+\begin{equation}
+    \boldsymbol{\mu}_\theta = \frac{1}{\sqrt{\alpha_t}}\!\left(
+        \mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar{\alpha}_t}}
+        \hat{\boldsymbol{\epsilon}}_\theta\right)
+    \label{eq:mu}
+\end{equation}
+类型嵌入路同步采样得到 $\hat{\mathbf{e}}_0^{(i)}$，
+再通过最近邻查找恢复离散类型：
+\begin{equation}
+    \hat{y}_i = \arg\min_{k \in \{1,\ldots,32\}}
+                \left\|\hat{\mathbf{e}}_0^{(i)} - \mathrm{Emb}(k)\right\|_2
+    \label{eq:type_recover}
+\end{equation}
+
+% -----------------------------------------------------------------------------
+\subsection{推理流程}
+\label{subsec:inference}
+
+给定文本 $\mathcal{T}$，完整推理分三步：
+（1）Stage~1 自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$；
+（2）Stage~2 以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
+从 $(\mathbf{x}_T, \{\mathbf{e}_T^{(i)}\}) \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$ 与类型 $\hat{\mathbf{y}}$；
+（3）反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
