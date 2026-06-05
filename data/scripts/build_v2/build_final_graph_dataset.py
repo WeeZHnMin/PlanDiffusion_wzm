@@ -129,6 +129,8 @@ def build_adj_matrix(vertex_adj, n_max):
     return adj
 
 
+_ORDER_MAP = {name: idx for idx, name in enumerate(ROOM_TYPE_ORDER)}
+
 def extract_node_type_combos(rooms, vertices):
     coord_to_types = defaultdict(set)
     for room in rooms:
@@ -136,7 +138,9 @@ def extract_node_type_combos(rooms, vertices):
             coord_to_types[tuple(coord)].add(room["type"])
     combos = []
     for vertex in vertices:
-        types = sorted(coord_to_types.get(tuple(vertex), set()))
+        # 按 ROOM_TYPE_ORDER 排序，与 combo_vocab 的 key 顺序一致
+        types = sorted(coord_to_types.get(tuple(vertex), set()),
+                       key=lambda x: _ORDER_MAP.get(x, 99))
         combos.append(types if types else ["other"])
     return combos
 

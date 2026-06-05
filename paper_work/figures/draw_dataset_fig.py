@@ -20,7 +20,7 @@ VOCAB_PATH = 'data/processed/type_combo_vocab_old.json'
 OUT_PDF    = 'paper_work/figures/dataset_fig.pdf'
 OUT_PNG    = 'paper_work/figures/dataset_fig.png'
 
-SAMPLE_INDICES = [2, 6, 10]
+SAMPLE_INDICES = [2, 56, 10]
 
 # ── Load combo vocab ─────────────────────────────────────────────────────────
 with open(VOCAB_PATH, encoding='utf-8') as f:
