@@ -14,7 +14,8 @@ Architext~\cite{galanos2023architext} 率先将大语言模型引入平面图生
 ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引导，
 但生成过程缺乏对房间拓扑结构的显式建模，难以保证连通性等结构约束。
 
-本文提出 \textbf{PlanDiffusion}，一种以\textbf{图结构为中间表示}的文本驱动平面图生成框架。
+本文提出 \textbf{PlanDiffusion}，一种以\textbf{图结构为中间表示}的文本驱动平面图生成框架，
+整体流程如图~\ref{fig:overview} 所示。
 核心思路是将生成任务分解为两个串联阶段：
 （1）\textbf{图拓扑生成}：以 LLaMA 自回归模型将文本描述转化为平面图的拓扑图结构，
 包括节点数量、邻接关系与房间类型；
@@ -42,9 +43,9 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
     同时利用邻接局部注意力和文本全局注意力实现图结构与语义的联合条件化。
 \end{itemize}
 
-\begin{figure*}[t]
+\begin{figure}[t]
     \centering
-    \includegraphics[width=\textwidth]{figures/total_process.png}
+    \includegraphics[width=\textwidth]{figures/total_process.pdf}
     \caption{
         PlanDiffusion 整体流程。
         左：Stage~1 以文本描述为条件，通过 LLaMA 自回归推理生成图结构序列，
@@ -53,4 +54,4 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
         通过 DDPM 逆扩散过程从高斯噪声（$t=1000$）逐步恢复节点坐标（$t=0$）。
     }
     \label{fig:overview}
-\end{figure*}
+\end{figure}

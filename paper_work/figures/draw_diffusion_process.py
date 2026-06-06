@@ -88,15 +88,15 @@ TIMESTEPS = [999, 749, 499, 249, 0]
 LABELS    = ['$t=1000$', '$t=750$', '$t=500$', '$t=250$', '$t=0$']
 N_panels  = len(TIMESTEPS)
 
-PANEL_W  = 1.4
-ARROW_W  = 0.18
-FIG_H    = 1.95
+PANEL_W  = 1.8
+ARROW_W  = 0.24
+FIG_H    = 2.8
 FIG_W    = PANEL_W * N_panels + ARROW_W * (N_panels - 1) + 0.1
-LEGEND_H = 0.32
+LEGEND_H = 0.45
 
 fig = plt.figure(figsize=(FIG_W, FIG_H))
-panel_bottom = LEGEND_H / FIG_H + 0.03
-panel_height = 1.0 - panel_bottom - 0.03
+panel_bottom = LEGEND_H / FIG_H + 0.01
+panel_height = 1.0 - panel_bottom - 0.02
 axes = []
 for col in range(N_panels):
     left  = col * (PANEL_W + ARROW_W) / FIG_W + 0.008
@@ -105,7 +105,7 @@ for col in range(N_panels):
     axes.append(ax)
 
 DISPLAY_RANGE = 3.5
-NODE_R = 0.11
+NODE_R = 0.24
 
 for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
     ax = axes[col]
@@ -147,7 +147,7 @@ for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
         transform=ax.transData, zorder=0))
 
     # Timestep label
-    ax.set_title(label, fontsize=8.5, pad=3,
+    ax.set_title(label, fontsize=16, pad=6,
                  fontfamily='serif', fontstyle='italic')
 
     # Arrow between panels (except after last)
@@ -160,7 +160,7 @@ for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
                 (x_arrow + 0.028, y_mid),
                 transform=fig.transFigure,
                 arrowstyle='->', color='#888888',
-                mutation_scale=10, lw=1.0
+                mutation_scale=18, lw=1.5
             )
         )
 
@@ -171,13 +171,13 @@ handles = [
                    label=combo_label(cid), linewidth=0.8)
     for cid in present
 ]
-ax_leg = fig.add_axes([0.01, 0.0, 0.98, LEGEND_H / FIG_H])
+ax_leg = fig.add_axes([0.01, 0.01, 0.98, LEGEND_H / FIG_H])
 ax_leg.axis('off')
 ax_leg.legend(handles=handles,
               loc='center', ncol=len(present),
-              fontsize=6.5, frameon=True,
+              fontsize=12.0, frameon=True,
               framealpha=0.95, edgecolor='#CCCCCC',
-              title='Node Type', title_fontsize=7.0,
+              title='Node Type', title_fontsize=13.0,
               columnspacing=0.5, handlelength=0.9, handletextpad=0.35,
               borderpad=0.4)
 

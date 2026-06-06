@@ -1,0 +1,45 @@
+\begin{tikzpicture}[
+  lbl/.style={
+    text width=3.0cm, align=center,
+    font=\scriptsize\ttfamily, text=#1
+  },
+  arr/.style={-{Stealth[length=5pt,width=4pt]}, line width=1.0pt, color=gray!65}
+]
+
+% 四张图横排
+\node (img1) {\includegraphics[width=3.0cm]{figures/seq_graph_1.png}};
+\node (img2) [right=0.4cm of img1] {\includegraphics[width=3.0cm]{figures/seq_graph_2.png}};
+\node (img3) [right=0.4cm of img2] {\includegraphics[width=3.0cm]{figures/seq_graph_3.png}};
+\node (img4) [right=0.4cm of img3] {\includegraphics[width=3.0cm]{figures/seq_graph_4.png}};
+
+% token 文字
+\node[lbl=black!80, below=0.15cm of img1.south] (tok1) {%
+  BOS\_G\ \ $N_{10}$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_1$};
+
+\node[lbl=black!80, below=0.15cm of img2.south] (tok2) {%
+  BOS\_G\ \ $N_{10}$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_1$\\
+  NODE$_3$\ \ NODE$_3$\ \ NODE$_2$\ \ NODE$_5$\ \ NODE$_8$\ \ SEP};
+
+\node[lbl=black!80, below=0.15cm of img3.south] (tok3) {%
+  BOS\_G\ \ $N_{10}$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_1$\\
+  NODE$_3$\ \ NODE$_3$\ \ NODE$_2$\ \ NODE$_5$\ \ NODE$_8$\ \ SEP\\
+  NODE$_2$\ \ NODE$_3$\ \ NODE$_4$\ \ NODE$_5$};
+
+\node[lbl=black!80, below=0.15cm of img4.south] (tok4) {%
+  BOS\_G\ \ $N_{10}$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_0$\ \ NODE$_1$\\
+  NODE$_3$\ \ NODE$_3$\ \ NODE$_2$\ \ NODE$_5$\ \ NODE$_8$\ \ SEP\\
+  NODE$_2$\ \ NODE$_3$\ \ NODE$_4$\ \ NODE$_5$\ \ NODE$_6$\ \ NODE$_7$\\
+  NODE$_8$\ \ NODE$_9$\ \ EOS\_G};
+
+% 标题
+\node[font=\small\rmfamily\bfseries, text width=3.0cm, align=center, above=0.12cm of img1.north] {(1) Partial spanning tree};
+\node[font=\small\rmfamily\bfseries, text width=3.0cm, align=center, above=0.12cm of img2.north] {(2) Full spanning tree};
+\node[font=\small\rmfamily\bfseries, text width=3.0cm, align=center, above=0.12cm of img3.north] {(3) Extra edges (partial)};
+\node[font=\small\rmfamily\bfseries, text width=3.0cm, align=center, above=0.12cm of img4.north] {(4) Complete graph};
+
+% 箭头：左→右
+\draw[arr] (img1.east) -- (img2.west);
+\draw[arr] (img2.east) -- (img3.west);
+\draw[arr] (img3.east) -- (img4.west);
+
+\end{tikzpicture}
