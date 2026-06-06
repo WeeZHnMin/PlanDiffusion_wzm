@@ -18,9 +18,9 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
 整体流程如图~\ref{fig:overview} 所示。
 核心思路是将生成任务分解为两个串联阶段：
 （1）\textbf{图拓扑生成}：以 LLaMA 自回归模型将文本描述转化为平面图的拓扑图结构，
-包括节点数量、邻接关系与房间类型；
-（2）\textbf{节点坐标扩散}：以图结构和文本为双重条件，
-通过去噪扩散概率模型（DDPM）生成每个顶点的二维坐标。
+包括节点数量与邻接关系；
+（2）\textbf{节点坐标与类型扩散}：以图结构和文本为双重条件，
+通过去噪扩散概率模型（DDPM）同时生成每个顶点的二维坐标与房间类型。
 显式的图结构中间表示使拓扑约束在扩散过程中始终可控，
 同时为坐标生成提供了强结构先验。
 
@@ -51,7 +51,7 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
         左：Stage~1 以文本描述为条件，通过 LLaMA 自回归推理生成图结构序列，
         解析得到顶点图；
         右：Stage~2 以顶点图和文本为条件，
-        通过 DDPM 逆扩散过程从高斯噪声（$t=1000$）逐步恢复节点坐标（$t=0$）。
+        通过 DDPM 逆扩散过程从高斯噪声（$t=1000$）逐步恢复节点坐标与类型（$t=0$）。
     }
     \label{fig:overview}
 \end{figure}

@@ -91,8 +91,8 @@ def parse_args():
     ], help="mapping:captions 对，用冒号分隔")
     p.add_argument("--src-dir",   default="data/Architext_v1/train_jsonl")
     p.add_argument("--combo-vocab", default="data/processed/type_combo_vocab_old.json",
-                   help="固定的 combo→ID 映射文件，保证与现有训练一致")
-    p.add_argument("--output",    default="data/jsonl/final_graph_dataset_v2.jsonl")
+                   help="固定 combo→ID 映射文件（旧 vocab，32种类型）")
+    p.add_argument("--output",    default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--seed",      type=int, default=42)
     return p.parse_args()
 
@@ -131,14 +131,41 @@ def build_adj_matrix(vertex_adj, n_max):
 
 _ORDER_MAP = {name: idx for idx, name in enumerate(ROOM_TYPE_ORDER)}
 
-def extract_node_type_combos(rooms, vertices):
+def extract_node_type_combos(rooms, vertices, tol=0.5):
+    """
+    计算每个节点的 combo 类型：
+    1. 多边形顶点归属：节点坐标出现在哪些房间的顶点列表里
+    2. 墙段穿越检测：节点落在哪些房间的墙段内部（非端点）
+    两者取并集，确保共享墙上的中间节点类型完整。
+    """
+    import numpy as _np
     coord_to_types = defaultdict(set)
+
+    # Step 1: 多边形顶点归属
     for room in rooms:
         for coord in room["coords"]:
             coord_to_types[tuple(coord)].add(room["type"])
+
+    # Step 2: 墙段穿越检测
+    verts_arr = [_np.array(v, dtype=float) for v in vertices]
+    for room in rooms:
+        cs = room["coords"]
+        nr = len(cs)
+        for k in range(nr):
+            p1 = _np.array(cs[k], dtype=float)
+            p2 = _np.array(cs[(k + 1) % nr], dtype=float)
+            seg_len = float(_np.linalg.norm(p2 - p1))
+            if seg_len < 1:
+                continue
+            for vi, pt in enumerate(verts_arr):
+                t = float(_np.dot(pt - p1, p2 - p1)) / seg_len ** 2
+                if 1e-6 < t < 1 - 1e-6:
+                    dist = float(_np.linalg.norm(pt - (p1 + t * (p2 - p1))))
+                    if dist <= tol:
+                        coord_to_types[tuple(vertices[vi])].add(room["type"])
+
     combos = []
     for vertex in vertices:
-        # 按 ROOM_TYPE_ORDER 排序，与 combo_vocab 的 key 顺序一致
         types = sorted(coord_to_types.get(tuple(vertex), set()),
                        key=lambda x: _ORDER_MAP.get(x, 99))
         combos.append(types if types else ["other"])
@@ -292,19 +319,13 @@ def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id
     centered_coords = center_node_coords(vertices)
     node_coords = centered_coords + [[0, 0]] * (MAX_NODES - n_nodes)
     node_mask   = [1] * n_nodes + [0] * (MAX_NODES - n_nodes)
-    node_types  = extract_node_type_combos(rooms, vertices) + [[] for _ in range(MAX_NODES - n_nodes)]
+    node_types  = extract_node_type_combos(rooms, vertices)
     adj_matrix  = build_adj_matrix(source_row["vertex_adj"], MAX_NODES)
 
-    # node_combo_ids：用固定 vocab 映射，0 表示 padding
-    node_combo_ids = []
-    for combo in node_types:
-        if not combo:
-            node_combo_ids.append(0)
-        else:
-            key = tuple(combo)
-            # 未知组合退回到 "other"
-            cid = combo_to_id.get(key, combo_to_id.get(("other",), 7))
-            node_combo_ids.append(cid)
+    # 直接用旧 vocab 映射为 ID，找不到则 fallback 到 other(7)
+    other_id = combo_to_id.get(("other",), 7)
+    node_combo_ids = [combo_to_id.get(tuple(t), other_id) for t in node_types]
+    node_combo_ids += [0] * (MAX_NODES - n_nodes)   # 填充位用 0
 
     adj_n = [row[:n_nodes] for row in adj_matrix[:n_nodes]]
     for i in range(n_nodes):
@@ -318,8 +339,8 @@ def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id
         "source_line":    mapping_row["source_line"],
         "n_nodes":        n_nodes,
         "node_coords":    node_coords,
-        "node_types":     node_types,       # 原始字符串列表，便于调试
-        "node_combo_ids": node_combo_ids,   # 整数 ID（1-32），与 type_combo_vocab_old 对齐
+        "node_types":     node_types + [[] for _ in range(MAX_NODES - n_nodes)],
+        "node_combo_ids": node_combo_ids,
         "node_mask":      node_mask,
         "adj_matrix":     adj_matrix,
         "tokens":         tokens,
@@ -335,11 +356,11 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 加载固定 combo vocab（32种类型，与现有训练对齐）
-    combo_to_id = load_combo_vocab(Path(args.combo_vocab))
-
     # 一次性加载所有源数据
     source_data = load_source_data(src_dir)
+
+    # 加载固定 combo vocab（旧 vocab，32种，ID 与旧数据完全一致）
+    combo_to_id = load_combo_vocab(Path(args.combo_vocab))
 
     total_written  = 0
     missing_cap    = 0
@@ -364,11 +385,9 @@ def main():
         print(f"\n处理批次：{mapping_path.parent.name}")
         t0 = time.perf_counter()
 
-        # 加载该批次的 caption
         captions = load_best_captions(captions_path)
         print(f"  载入 {len(captions)} 条描述（{captions_path.name}）")
 
-        # 处理 mapping
         with mapping_path.open(encoding="utf-8") as f:
             mapping_rows = [json.loads(l) for l in f if l.strip()]
 
@@ -393,17 +412,17 @@ def main():
         total_written += batch_written
         print(f"  批次完成：{batch_written} 条，耗时 {time.perf_counter()-t0:.1f}s")
 
-    # 写出
+    # ── 写出数据集 ──────────────────────────────────────────────────────────────
     print(f"\n写出 {total_written} 条记录 → {output_path}")
     with output_path.open("w", encoding="utf-8") as out:
-        for record in all_records:
-            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for rec in all_records:
+            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     print(f"\n完成")
     print(f"  总写入：{total_written}")
     print(f"  缺描述：{missing_cap}")
     print(f"  缺源数据：{missing_src}")
-    print(f"  combo vocab：{args.combo_vocab}（固定，32种类型）")
+    print(f"  combo vocab：{args.combo_vocab}（{len(combo_to_id)} 种类型）")
 
 
 if __name__ == "__main__":
