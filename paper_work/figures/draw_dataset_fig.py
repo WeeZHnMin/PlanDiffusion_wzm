@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-DATA_PATH  = 'data/jsonl/final_graph_dataset_v2.jsonl'
+DATA_PATH  = 'data/jsonl/final_graph_dataset_v3.jsonl'
 VOCAB_PATH = 'data/processed/type_combo_vocab_old.json'
 SRC_DIR    = Path('data/Architext_v1/train_jsonl')
 OUT_PDF    = 'paper_work/figures/dataset_fig.pdf'
@@ -40,24 +40,6 @@ SHORT = {
     'living_room': 'Living',
     'kitchen':     'Kit',
     'corridor':    'Corr',
-    'dining_room': 'Dining',
-    'other':       'Other',
-}
-ROOM_FACE = {
-    'bathroom':    '#AED6F1',
-    'bedroom':     '#A9DFBF',
-    'living_room': '#F9E79F',
-    'kitchen':     '#F1948A',
-    'corridor':    '#D7BDE2',
-    'dining_room': '#FAD7A0',
-    'other':       '#DDDDDD',
-}
-ROOM_LABEL = {
-    'bathroom':    'Bath',
-    'bedroom':     'Bed',
-    'living_room': 'Living',
-    'kitchen':     'Kitchen',
-    'corridor':    'Corridor',
     'dining_room': 'Dining',
     'other':       'Other',
 }
