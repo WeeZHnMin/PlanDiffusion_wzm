@@ -19,16 +19,13 @@ class NodeDataset(Dataset):
 
     def __init__(self, npz_path):
         d = np.load(npz_path, allow_pickle=True)
-        self.coords        = d['node_coords'].astype(np.float32)      # [N, 40, 2]
-        self.adj_matrix    = d['adj_matrix'].astype(np.float32)       # [N, 40, 40]
-        self.node_mask     = d['node_mask'].astype(np.float32)        # [N, 40]
-        self.node_types    = d['node_combo_ids'].astype(np.int64)     # [N, 40]
-        self.prompt_tokens = d['prompt_tokens'].astype(np.int64)      # [N, T]
-        self.prompt_lens   = d['prompt_lens'].astype(np.int32)        # [N]
-        T = self.prompt_tokens.shape[1]
-        self.prompt_mask = np.zeros((len(self.prompt_tokens), T), dtype=np.float32)
-        for i, l in enumerate(self.prompt_lens):
-            self.prompt_mask[i, :l] = 1.0
+        self.coords        = d['node_coords'].astype(np.float32)   # [N, 40, 2]
+        self.adj_matrix    = d['adj_matrix'].astype(np.uint8)      # [N, 40, 40] uint8 节省75%内存
+        self.node_mask     = d['node_mask'].astype(np.uint8)       # [N, 40]     uint8 节省75%内存
+        self.node_types    = d['node_combo_ids'].astype(np.int64)  # [N, 40]
+        self.prompt_tokens = d['prompt_tokens'].astype(np.int64)   # [N, T]
+        self.prompt_lens   = d['prompt_lens'].astype(np.int32)     # [N]
+        # prompt_mask 按需在 __getitem__ 中生成，不预分配
         print(f"NodeDataset: {len(self.coords)} samples from {npz_path}")
 
     def __len__(self):
@@ -36,12 +33,16 @@ class NodeDataset(Dataset):
 
     def __getitem__(self, idx):
         x = self.coords[idx].T.copy()    # [2, 40]
+        T = self.prompt_tokens.shape[1]
+        l = int(self.prompt_lens[idx])
+        prompt_mask = np.zeros(T, dtype=np.float32)
+        prompt_mask[:l] = 1.0
         cond = {
-            'adj_matrix':    self.adj_matrix[idx],    # [40, 40]
-            'node_mask':     self.node_mask[idx],      # [40]
-            'node_types':    self.node_types[idx],     # [40]
-            'prompt_tokens': self.prompt_tokens[idx],  # [T]
-            'prompt_mask':   self.prompt_mask[idx],    # [T]
+            'adj_matrix':    self.adj_matrix[idx].astype(np.float32),
+            'node_mask':     self.node_mask[idx].astype(np.float32),
+            'node_types':    self.node_types[idx],
+            'prompt_tokens': self.prompt_tokens[idx],
+            'prompt_mask':   prompt_mask,
         }
         return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
 
