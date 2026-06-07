@@ -203,14 +203,14 @@ def generate(
     device: torch.device,
     max_new_tokens: int = 200,
     temperature: float = 1.0,
+    use_c1: bool = True,   # 约束①：因果树 p_k < k
+    use_c2: bool = True,   # 约束②：SEP 时机控制
+    use_c3: bool = True,   # 约束③：禁止三角环
+    use_c4: bool = True,   # 约束④：度数下限 >= 2
 ) -> list:
     """
-    从 prefix_ids（文本 tokens + BOS_G）后开始自回归生成，
-    应用四个解码约束：
-      ① 因果树：生成 p_k 时只允许 node_j，j < k
-      ② SEP 时机：满 N-1 个父节点前禁 SEP；之后强制插入 SEP
-      ③ 禁止三角：补边第二节点必须不与第一节点产生三角环
-      ④ 度数下限：所有节点度 >= 2 前禁止 EOS_G
+    从 prefix_ids（文本 tokens + BOS_G）后开始自回归生成。
+    use_c1~c4 控制各约束是否启用，默认全开。
     """
     NEG_INF = float('-inf')
     generated = list(prefix_ids)
@@ -233,17 +233,22 @@ def generate(
             mask[N_START: N_START + MAX_NODES] = False
 
         elif phase == 'parents':
-            # 约束①②
-            for j in range(parent_count + 1):
-                mask[NODE_START + j] = False
-            # SEP 保持禁止直到强制插入
+            if use_c1:
+                # 约束①：只允许 node_0 ~ node_{k-1}
+                for j in range(parent_count + 1):
+                    mask[NODE_START + j] = False
+            else:
+                # 无约束①：允许所有节点 token（仍排除 SEP/EOS）
+                for j in range(N):
+                    mask[NODE_START + j] = False
 
         elif phase == 'edges':
-            # 约束③：第一节点先全放开（精细屏蔽在第二节点处做）
             for j in range(N):
                 mask[NODE_START + j] = False
             # 约束④
-            if all(d >= 2 for d in node_degrees(run_adj)):
+            if use_c4 and all(d >= 2 for d in node_degrees(run_adj)):
+                mask[EOS_ID] = False
+            elif not use_c4:
                 mask[EOS_ID] = False
 
         logits[mask] = NEG_INF
@@ -258,14 +263,18 @@ def generate(
             input_ids = torch.tensor([generated], dtype=torch.long, device=device)
 
         elif phase == 'parents':
-            p = next_id - NODE_START
-            k = parent_count + 1
-            run_adj[k][p] = run_adj[p][k] = 1
-            parent_count += 1
+            if NODE_START <= next_id < NODE_START + N:
+                p = next_id - NODE_START
+                k = parent_count + 1
+                if 0 <= k < N:
+                    run_adj[k][p] = run_adj[p][k] = 1
+                parent_count += 1
             generated.append(next_id)
-            if parent_count == N - 1:
+            if use_c2 and parent_count == N - 1:
                 # 约束②：强制 SEP
                 generated.append(SEP_ID)
+                phase = 'edges'
+            elif next_id == SEP_ID:
                 phase = 'edges'
             input_ids = torch.tensor([generated], dtype=torch.long, device=device)
 
@@ -273,7 +282,6 @@ def generate(
             if next_id == EOS_ID:
                 generated.append(next_id)
                 break
-            # 生成第二节点（约束③精细屏蔽）
             first = next_id - NODE_START
             tmp_ids = torch.tensor([generated + [next_id]], dtype=torch.long, device=device)
             logits2 = model(input_ids=tmp_ids).logits[0, -1, :].float()
@@ -281,16 +289,18 @@ def generate(
                 logits2 = logits2 / temperature
             mask2 = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
             for j in range(N):
-                if j != first and not run_adj[first][j] and not has_triangle(run_adj, first, j):
+                skip_triangle = use_c3 and has_triangle(run_adj, first, j)
+                if j != first and not run_adj[first][j] and not skip_triangle:
                     mask2[NODE_START + j] = False
             if not mask2.all():
                 logits2[mask2] = NEG_INF
                 sec_tok = int(torch.multinomial(torch.softmax(logits2, dim=-1), 1).item())
                 sec = sec_tok - NODE_START
-                run_adj[first][sec] = run_adj[sec][first] = 1
+                if 0 <= sec < N:
+                    run_adj[first][sec] = run_adj[sec][first] = 1
                 generated.extend([next_id, sec_tok])
             else:
-                generated.append(next_id)   # 无合法对端，跳过该 token
+                generated.append(next_id)
             input_ids = torch.tensor([generated], dtype=torch.long, device=device)
 
     return generated
