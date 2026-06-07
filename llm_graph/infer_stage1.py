@@ -365,14 +365,19 @@ def parse_args():
 
 
 def load_model(ckpt_path: str, device: torch.device):
-    cfg = LlamaConfig(**MODEL_CFG)
-    model = LlamaForCausalLM(cfg).to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
     sd = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
+
+    # 从 checkpoint 实际的 embedding 权重推断 vocab_size，避免硬编码不匹配
+    actual_vocab = sd['model.embed_tokens.weight'].shape[0]
+    cfg_dict = {**MODEL_CFG, 'vocab_size': actual_vocab}
+
+    cfg = LlamaConfig(**cfg_dict)
+    model = LlamaForCausalLM(cfg).to(device)
     model.load_state_dict(sd, strict=True)
     model.eval()
     print(f'模型加载完毕  ckpt={ckpt_path}')
-    print(f'  step={ckpt.get("step","?")}  best_loss={ckpt.get("best_loss", float("nan")):.4f}')
+    print(f'  vocab_size={actual_vocab}  step={ckpt.get("step","?")}  best_loss={ckpt.get("best_loss", float("nan")):.4f}')
     return model
 
 
