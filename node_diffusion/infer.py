@@ -48,79 +48,53 @@ def build_parser():
     return p
 
 
-# ── DDPM 逆向采样循环 ─────────────────────────────────────────────────────────
+# ── DDPM 逆向采样循环（仅坐标） ───────────────────────────────────────────────
 @torch.no_grad()
-def p_sample_loop(model, diffusion, shape_coord, shape_type,
-                  model_kwargs, device, ddim_steps=0):
+def p_sample_loop(model, diffusion, shape_coord, model_kwargs, device, ddim_steps=0):
     """
-    同时对坐标和类型嵌入执行逆向去噪。
+    只对坐标执行逆向去噪，type_xt 固定传零向量。
 
     shape_coord : (B, 2, N)
-    shape_type  : (B, N, d)
-    返回        : x0_coord (B,2,N), e0_type (B,N,d)
+    返回        : x0_coord (B, 2, N)
     """
     diff = diffusion
     diff._to(device)
 
-    x_t = torch.randn(shape_coord, device=device)
-    E_t = torch.randn(shape_type,  device=device)
+    B, _, N = shape_coord
+    d_model  = model.model_channels
+    E_zero   = torch.zeros(B, N, d_model, device=device)   # 固定零向量，不参与去噪
 
-    # 选择时间步序列
+    x_t = torch.randn(shape_coord, device=device)
+
     if ddim_steps > 0:
         step_indices = torch.linspace(0, diff.T - 1, ddim_steps + 1).long()
-        timestep_seq = step_indices.flip(0)[:-1].tolist()   # 从 T-1 降到 0
+        timestep_seq = step_indices.flip(0)[:-1].tolist()
     else:
         timestep_seq = list(reversed(range(diff.T)))
 
     for t_val in timestep_seq:
-        t_batch = torch.full((shape_coord[0],), t_val, device=device, dtype=torch.long)
+        t_batch = torch.full((B,), t_val, device=device, dtype=torch.long)
 
-        # 预测两路噪声
-        eps_coord, eps_type = model(x_t, E_t, t_batch, **model_kwargs)
+        eps_coord, _ = model(x_t, E_zero, t_batch, **model_kwargs)
         eps_coord = eps_coord.float()
-        eps_type  = eps_type.float()
 
-        # ── DDPM 逆步公式 ────────────────────────────────────────────────────
-        alpha_t      = diff.alphas[t_val].to(device)
-        alpha_bar_t  = diff.alphas_bar[t_val].to(device)
+        alpha_t       = diff.alphas[t_val].to(device)
+        alpha_bar_t   = diff.alphas_bar[t_val].to(device)
         alpha_bar_tm1 = diff.alphas_bar_prev[t_val].to(device)
-        beta_t       = diff.betas[t_val].to(device)
-        post_var     = diff.posterior_variance[t_val].to(device)
+        beta_t        = diff.betas[t_val].to(device)
+        post_var      = diff.posterior_variance[t_val].to(device)
 
-        # 估计 x0
-        x0_pred = (x_t - (1 - alpha_bar_t).sqrt() * eps_coord) / alpha_bar_t.sqrt()
-        e0_pred = (E_t - (1 - alpha_bar_t).sqrt() * eps_type)  / alpha_bar_t.sqrt()
-
-        # 后验均值
-        coef1 = (alpha_bar_tm1.sqrt() * beta_t) / (1 - alpha_bar_t)
-        coef2 = ((1 - alpha_bar_tm1) * alpha_t.sqrt()) / (1 - alpha_bar_t)
+        x0_pred  = (x_t - (1 - alpha_bar_t).sqrt() * eps_coord) / alpha_bar_t.sqrt()
+        coef1    = (alpha_bar_tm1.sqrt() * beta_t) / (1 - alpha_bar_t)
+        coef2    = ((1 - alpha_bar_tm1) * alpha_t.sqrt()) / (1 - alpha_bar_t)
         mu_coord = coef1 * x0_pred + coef2 * x_t
-        mu_type  = coef1 * e0_pred + coef2 * E_t
 
         if t_val > 0:
-            noise_c = torch.randn_like(x_t)
-            noise_e = torch.randn_like(E_t)
-            x_t = mu_coord + post_var.sqrt() * noise_c
-            E_t = mu_type  + post_var.sqrt() * noise_e
+            x_t = mu_coord + post_var.sqrt() * torch.randn_like(x_t)
         else:
             x_t = mu_coord
-            E_t = mu_type
 
-    return x_t, E_t
-
-
-# ── 类型恢复（最近邻） ─────────────────────────────────────────────────────────
-def recover_types(e0, type_embed_weight):
-    """
-    e0              : (B, N, d)
-    type_embed_weight: (n_types+1, d)
-    返回 pred_types : (B, N) int64
-    """
-    B, N, d = e0.shape
-    e0_flat  = e0.reshape(B * N, d)
-    dists    = torch.cdist(e0_flat.float(), type_embed_weight.float())
-    pred     = dists.argmin(-1).reshape(B, N)
-    return pred
+    return x_t
 
 
 # ── 可视化 ────────────────────────────────────────────────────────────────────
@@ -251,54 +225,38 @@ def main(argv=None):
             'prompt_mask':   torch.from_numpy(prompt_mask_np[None]).to(device),
         }
 
-        # 类型嵌入维度
-        d_model = args.model_channels
         shape_coord = (1, 2, 40)
-        shape_type  = (1, 40, d_model)
 
-        # 逆向采样
-        x0_coord, e0_type = p_sample_loop(
+        # 逆向采样（仅坐标）
+        x0_coord = p_sample_loop(
             model=model,
             diffusion=diffusion,
             shape_coord=shape_coord,
-            shape_type=shape_type,
             model_kwargs=cond,
             device=device,
             ddim_steps=args.ddim_steps,
         )
 
-        # 类型恢复
-        raw_model = model
-        pred_types = recover_types(
-            e0_type,
-            raw_model.type_embed.weight.detach()
-        )  # [1, 40]
-
         # 转 numpy
-        pred_xy   = x0_coord[0].permute(1, 0).cpu().numpy()   # [40, 2] 原始像素坐标
-        gt_xy     = coords_raw                                  # [40, 2]
-        pred_t    = pred_types[0].cpu().numpy()
-        gt_t      = types_np
+        pred_xy = x0_coord[0].permute(1, 0).cpu().numpy()   # [40, 2]
+        gt_xy   = coords_raw
+        gt_t    = types_np
 
-        # 指标（只算有效节点）
+        # 指标（只算坐标 RMSE）
         valid_mask = mask_np > 0.5
         diff_xy    = (pred_xy - gt_xy)[valid_mask]
         rmse       = float(np.sqrt(np.mean(diff_xy**2)))
-        type_acc   = float((pred_t[valid_mask] == gt_t[valid_mask]).mean())
 
-        all_metrics.append({
-            'index': idx, 'n_nodes': n_valid,
-            'rmse': round(rmse, 3), 'type_acc': round(type_acc, 4),
-        })
-        print(f'idx={idx:5d} | n={n_valid:2d} | RMSE={rmse:.2f} | type_acc={type_acc:.3f}')
+        all_metrics.append({'index': idx, 'n_nodes': n_valid, 'rmse': round(rmse, 3)})
+        print(f'idx={idx:5d} | n={n_valid:2d} | RMSE={rmse:.2f}')
 
-        # 可视化
-        title = f'idx={idx}  n={n_valid}  RMSE={rmse:.2f}  type_acc={type_acc:.3f}'
+        # 可视化（节点颜色用 GT 类型）
+        title = f'idx={idx}  n={n_valid}  RMSE={rmse:.2f}'
         render_result(
             gt_coords=gt_xy[:n_valid],
             pred_coords=pred_xy[:n_valid],
             gt_types=gt_t[:n_valid],
-            pred_types=pred_t[:n_valid],
+            pred_types=gt_t[:n_valid],
             adj=adj_np[:n_valid, :n_valid],
             mask=mask_np[:n_valid],
             title=title,
@@ -307,19 +265,17 @@ def main(argv=None):
 
     # 汇总
     avg_rmse = np.mean([m['rmse'] for m in all_metrics])
-    avg_acc  = np.mean([m['type_acc'] for m in all_metrics])
     summary  = {
         'checkpoint': args.checkpoint,
         'step': int(ckpt.get('step', -1)),
         'num_samples': len(indices),
         'avg_rmse': round(float(avg_rmse), 3),
-        'avg_type_acc': round(float(avg_acc), 4),
         'samples': all_metrics,
     }
     with open(os.path.join(args.out_dir, 'metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    print(f'\navg RMSE={avg_rmse:.2f}  avg type_acc={avg_acc:.3f}')
+    print(f'\navg RMSE={avg_rmse:.2f}')
     print(f'结果保存至: {args.out_dir}')
 
 
