@@ -349,7 +349,7 @@ def print_comparison(gt_seq: list, gen_seq: list, sample_idx: int, text: str = '
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/best.pt',
+    p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/20260603_045254/best.pt',
                    help='checkpoint 路径（默认 stage2）')
     p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree.npz')
     p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json')
