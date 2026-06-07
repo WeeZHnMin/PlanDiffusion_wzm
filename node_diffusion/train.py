@@ -79,7 +79,11 @@ def main(argv=None, defaults=None):
         # 兼容 Kaggle DataParallel checkpoint（去掉 module. 前缀）
         if any(k.startswith('module.') for k in raw_sd):
             raw_sd = {k[7:]: v for k, v in raw_sd.items()}
-        model.load_state_dict(raw_sd)
+        missing, unexpected = model.load_state_dict(raw_sd, strict=False)
+        if missing:
+            print(f"  missing keys (new params): {missing}")
+        if unexpected:
+            print(f"  unexpected keys (dropped): {unexpected}")
         opt.load_state_dict(ckpt["opt"])
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
@@ -89,7 +93,7 @@ def main(argv=None, defaults=None):
     data = load_node_data(args.data_path, args.batch_size, shuffle=True)
 
     model.train()
-    running_loss = running_rmse = running_type_acc = 0.0
+    running_loss = running_rmse = 0.0
     t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
@@ -101,7 +105,7 @@ def main(argv=None, defaults=None):
 
         opt.zero_grad()
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            loss, coord_rmse, type_acc = diffusion.training_losses(model, x, t, cond)
+            loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
@@ -109,23 +113,21 @@ def main(argv=None, defaults=None):
         scaler.step(opt)
         scaler.update()
 
-        running_loss     += loss.item()
-        running_rmse     += coord_rmse
-        running_type_acc += type_acc
+        running_loss += loss.item()
+        running_rmse += coord_rmse
 
         if step % args.log_interval == 0 and step > 0:
             n        = args.log_interval
-            avg_loss = running_loss     / n
-            avg_rmse = running_rmse     / n
-            avg_acc  = running_type_acc / n
-            running_loss = running_rmse = running_type_acc = 0.0
+            avg_loss = running_loss / n
+            avg_rmse = running_rmse / n
+            running_loss = running_rmse = 0.0
             elapsed  = time.perf_counter() - t0
             t0       = time.perf_counter()
 
-            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | type_acc {avg_acc:.3f} | {elapsed:.1f}s")
+            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | {elapsed:.1f}s")
             log_file.write(json.dumps({
                 'step': step, 'loss': round(avg_loss, 4),
-                'coord_rmse': round(avg_rmse, 2), 'type_acc': round(avg_acc, 4),
+                'coord_rmse': round(avg_rmse, 2),
                 'elapsed': round(elapsed, 1),
             }) + '\n')
 

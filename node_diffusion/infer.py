@@ -48,11 +48,11 @@ def build_parser():
     return p
 
 
-# ── DDPM 逆向采样循环（仅坐标） ───────────────────────────────────────────────
+# ── DDPM 逆向采样循环 ─────────────────────────────────────────────────────────
 @torch.no_grad()
 def p_sample_loop(model, diffusion, shape_coord, model_kwargs, device, ddim_steps=0):
     """
-    只对坐标执行逆向去噪，type_xt 固定传零向量。
+    坐标逆向去噪。
 
     shape_coord : (B, 2, N)
     返回        : x0_coord (B, 2, N)
@@ -60,10 +60,7 @@ def p_sample_loop(model, diffusion, shape_coord, model_kwargs, device, ddim_step
     diff = diffusion
     diff._to(device)
 
-    B, _, N = shape_coord
-    d_model  = model.model_channels
-    E_zero   = torch.zeros(B, N, d_model, device=device)   # 固定零向量，不参与去噪
-
+    B = shape_coord[0]
     x_t = torch.randn(shape_coord, device=device)
 
     if ddim_steps > 0:
@@ -75,8 +72,7 @@ def p_sample_loop(model, diffusion, shape_coord, model_kwargs, device, ddim_step
     for t_val in timestep_seq:
         t_batch = torch.full((B,), t_val, device=device, dtype=torch.long)
 
-        eps_coord, _ = model(x_t, E_zero, t_batch, **model_kwargs)
-        eps_coord = eps_coord.float()
+        eps_coord = model(x_t, t_batch, **model_kwargs).float()
 
         alpha_t       = diff.alphas[t_val].to(device)
         alpha_bar_t   = diff.alphas_bar[t_val].to(device)
