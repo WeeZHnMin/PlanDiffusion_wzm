@@ -135,12 +135,12 @@ ID 范围 & Token & 说明 \\
 
 \begin{equation}
 \small
-\underbrace{t_1 \cdots t_L}_{\text{BPE 文本}}\;
+\underbrace{t_1\, t_2 \cdots t_L}_{\text{BPE 文本}}\;
 \texttt{BOS\_G}\;
 \underbrace{N_k}_{N \text{ 个节点}}\;
-\underbrace{p_1 \cdots p_{N-1}}_{\text{生成树父节点}}\;
+\underbrace{p_1\, p_2\, p_3 \cdots p_{N-1}}_{\text{生成树父节点}}\;
 \texttt{SEP}\;
-\underbrace{i_1\, j_1 \cdots}_{\text{补边}}\;
+\underbrace{i_1\, j_1\; i_2\, j_2 \cdots}_{\text{补边}}\;
 \texttt{EOS\_G}
 \label{eq:seq}
 \end{equation}
@@ -211,7 +211,7 @@ grad clip $= 1.0$，FP16 混合精度。
 
 \subsubsection{联合扩散对象}
 
-坐标 $\mathbf{x}_0 \in \mathbb{R}^{2 \times N}$ 可直接在欧氏空间扩散。
+坐标 $\mathbf{x}_0 \in \mathbb{R}^{N \times 2}$ 可直接在欧氏空间扩散。
 类型标签 $y_i \in \{1,\ldots,32\}$ 为离散量，无法直接施加高斯噪声；
 为此，我们将其映射到连续嵌入空间：
 \begin{equation}
@@ -263,11 +263,11 @@ grad clip $= 1.0$，FP16 混合精度。
                       t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T}\right)
     \label{eq:model}
 \end{equation}
-其中 $\mathbf{E}_t = \{\mathbf{e}_t^{(i)}\}_{i=1}^{N}$ 为加噪类型嵌入矩阵。
+其中 $\mathbf{E}_t \in \mathbb{R}^{N \times d}$ 为加噪类型嵌入矩阵，第 $i$ 行为 $\mathbf{e}_t^{(i)}$。
 
-\begin{figure}[p]
+\begin{figure}[htbp]
     \centering
-    \includegraphics[width=\linewidth]{figures/node_diffusion_arch.pdf}
+    \includegraphics[width=0.90\linewidth]{figures/node_diffusion_arch.pdf}
     \caption{
         NodeDiffusionTransformer 架构图。
         输入的加噪坐标、加噪类型嵌入和时间步在 Fusion 模块融合为节点隐向量，
@@ -309,11 +309,9 @@ $\sum_j \alpha_{ij}\mathbf{V}_j$ 均隐含了两者的联合感知。
 \paragraph{双流注意力层}
 每层包含两条并行注意力流，输出残差相加后经 FFN 处理：
 \begin{equation}
-\begin{split}
     \mathbf{h}_i^{(\ell+1)} = \mathbf{h}_i^{(\ell)}
-    &+ \mathrm{Dropout}\!\left(\mathrm{AdjAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)})\right)_{\!i} \\
-    &+ \mathrm{Dropout}\!\left(\mathrm{GlobalAttn}(\mathbf{H}_{\mathrm{full}}^{(\ell)})\right)_{\!i}
-\end{split}
+    + \mathrm{Dropout}\!\left(\mathrm{AdjAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)})\right)_{\!i}
+    + \mathrm{Dropout}\!\left(\mathrm{GlobalAttn}(\mathbf{H}_{\mathrm{full}}^{(\ell)})\right)_{\!i}
     \label{eq:dual_attn}
 \end{equation}
 
@@ -356,7 +354,7 @@ $\sum_j \alpha_{ij}\mathbf{V}_j$ 均隐含了两者的联合感知。
                  \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{coord},i}
                        - \boldsymbol{\epsilon}_i\right\|^2}
                 {2\displaystyle\sum_i m_i}
-    \label{eq:loss_coord} \\[6pt]
+    \label{eq:loss_coord} \\
     \mathcal{L}_{\mathrm{type}}
         &= \frac{\displaystyle\sum_{i} m_i
                  \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{type},i}
@@ -383,7 +381,7 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 \begin{equation}
     \boldsymbol{\mu}_\theta = \frac{1}{\sqrt{\alpha_t}}\!\left(
         \mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar{\alpha}_t}}
-        \hat{\boldsymbol{\epsilon}}_\theta\right)
+        \hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}\right)
     \label{eq:mu}
 \end{equation}
 类型嵌入路同步采样得到 $\hat{\mathbf{e}}_0^{(i)}$，
@@ -401,7 +399,7 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 给定文本 $\mathcal{T}$，完整推理分三步：
 （1）Stage~1 自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$；
 （2）Stage~2 以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
-从 $(\mathbf{x}_T, \{\mathbf{e}_T^{(i)}\}) \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+从 $(\mathbf{x}_T, \mathbf{E}_T) \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
 出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$ 与类型 $\hat{\mathbf{y}}$；
 （3）反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
 
@@ -427,12 +425,18 @@ Stage~1 在生成补边序列（\texttt{SEP} 之后）时，
 \REQUIRE 文本描述 $\mathcal{T}$
 \ENSURE 节点坐标 $\hat{\mathbf{X}}$，节点类型 $\hat{\mathbf{y}}$，邻接矩阵 $\mathbf{A}$
 \STATE \textbf{Stage 1：图拓扑生成}
-\STATE 以 $\mathcal{T}$ 为条件，自回归采样生成树序列 token
+\STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$
+\FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
+    \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP} \COMMENT{约束①：因果树约束 $p_k < k$；约束②：SEP 时机}
+    \STATE 采样 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
+\ENDFOR
+\STATE 强制插入 \texttt{SEP} \COMMENT{约束②：恰好 $N-1$ 个父节点后强制 SEP}
 \WHILE{未采样到 \texttt{EOS\_G}}
-    \STATE 采样下一个 token $s \sim p_{\theta_1}(\cdot \mid s_{<k})$
-    \IF{$s = \texttt{EOS\_G}$ \AND $\exists\, i: \deg(v_i) < 2$}
-        \STATE 将 \texttt{EOS\_G} 的 logit 置为 $-\infty$，重新采样  \COMMENT{最小度约束}
+    \STATE 屏蔽所有会使当前图出现三角环的节点 token \COMMENT{约束③：禁止三角环}
+    \IF{$\exists\, i : \deg(v_i) < 2$}
+        \STATE 屏蔽 \texttt{EOS\_G} \COMMENT{约束④：度数下限，所有节点度 $\geq 2$ 方可结束}
     \ENDIF
+    \STATE 采样下一个 token $s \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
 \ENDWHILE
 \STATE 解析序列得 $\mathbf{A} \in \{0,1\}^{N \times N}$，节点掩码 $\mathbf{m}$
 \STATE \textbf{Stage 2：坐标与类型扩散}
