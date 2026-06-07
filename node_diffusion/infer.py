@@ -148,7 +148,7 @@ def render_result(gt_coords, pred_coords, gt_types, pred_types,
     pred_xy = pred_coords[:n]
 
     both = np.concatenate([gt_xy, pred_xy], axis=0)
-    pad  = max(10.0, 0.1 * (both.ptp(axis=0) + 1e-6).max())
+    pad  = max(10.0, 0.1 * (np.ptp(both, axis=0) + 1e-6).max())
     xlim = (both[:,0].min()-pad, both[:,0].max()+pad)
     ylim = (both[:,1].min()-pad, both[:,1].max()+pad)
 
