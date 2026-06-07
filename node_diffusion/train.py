@@ -67,11 +67,20 @@ def main(argv=None, defaults=None):
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
     opt = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
+    use_amp = device.type == 'cuda'
+    scaler  = torch.amp.GradScaler('cuda', enabled=use_amp)
+
     start_step = 0
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
+        ckpt   = torch.load(args.resume, map_location=device)
+        raw_sd = ckpt["model"]
+        # 兼容 Kaggle DataParallel checkpoint（去掉 module. 前缀）
+        if any(k.startswith('module.') for k in raw_sd):
+            raw_sd = {k[7:]: v for k, v in raw_sd.items()}
+        model.load_state_dict(raw_sd)
         opt.load_state_dict(ckpt["opt"])
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
         start_step = ckpt["step"] + 1
         print(f"resumed from step {start_step}")
 
@@ -87,12 +96,16 @@ def main(argv=None, defaults=None):
         cond = move_cond(cond, device)
 
         t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
-        loss, coord_rmse, type_acc = diffusion.training_losses(model, x, t, cond)
 
         opt.zero_grad()
-        loss.backward()
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+            loss, coord_rmse, type_acc = diffusion.training_losses(model, x, t, cond)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        scaler.step(opt)
+        scaler.update()
 
         running_loss     += loss.item()
         running_rmse     += coord_rmse
@@ -116,11 +129,17 @@ def main(argv=None, defaults=None):
 
         if step > 0 and step % args.save_interval == 0:
             ckpt_path = save_dir / f"model_{step:07d}.pt"
-            torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": step}, ckpt_path)
+            torch.save({
+                "model": model.state_dict(), "opt": opt.state_dict(),
+                "scaler": scaler.state_dict(), "step": step,
+            }, ckpt_path)
             print(f"  saved -> {ckpt_path}")
 
     ckpt_path = save_dir / f"model_{args.total_steps:07d}.pt"
-    torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "step": args.total_steps}, ckpt_path)
+    torch.save({
+        "model": model.state_dict(), "opt": opt.state_dict(),
+        "scaler": scaler.state_dict(), "step": args.total_steps,
+    }, ckpt_path)
     log_file.close()
     print(f"training done. saved -> {ckpt_path}")
 
