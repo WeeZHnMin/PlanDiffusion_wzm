@@ -20,7 +20,7 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", default=defaults.get("data_path", "node_diffusion/graph_dataset.npz"))
+    parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/node_diffusion/graph_dataset.npz"))
     parser.add_argument("--save_dir", default=defaults.get("save_dir", "checkpoints/node_diffusion"))
     parser.add_argument("--resume", default="", help="path to checkpoint .pt")
     parser.add_argument("--batch_size", type=int, default=defaults.get("batch_size", 64))
@@ -34,6 +34,8 @@ def build_parser(defaults=None):
     parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 6))
     parser.add_argument("--timesteps", type=int, default=defaults.get("timesteps", 1000))
     parser.add_argument("--vocab", default=defaults.get("vocab", "node_diffusion/unified_vocab_wp/vocab_config.json"))
+    parser.add_argument("--ablation", default="", choices=["", "no_text", "no_graph"],
+                        help="消融变体: no_text=去掉文本条件, no_graph=去掉图结构条件")
     return parser
 
 

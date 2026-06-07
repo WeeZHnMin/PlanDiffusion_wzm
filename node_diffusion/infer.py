@@ -32,7 +32,7 @@ from .diffusion import GaussianDiffusion
 def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--checkpoint',    required=True)
-    p.add_argument('--data_path',     default='data/processed/graph_dataset.npz')
+    p.add_argument('--data_path',     default='data/processed/node_diffusion/graph_dataset.npz')
     p.add_argument('--vocab',         default='node_diffusion/unified_vocab_wp/vocab_config.json')
     p.add_argument('--out_dir',       default='outputs/infer')
     p.add_argument('--num_samples',   type=int,   default=8)

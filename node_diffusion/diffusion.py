@@ -96,7 +96,7 @@ class GaussianDiffusion:
             # 坐标 RMSE
             pred_x0    = (xt - s2 * pred_coord_noise) / s1
             raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
-            coord_rmse = raw_mse.sqrt().item() * 160.0
+            coord_rmse = raw_mse.sqrt().item()
 
             # 类型准确率：还原预测的 type embedding，最近邻找类别
             pred_type_emb_0 = (type_xt - s2 * pred_type_noise.float()) / s1  # [B, N, d]
