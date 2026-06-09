@@ -1,29 +1,23 @@
 """
-Doubao-based floorplan captioning with concurrency and resumable progress.
+SiliconFlow-based floorplan captioning with concurrency and resumable progress.
 
-Uses the Doubao Responses API (file upload + thinking disabled).
-File IDs are cached locally to avoid re-uploading on resume.
-
-Confirmed working models (from probe_doubao_models.py):
-  doubao-seed-2-0-pro-260215, doubao-seed-2-0-lite-260428,
-  doubao-seed-2-0-mini-260428, doubao-seed-2-0-code-preview-260215,
-  doubao-seed-1-8-251228, doubao-seed-1-6-251015,
-  doubao-seed-1-6-flash-250828, doubao-seed-1-6-vision-250815
-
-Behavior:
-  1. One image processed once (task unit = image).
-  2. Models used as shared round-robin worker pool.
-  3. A model failing --retry-times times on one image is dropped permanently.
-  4. Dropped-on image retried with another active model.
-  5. Progress resumable via output jsonl + state json + file-id cache.
+Uses chat.completions API with base64-encoded images (no file upload needed).
+Thinking mode is disabled via extra_body={"enable_thinking": False}.
 
 Usage:
-    python caption_floorplans_doubao.py
-    python caption_floorplans_doubao.py --api-key YOUR_KEY --workers 10
-    python caption_floorplans_doubao.py --limit 100 --workers 4
+    python caption_floorplans_siliconflow.py --api-key YOUR_KEY
+    python caption_floorplans_siliconflow.py --api-key YOUR_KEY --workers 20
+
+Resume: rerun the same command — already-completed images in the output jsonl
+are skipped automatically.
+
+Migrate from doubao results:
+    copy data\\jsonl\\viz_150000_captions_doubao.jsonl data\\jsonl\\viz_150000_captions_siliconflow.jsonl
+    python caption_floorplans_siliconflow.py --api-key YOUR_KEY
 """
 
 import argparse
+import base64
 import json
 import os
 import threading
@@ -35,18 +29,15 @@ from typing import Dict, List, Optional, Set, Tuple
 from openai import OpenAI
 
 DEFAULT_MODELS = [
-    "doubao-seed-2-0-pro-260215",
-    "doubao-seed-2-0-lite-260428",
-    "doubao-seed-2-0-mini-260428",
-    "doubao-seed-2-0-code-preview-260215",
-    "doubao-seed-1-8-251228",
-    "doubao-seed-1-6-251015",
-    "doubao-seed-1-6-flash-250828",
-    "doubao-seed-1-6-vision-250815",
-    "doubao-seed-1-6-lite-251015",
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.5-35B-A3B",
+    "Qwen/Qwen3-VL-32B-Instruct",
+    "Qwen/Qwen3-VL-32B-Thinking",
+    "Qwen/Qwen3-VL-8B-Instruct",
 ]
 
-BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+BASE_URL = "https://api.siliconflow.cn/v1"
 
 DEFAULT_PROMPT = """
 Describe the positional and adjacency relationships of each room using directional words (left, right, above, below, center, corner, etc.). Do not use demonstrative words such as "in the picture", "layout" or "this". State spatial facts only — do not describe colors, styles, or visual appearance. Use one or a few concise sentences.
@@ -61,19 +52,18 @@ Now describe the floorplan:"""
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--api-key", default=os.getenv("ARK_API_KEY"))
+    p.add_argument("--api-key", default=os.getenv("SILICONFLOW_API_KEY"))
     p.add_argument("--img-dir", type=Path, default=Path("data/viz_150000"))
-    p.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_150000_captions_doubao.jsonl"))
-    p.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_150000_captions_doubao.state.json"))
-    p.add_argument("--fileid-cache", type=Path, default=Path("data/jsonl/viz_150000_doubao_fileids.json"),
-                   help="Local cache mapping filename -> Doubao file_id")
+    p.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_150000_captions_siliconflow.jsonl"))
+    p.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_150000_captions_siliconflow.state.json"))
     p.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
-    p.add_argument("--workers", type=int, default=80)
+    p.add_argument("--workers", type=int, default=90)
     p.add_argument("--limit", type=int, default=0, help="0 = all images")
     p.add_argument("--prompt", default=DEFAULT_PROMPT)
     p.add_argument("--retry-times", type=int, default=3)
-    p.add_argument("--retry-delay", type=float, default=3.0, help="Base delay between retries (seconds)")
-    p.add_argument("--timeout", type=float, default=7.0)
+    p.add_argument("--retry-delay", type=float, default=5.0, help="Base delay between retries (seconds)")
+    p.add_argument("--timeout", type=float, default=30.0)
+    p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--restart-from", type=int, default=0,
                    help="Truncate output/state and restart from this image index")
     return p.parse_args()
@@ -159,73 +149,53 @@ def truncate_output_from(path: Path, restart_from: int) -> int:
     return removed
 
 
-# ── file-id cache ──────────────────────────────────────────────────────────────
-
-def load_fileid_cache(path: Path) -> Dict[str, str]:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_fileid_cache(path: Path, cache: Dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 # ── API helpers ────────────────────────────────────────────────────────────────
 
 def make_client(api_key: str, timeout: float) -> OpenAI:
     return OpenAI(api_key=api_key, base_url=BASE_URL, timeout=timeout)
 
 
-def upload_image(img_path: Path, client: OpenAI) -> str:
-    with img_path.open("rb") as f:
-        file_obj = client.files.create(file=f, purpose="user_data")
-    for _ in range(30):
-        if file_obj.status != "processing":
-            break
-        time.sleep(1)
-        file_obj = client.files.retrieve(file_obj.id)
-    return file_obj.id
+def encode_image(img_path: Path) -> str:
+    data = base64.b64encode(img_path.read_bytes()).decode()
+    return f"data:image/png;base64,{data}"
 
 
-def extract_text(resp) -> str:
-    text = ""
-    for item in resp.output:
-        if hasattr(item, "content"):
-            for c in item.content:
-                if hasattr(c, "text"):
-                    text += c.text
-    return text.strip()
+# Models that do not accept the enable_thinking parameter at all
+NO_THINKING_PARAM_MODELS = {
+    "Qwen/Qwen3-VL-32B-Instruct",
+    "Qwen/Qwen3-VL-32B-Thinking",
+    "Qwen/Qwen3-VL-8B-Instruct",
+}
 
 
 def call_one(
     client: OpenAI,
     model: str,
-    file_id: str,
+    img_path: Path,
     prompt: str,
     retry_times: int,
     retry_delay: float,
+    max_tokens: int,
 ) -> Dict:
+    image_url = encode_image(img_path)
+    extra = {} if model in NO_THINKING_PARAM_MODELS else {"enable_thinking": False}
     last_error = ""
     for attempt in range(1, retry_times + 1):
         try:
-            resp = client.responses.create(
+            resp = client.chat.completions.create(
                 model=model,
-                input=[{
+                messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "input_image", "file_id": file_id},
-                        {"type": "input_text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": prompt},
                     ],
                 }],
-                extra_body={"thinking": {"type": "disabled"}},
+                max_tokens=max_tokens,
                 stream=False,
+                extra_body=extra,
             )
-            text = extract_text(resp)
+            text = resp.choices[0].message.content.strip()
             return {"ok": True, "caption": text, "attempts": attempt, "error": ""}
         except Exception as e:
             last_error = str(e)
@@ -239,7 +209,7 @@ def call_one(
 def main() -> None:
     args = parse_args()
     if not args.api_key:
-        raise SystemExit("API key required: --api-key or ARK_API_KEY env var")
+        raise SystemExit("API key required: --api-key or SILICONFLOW_API_KEY env var")
 
     client = make_client(args.api_key, args.timeout)
 
@@ -271,14 +241,13 @@ def main() -> None:
 
     todo_images = [p for p in images if p.name not in done_files]
     total_tasks = len(todo_images)
-    print(f"Images: {len(images)} | Pending: {total_tasks} | Active models: {len(active_models)}")
+    print(f"Images: {len(images)} | Done: {len(done_files)} | Pending: {total_tasks}")
+    print(f"Active models: {active_models}")
     print(f"Workers: {args.workers} | retry-times: {args.retry_times} | retry-delay: {args.retry_delay}s")
     if total_tasks == 0:
         print("Nothing to do.")
         return
 
-    fileid_cache = load_fileid_cache(args.fileid_cache)
-    fileid_lock = threading.Lock()
     write_lock = threading.Lock()
     model_lock = threading.Lock()
     rr_index = {"i": 0}
@@ -286,18 +255,6 @@ def main() -> None:
     counters = {"ok": 0, "err": 0, "dropped": 0, "finished": 0}
 
     args.out_file.parent.mkdir(parents=True, exist_ok=True)
-
-    def get_file_id(img_path: Path) -> str:
-        key = img_path.name
-        with fileid_lock:
-            fid = fileid_cache.get(key)
-        if fid:
-            return fid
-        fid = upload_image(img_path, client)
-        with fileid_lock:
-            fileid_cache[key] = fid
-            save_fileid_cache(args.fileid_cache, fileid_cache)
-        return fid
 
     def pick_model(exclude: Set[str]) -> Optional[str]:
         with model_lock:
@@ -322,9 +279,11 @@ def main() -> None:
             state["dropped_models"] = dropped_models
             save_state(args.state_file, state)
 
+    def is_transient_error(error: str) -> bool:
+        return "429" in error or "timed out" in error.lower() or "timeout" in error.lower()
+
     def process_image(img_path: Path) -> Dict:
         tried: Set[str] = set()
-        file_id = get_file_id(img_path)
         while True:
             model = pick_model(tried)
             if model is None:
@@ -338,10 +297,11 @@ def main() -> None:
             res = call_one(
                 client=client,
                 model=model,
-                file_id=file_id,
+                img_path=img_path,
                 prompt=args.prompt,
                 retry_times=args.retry_times,
                 retry_delay=args.retry_delay,
+                max_tokens=args.max_tokens,
             )
             elapsed = round(time.time() - t0, 3)
             if res["ok"]:
@@ -350,6 +310,10 @@ def main() -> None:
                     "ok": True, "caption": res["caption"], "error": "",
                     "attempts": res["attempts"], "elapsed": elapsed,
                 }
+            if is_transient_error(res["error"]):
+                # 429 / timeout: skip this model for this image only, do NOT drop globally
+                print(f"[SKIP] {model} | {img_path.name} | {res['error'][:120]}")
+                continue
             drop_model(model, img_path.name, res["error"])
             counters["dropped"] += 1
             print(f"[DROP] {model} | {img_path.name} | {res['error'][:120]}")
@@ -414,9 +378,8 @@ def main() -> None:
     print("\nRun finished.")
     print(f"OK={counters['ok']}  ERR={counters['err']}  DROPPED={counters['dropped']}")
     print(f"Active models left: {len(alive)} / {len(args.models)}")
-    print(f"Output:     {args.out_file}")
-    print(f"State:      {args.state_file}")
-    print(f"File cache: {args.fileid_cache}")
+    print(f"Output: {args.out_file}")
+    print(f"State:  {args.state_file}")
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ from tokenizers import Tokenizer
 
 
 MAX_NODES    = 40
-MAX_TEXT_LEN = 128
+MAX_TEXT_LEN = 224
 
 
 def parse_args():
@@ -145,7 +145,7 @@ def main():
                 print(f"  {line_no+1} 张图 → {total_records} 条记录  ({elapsed:.1f}s)")
 
     total_records = len(adj_list)
-    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >128），增强后 {total_records} 条记录")
+    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >{MAX_TEXT_LEN}），增强后 {total_records} 条记录")
     print("打包为 numpy 数组...")
 
     out_path = Path(args.output)

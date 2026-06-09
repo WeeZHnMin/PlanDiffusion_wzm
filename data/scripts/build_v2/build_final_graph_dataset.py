@@ -21,11 +21,21 @@
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import random
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+try:
+    import orjson
+    def _json_loads(s): return orjson.loads(s)
+    def _json_dumps(obj): return orjson.dumps(obj).decode()
+except ImportError:
+    import json as _stdlib_json
+    def _json_loads(s): return _stdlib_json.loads(s)
+    def _json_dumps(obj): return _stdlib_json.dumps(obj, ensure_ascii=False)
 
 # ── 模型优先级（值越小越优先）────────────────────────────────────────────────
 MODEL_RANK: dict[str, int] = {
@@ -86,12 +96,13 @@ MODEL_RANK: dict[str, int] = {
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--batches", nargs="+", default=[
-        "data/viz_50000/mapping.jsonl:data/jsonl/translated_en/viz_50000_captions_multi_en.jsonl",
-        "data/viz_100000/mapping.jsonl:data/jsonl/translated_en/viz_100000_captions_multi_en.jsonl",
+        "data/viz_150000/mapping.jsonl:data/jsonl/viz_150000_captions_multi_en.jsonl",
     ], help="mapping:captions 对，用冒号分隔")
     p.add_argument("--src-dir",   default="data/Architext_v1/train_jsonl")
     p.add_argument("--combo-vocab", default="data/processed/type_combo_vocab_old.json",
-                   help="固定 combo→ID 映射文件（旧 vocab，32种类型）")
+                   help="基础 combo→ID 映射文件（旧 vocab，32种类型）")
+    p.add_argument("--combo-vocab-out", default="data/processed/type_combo_vocab_v3.json",
+                   help="扩展后的 combo vocab 输出路径（新 combo 追加到 33+）")
     p.add_argument("--output",    default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--seed",      type=int, default=42)
     return p.parse_args()
@@ -100,7 +111,7 @@ def parse_args():
 def load_combo_vocab(vocab_path: Path) -> dict[tuple, int]:
     """从 type_combo_vocab_old.json 加载固定的 combo→ID 映射"""
     import ast
-    raw = json.loads(vocab_path.read_text(encoding="utf-8"))
+    raw = _json_loads(vocab_path.read_text(encoding="utf-8"))
     combo_to_id = {}
     for key_str, cid in raw["combo_to_id"].items():
         bases = ast.literal_eval(key_str)   # "[1, 2]" → [1, 2]
@@ -122,10 +133,11 @@ ROOM_TYPE_ORDER = ["bathroom","bedroom","living_room","kitchen","corridor","dini
 def build_adj_matrix(vertex_adj, n_max):
     n = len(vertex_adj)
     adj = [[0] * n_max for _ in range(n_max)]
-    for i in range(n):
+    for i in range(min(n, n_max)):
         adj[i][i] = 1
         for j in vertex_adj[i]:
-            adj[i][j] = 1
+            if j < n_max:
+                adj[i][j] = 1
     return adj
 
 
@@ -135,8 +147,7 @@ def extract_node_type_combos(rooms, vertices, tol=0.5):
     """
     计算每个节点的 combo 类型：
     1. 多边形顶点归属：节点坐标出现在哪些房间的顶点列表里
-    2. 墙段穿越检测：节点落在哪些房间的墙段内部（非端点）
-    两者取并集，确保共享墙上的中间节点类型完整。
+    2. 墙段穿越检测（向量化）：对所有顶点批量计算，消掉内层 Python 循环
     """
     import numpy as _np
     coord_to_types = defaultdict(set)
@@ -146,23 +157,28 @@ def extract_node_type_combos(rooms, vertices, tol=0.5):
         for coord in room["coords"]:
             coord_to_types[tuple(coord)].add(room["type"])
 
-    # Step 2: 墙段穿越检测
-    verts_arr = [_np.array(v, dtype=float) for v in vertices]
-    for room in rooms:
-        cs = room["coords"]
-        nr = len(cs)
-        for k in range(nr):
-            p1 = _np.array(cs[k], dtype=float)
-            p2 = _np.array(cs[(k + 1) % nr], dtype=float)
-            seg_len = float(_np.linalg.norm(p2 - p1))
-            if seg_len < 1:
-                continue
-            for vi, pt in enumerate(verts_arr):
-                t = float(_np.dot(pt - p1, p2 - p1)) / seg_len ** 2
-                if 1e-6 < t < 1 - 1e-6:
-                    dist = float(_np.linalg.norm(pt - (p1 + t * (p2 - p1))))
-                    if dist <= tol:
-                        coord_to_types[tuple(vertices[vi])].add(room["type"])
+    # Step 2: 向量化墙段穿越检测
+    if vertices:
+        V = _np.array(vertices, dtype=float)          # (N, 2)
+        for room in rooms:
+            cs = _np.array(room["coords"], dtype=float)  # (M, 2)
+            M = len(cs)
+            p1s = cs
+            p2s = _np.roll(cs, -1, axis=0)
+            segs = p2s - p1s                              # (M, 2)
+            seg_lens_sq = (segs ** 2).sum(axis=1)         # (M,)
+            for k in range(M):
+                if seg_lens_sq[k] < 1:
+                    continue
+                dp = V - p1s[k]                           # (N, 2)
+                t  = (dp * segs[k]).sum(axis=1) / seg_lens_sq[k]  # (N,)
+                on_seg = (t > 1e-6) & (t < 1 - 1e-6)
+                if not on_seg.any():
+                    continue
+                proj  = p1s[k] + t[:, None] * segs[k]    # (N, 2)
+                dists = _np.linalg.norm(V - proj, axis=1) # (N,)
+                for vi in _np.where(on_seg & (dists <= tol))[0]:
+                    coord_to_types[tuple(vertices[vi])].add(room["type"])
 
     combos = []
     for vertex in vertices:
@@ -263,7 +279,7 @@ def build_combo_vocab(records):
 def serialize_vocab(combo_to_id):
     return {
         "combo_to_id": {
-            json.dumps(list(combo), ensure_ascii=False): cid
+            str(list(combo)): cid
             for combo, cid in sorted(combo_to_id.items(), key=lambda x: x[1])
         },
         "id_to_combo": {
@@ -284,7 +300,7 @@ def load_best_captions(captions_path: Path) -> dict[str, str]:
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
+            row = _json_loads(line)
             if not row.get("ok") or not row.get("caption"):
                 continue
             model   = row.get("model", "")
@@ -306,14 +322,14 @@ def load_source_data(src_dir: Path) -> dict[tuple[str, int], dict]:
                 line = line.strip()
                 if not line:
                     continue
-                src[(jsonl_file.name, line_no)] = json.loads(line)
+                src[(jsonl_file.name, line_no)] = _json_loads(line)
     print(f"  载入 {len(src)} 条源记录，耗时 {time.perf_counter()-t0:.1f}s")
     return src
 
 
 # ── 构建单条记录 ────────────────────────────────────────────────────────────────
-def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id):
-    vertices = source_row["vertices"]
+def build_record(mapping_row, source_row, caption_text, seed_offset, get_combo_id, img_dir_rel: str):
+    vertices = source_row["vertices"][:MAX_NODES]
     rooms    = source_row["rooms"]
     n_nodes  = len(vertices)
     centered_coords = center_node_coords(vertices)
@@ -322,9 +338,7 @@ def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id
     node_types  = extract_node_type_combos(rooms, vertices)
     adj_matrix  = build_adj_matrix(source_row["vertex_adj"], MAX_NODES)
 
-    # 直接用旧 vocab 映射为 ID，找不到则 fallback 到 other(7)
-    other_id = combo_to_id.get(("other",), 7)
-    node_combo_ids = [combo_to_id.get(tuple(t), other_id) for t in node_types]
+    node_combo_ids = [get_combo_id(tuple(t)) for t in node_types]
     node_combo_ids += [0] * (MAX_NODES - n_nodes)   # 填充位用 0
 
     adj_n = [row[:n_nodes] for row in adj_matrix[:n_nodes]]
@@ -335,6 +349,7 @@ def build_record(mapping_row, source_row, caption_text, seed_offset, combo_to_id
     return {
         "prompt":         caption_text,
         "image":          mapping_row["image"],
+        "image_path":     f"{img_dir_rel}/{mapping_row['image']}",
         "source_file":    mapping_row["source_file"],
         "source_line":    mapping_row["source_line"],
         "n_nodes":        n_nodes,
@@ -362,17 +377,16 @@ def main():
     # 加载固定 combo vocab（旧 vocab，32种，ID 与旧数据完全一致）
     combo_to_id = load_combo_vocab(Path(args.combo_vocab))
 
-    total_written  = 0
-    missing_cap    = 0
-    missing_src    = 0
-    all_records    = []
+    n_workers     = os.cpu_count() or 4
+    total_written = 0
+    missing_cap   = 0
+    missing_src   = 0
 
+    # ── 收集所有任务（保持顺序） ─────────────────────────────────────────────────
+    tasks: list[tuple] = []   # (mapping_row, src_row, caption, seed, img_dir_rel)
     for batch_spec in args.batches:
         if ":" not in batch_spec:
-            raise SystemExit(
-                f"Invalid --batches item: {batch_spec}\n"
-                "Expected format: mapping_path:captions_path"
-            )
+            raise SystemExit(f"Invalid --batches item: {batch_spec}\nExpected: mapping_path:captions_path")
         mapping_path_str, captions_path_str = batch_spec.split(":", 1)
         mapping_path  = Path(mapping_path_str)
         captions_path = Path(captions_path_str)
@@ -383,15 +397,17 @@ def main():
             raise SystemExit(f"Captions file not found: {captions_path}")
 
         print(f"\n处理批次：{mapping_path.parent.name}")
-        t0 = time.perf_counter()
+        img_dir_rel = os.path.relpath(
+            mapping_path.parent.resolve(),
+            output_path.parent.resolve()
+        ).replace("\\", "/")
 
         captions = load_best_captions(captions_path)
         print(f"  载入 {len(captions)} 条描述（{captions_path.name}）")
 
         with mapping_path.open(encoding="utf-8") as f:
-            mapping_rows = [json.loads(l) for l in f if l.strip()]
+            mapping_rows = [_json_loads(l) for l in f if l.strip()]
 
-        batch_written = 0
         for idx, row in enumerate(mapping_rows):
             caption = captions.get(row["image"])
             if not caption:
@@ -402,27 +418,67 @@ def main():
             if src_row is None:
                 missing_src += 1
                 continue
-            record = build_record(row, src_row, caption, args.seed + total_written + idx, combo_to_id)
-            all_records.append(record)
-            batch_written += 1
+            tasks.append((row, src_row, caption, args.seed + len(tasks), img_dir_rel))
 
-            if (idx + 1) % 10000 == 0:
-                print(f"  {idx+1}/{len(mapping_rows)} 已处理，写入 {batch_written} 条")
+    # ── 构建时动态发现新 combo，追加 ID 33+ ────────────────────────────────────
+    import threading
+    name_to_id = {"bathroom": 1, "bedroom": 2, "living_room": 3,
+                  "kitchen": 4, "corridor": 5, "dining_room": 6, "other": 7}
+    next_id_box = [max(combo_to_id.values()) + 1]
+    vocab_lock  = threading.Lock()
 
-        total_written += batch_written
-        print(f"  批次完成：{batch_written} 条，耗时 {time.perf_counter()-t0:.1f}s")
+    def get_or_add_combo(ct: tuple) -> int:
+        cid = combo_to_id.get(ct)
+        if cid is not None:
+            return cid
+        with vocab_lock:
+            if ct not in combo_to_id:
+                combo_to_id[ct] = next_id_box[0]
+                next_id_box[0] += 1
+            return combo_to_id[ct]
 
-    # ── 写出数据集 ──────────────────────────────────────────────────────────────
-    print(f"\n写出 {total_written} 条记录 → {output_path}")
+    print(f"\n共 {len(tasks)} 条任务，使用 {n_workers} 线程并行构建 → {output_path}")
+    t0 = time.perf_counter()
+
+    def _build(task):
+        row, src_row, caption, seed, img_dir_rel = task
+        return build_record(row, src_row, caption, seed, get_or_add_combo, img_dir_rel)
+
+    # ── 并行构建 + 流式写出（保持原始顺序） ─────────────────────────────────────
+    CHUNK = 2000
     with output_path.open("w", encoding="utf-8") as out:
-        for rec in all_records:
-            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        for chunk_start in range(0, len(tasks), CHUNK):
+            chunk = tasks[chunk_start: chunk_start + CHUNK]
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                for rec in pool.map(_build, chunk):
+                    out.write(_json_dumps(rec) + "\n")
+                    total_written += 1
+            elapsed = time.perf_counter() - t0
+            speed = total_written / elapsed
+            print(f"  {total_written}/{len(tasks)}  {speed:.0f} 条/s  {elapsed:.1f}s")
 
-    print(f"\n完成")
-    print(f"  总写入：{total_written}")
-    print(f"  缺描述：{missing_cap}")
-    print(f"  缺源数据：{missing_src}")
-    print(f"  combo vocab：{args.combo_vocab}（{len(combo_to_id)} 种类型）")
+    elapsed = time.perf_counter() - t0
+    new_combos = len(combo_to_id) - 32
+    print(f"\n完成  总写入：{total_written}  耗时：{elapsed:.1f}s  ({total_written/elapsed:.0f} 条/s)")
+    print(f"  缺描述：{missing_cap}  缺源数据：{missing_src}")
+    print(f"  combo vocab：旧 32 种 + 新增 {new_combos} 种 = {len(combo_to_id)} 种")
+
+    # 保存扩展后的 vocab
+    vocab_out = Path(args.combo_vocab_out)
+    vocab_out.parent.mkdir(parents=True, exist_ok=True)
+    combo_to_id_serial = {
+        str([name_to_id.get(n, 7) for n in combo]): cid
+        for combo, cid in sorted(combo_to_id.items(), key=lambda x: x[1])
+    }
+    vocab_save = {
+        "combo_to_id": combo_to_id_serial,
+        "id_to_combo": {str(cid): list(combo) for combo, cid in sorted(combo_to_id.items(), key=lambda x: x[1])},
+        "base_type_names": {str(v): k for k, v in name_to_id.items()},
+        "N_TYPES": max(combo_to_id.values()),
+        "ROOM_TYPE_ORDER": ROOM_TYPE_ORDER,
+    }
+    vocab_out.write_text(_json_dumps(vocab_save), encoding="utf-8")
+    print(f"  扩展 vocab 已保存 → {vocab_out}")
 
 
 if __name__ == "__main__":

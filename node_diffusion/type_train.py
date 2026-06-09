@@ -156,7 +156,7 @@ def main(argv=None, defaults=None):
             }) + '\n')
 
         if step > 0 and step % args.save_interval == 0:
-            ckpt_path = save_dir / f'model_{step:07d}.pt'
+            ckpt_path = save_dir / 'model_latest.pt'
             torch.save({
                 'model':  model.state_dict(),
                 'opt':    opt.state_dict(),
@@ -165,7 +165,7 @@ def main(argv=None, defaults=None):
             }, ckpt_path)
             print(f'  saved -> {ckpt_path}')
 
-    ckpt_path = save_dir / f'model_{args.total_steps:07d}.pt'
+    ckpt_path = save_dir / 'model_latest.pt'
     torch.save({
         'model':  model.state_dict(),
         'opt':    opt.state_dict(),

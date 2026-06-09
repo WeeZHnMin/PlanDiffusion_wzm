@@ -42,8 +42,8 @@ import numpy as np
 from tokenizers import Tokenizer
 
 MAX_NODES    = 40
-MAX_TEXT_LEN = 128
-MAX_SEQ_LEN  = 384    # 文本128 + BOS + N + 父节点39 + SEP + 补边最多~60×2 + EOS
+MAX_TEXT_LEN = 224
+MAX_SEQ_LEN  = 384    # 文本224 + BOS + N + 父节点39 + SEP + 补边最多~60×2 + EOS，实测max=330
 
 PAD_ID    = 10000
 BOS_ID    = 10001
@@ -56,11 +56,11 @@ VOCAB_SIZE = 10084
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--jsonl",     default="data/jsonl/final_graph_dataset_v2.jsonl")
+    p.add_argument("--jsonl",     default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bpe",       default="llm_graph/vocab/wp_tokenizer.json")
     p.add_argument("--output",    default="data/processed/graph_tree/text_graph_tree.npz")
     p.add_argument("--vocab-out", default="data/processed/graph_tree/vocab_config.json")
-    p.add_argument("--augment",   type=int, default=4,
+    p.add_argument("--augment",   type=int, default=6,
                    help="每张图随机节点重排次数（1=只用原始顺序，3=推荐）")
     p.add_argument("--seed",      type=int, default=42)
     return p.parse_args()
@@ -237,7 +237,7 @@ def main():
                 total = len(tokens_list)
                 print(f"  {line_no+1} 张图 → {total} 条序列  ({elapsed:.1f}s)")
 
-    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >128），增强后 {len(tokens_list)} 条，截断 {truncated} 条")
+    print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >{MAX_TEXT_LEN}），增强后 {len(tokens_list)} 条，截断 {truncated} 条")
     print("打包保存...")
 
     np.savez_compressed(

@@ -1,12 +1,12 @@
 """
-Multi-model floorplan captioning with concurrency and resumable progress.
+caption_floorplans.py 的 MiMo 版本，仅更换模型为小米 MiMo。
 
-Current behavior:
-1. Task unit is image (not model-image pair): one image is processed once.
-2. Models are used as a shared worker pool (round-robin pick).
-3. If a model fails 3 retries on one image, the model is dropped permanently.
-4. If one model is dropped on an image, that same image is retried with another active model.
-5. Progress is resumable by output jsonl + state json.
+变更：
+  - API key 环境变量: MIMO_API_KEY
+  - base_url: https://api.xiaomimimo.com/v1
+  - 默认模型: mimo-v2.5
+  - 加入 system message（MiMo 要求）
+  - 去掉 enable_thinking extra_body（MiMo 不支持该参数）
 """
 
 import argparse
@@ -22,74 +22,23 @@ from typing import Dict, List, Optional, Set, Tuple
 from openai import OpenAI
 
 DEFAULT_MODELS = [
-    # qwen-vl dedicated vision models
-    "qwen-vl-plus",
-    "qwen-vl-plus-latest",
-    "qwen-vl-max",
-    "qwen-vl-ocr",
-    # "qwen-vl-ocr-1028",
-    "qwen-vl-ocr-latest",
-    "qwen-vl-ocr-2025-04-13",
-    "qwen-vl-ocr-2025-08-28",
-    "qwen-vl-ocr-2025-11-20",
-    # qwen3-vl dedicated vision models
-    "qwen3-vl-flash",
-    "qwen3-vl-flash-2025-10-15",
-    "qwen3-vl-flash-2026-01-22",
-    "qwen3-vl-8b-instruct",
-    "qwen3-vl-30b-a3b-instruct",
-    "qwen3-vl-32b-instruct",
-    "qwen3-vl-plus",
-    "qwen3-vl-plus-2025-09-23",
-    "qwen3-vl-plus-2025-12-19",
-    "qwen3-vl-235b-a22b-instruct",
-    # gui models (vision capable)
-    "gui-plus",
-    "gui-plus-2026-02-26",
-    # kimi vision models
-    "kimi-k2.6",
-    "kimi-k2.5",
-    "Moonshot-Kimi-K2-Instruct",
-    # qwen3.x multimodal (confirmed vision)
-    "qwen3.5-flash",
-    "qwen3.5-flash-2026-02-23",
-    "qwen3.5-27b",
-    "qwen3.5-35b-a3b",
-    "qwen3.5-122b-a10b",
-    "qwen3.5-397b-a17b",
-    "qwen3.5-plus",
-    "qwen3.5-plus-2026-02-15",
-    "qwen3.5-plus-2026-04-20",
-    "qwen3.6-flash",
-    "qwen3.6-flash-2026-04-16",
-    "qwen3.6-27b",
-    "qwen3.6-35b-a3b",
-    "qwen3.6-plus",
-    "qwen3.6-plus-2026-04-02",
-    "qwen3.6-max-preview",
-    "qwen3-32b",
-    "qwen3-max",
-    "qwen3-max-preview",
-    "qwen3-max-2025-09-23",
-    "qwen3-max-2026-01-23",
-    "qwen3-235b-a22b",
-    "qwen3-30b-a3b",
-    # deepseek vision-capable
-    "deepseek-v3",
-    "deepseek-v3.1",
-    "deepseek-v3.2",
-    # "deepseek-v3.2-exp",
-    # tongyi
-    "tongyi-xiaomi-analysis-pro",
+    "mimo-v2.5",
+    "mimo-v2-flash",
+    "mimo-v2-omni",
+    "mimo-v2.5-pro",
+    "mimo-v2-pro"
 ]
+
+SYSTEM_MESSAGE = "You are MiMo, an AI assistant developed by Xiaomi."
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-key", default=os.getenv("DASHSCOPE_API_KEY", ""))
-    parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    parser.add_argument("--api-key", default=os.getenv("MIMO_API_KEY", ""))
+    parser.add_argument("--base-url", default="https://api.xiaomimimo.com/v1")
     parser.add_argument("--img-dir", type=Path, default=Path("data/viz_150000"))
-    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_150000_captions_multi_en.jsonl"))
-    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_150000_captions_multi_en.state.json"))
+    parser.add_argument("--out-file", type=Path, default=Path("data/jsonl/viz_150000_captions_mimo.jsonl"))
+    parser.add_argument("--state-file", type=Path, default=Path("data/jsonl/viz_150000_captions_mimo.state.json"))
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
     parser.add_argument("--workers", type=int, default=200)
     parser.add_argument("--limit", type=int, default=0, help="0 means all images")
@@ -105,8 +54,6 @@ The bedroom is located at the lower left, the kitchen is above the bedroom with 
 Now describe the floorplan:""",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--retry-times", type=int, default=3, help="(unused: model rotation replaces per-model retry)")
-    parser.add_argument("--retry-delay", type=float, default=1.0, help="(unused: fail-fast and rotate immediately)")
     parser.add_argument("--timeout", type=float, default=6.0)
     parser.add_argument(
         "--restart-from",
@@ -114,8 +61,6 @@ Now describe the floorplan:""",
         default=0,
         help="truncate output/state and restart from this image number (e.g. 31200)",
     )
-    parser.add_argument("--disable-thinking", action="store_true", default=True)
-    parser.add_argument("--enable-thinking", action="store_true", help="override disable-thinking")
     parser.add_argument("--max-model-failures", type=int, default=500,
                         help="permanently drop a model after this many cumulative failures")
     return parser.parse_args()
@@ -197,13 +142,11 @@ def truncate_output_from(path: Path, restart_from: int) -> int:
             except Exception:
                 kept_lines.append(raw)
                 continue
-
             idx = file_index(row.get("file", ""))
             if idx is not None and idx >= restart_from:
                 removed += 1
                 continue
             kept_lines.append(json.dumps(row, ensure_ascii=False))
-
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         for line in kept_lines:
@@ -221,7 +164,6 @@ def make_client(api_key: str, base_url: str, timeout: float) -> OpenAI:
 
 
 def is_transient_error(error: str) -> bool:
-    """429 / timeout errors are transient — skip this model for this image only."""
     low = error.lower()
     return "429" in error or "timed out" in low or "timeout" in low or "rate limit" in low
 
@@ -232,26 +174,25 @@ def call_one(
     img_b64: str,
     prompt: str,
     temperature: float,
-    disable_thinking: bool,
 ) -> Dict:
-    """Single attempt — caller handles rotation across models."""
     try:
-        kwargs = {}
-        if disable_thinking:
-            kwargs["extra_body"] = {"enable_thinking": False}
         resp = client.chat.completions.create(
             model=model,
             messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_MESSAGE,
+                },
                 {
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
                         {"type": "text", "text": prompt},
                     ],
-                }
+                },
             ],
             temperature=temperature,
-            **kwargs,
+            extra_body={"thinking": {"type": "disabled"}},
         )
         text = (resp.choices[0].message.content or "").strip()
         return {"ok": True, "caption": text, "error": ""}
@@ -262,9 +203,7 @@ def call_one(
 def main() -> None:
     args = parse_args()
     if not args.api_key:
-        raise SystemExit("API key is required. Use --api-key or set DASHSCOPE_API_KEY.")
-
-    disable_thinking = args.disable_thinking and (not args.enable_thinking)
+        raise SystemExit("API key is required. Use --api-key or set MIMO_API_KEY.")
 
     print(f"Scanning images from: {args.img_dir}")
     images = sorted(args.img_dir.glob("*.png"))
@@ -301,7 +240,7 @@ def main() -> None:
     todo_images = [p for p in images if p.name not in done_files]
     total_tasks = len(todo_images)
     print(f"Images: {len(images)} | Pending images: {total_tasks} | Active models: {len(active_models)}")
-    print(f"Workers: {args.workers} | disable_thinking={disable_thinking}")
+    print(f"Workers: {args.workers}")
     if total_tasks == 0:
         print("Nothing to do. All images are already done.")
         return
@@ -315,7 +254,6 @@ def main() -> None:
     b64_cache: Dict[str, str] = {}
     model_done: Dict[str, int] = {m: 0 for m in active_models}
     model_fail_count: Dict[str, int] = {m: 0 for m in active_models}
-    # Incremented on each success-reset; lets in-flight failure increments detect they are stale.
     model_generation: Dict[str, int] = {m: 0 for m in active_models}
     counters = {"ok": 0, "err": 0, "dropped": 0, "finished": 0}
 
@@ -372,7 +310,6 @@ def main() -> None:
                     "base_url": args.base_url,
                 }
             tried.add(model)
-            # Snapshot generation before the request so we can discard stale failure increments.
             with model_lock:
                 gen = model_generation.get(model, 0)
             client = make_client(args.api_key, args.base_url, args.timeout)
@@ -382,11 +319,9 @@ def main() -> None:
                 img_b64=img_b64,
                 prompt=args.prompt,
                 temperature=args.temperature,
-                disable_thinking=disable_thinking,
             )
             attempts += 1
             if res["ok"]:
-                # Reset failure counter; bump generation to invalidate any in-flight +1 for this model.
                 with model_lock:
                     model_fail_count[model] = 0
                     model_generation[model] = model_generation.get(model, 0) + 1
@@ -403,7 +338,6 @@ def main() -> None:
                 }
 
             with model_lock:
-                # Only apply this failure increment if no success reset occurred since we started.
                 if model_generation.get(model, 0) == gen:
                     model_fail_count[model] = model_fail_count.get(model, 0) + 1
                 fail_count = model_fail_count.get(model, 0)
@@ -418,13 +352,12 @@ def main() -> None:
                 else:
                     print(f"[SKIP] {model} | failures={fail_count} | {img_path.name} | {res['error'][:100]}")
             else:
-                # Fatal error (bad params, model not found, etc): drop globally immediately
                 with model_lock:
                     if model not in dropped_models:
                         drop_model(model, img_path.name, res["error"])
                         counters["dropped"] += 1
                         print(f"[DROP] {model} | {img_path.name} | {res['error'][:120]}")
-            time.sleep(1)
+            time.sleep(2)
 
     task_iter = iter(todo_images)
     in_flight = {}
@@ -469,9 +402,7 @@ def main() -> None:
                         counters["err"] += 1
 
                     model_name = row["model"] if row["model"] else "NO_MODEL"
-                    model_part = ""
-                    if row["model"]:
-                        model_part = f" | {row['model']} done={model_done.get(row['model'], 0)}"
+                    model_part = f" | {row['model']} done={model_done.get(row['model'], 0)}" if row["model"] else ""
                     print(
                         f"[{counters['finished']}/{total_tasks}] {img.name} -> {model_name}{model_part} "
                         f"| ok={counters['ok']} err={counters['err']} dropped={counters['dropped']}"
