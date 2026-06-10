@@ -12,27 +12,31 @@ from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from shapely.geometry import Polygon as ShapelyPolygon
 
 N_TOTAL = 150000
 SEED = 456
 IMG_SIZE = 640
 MARGIN = 36
 
+# Matches node_diffusion/render.py exactly
 ROOM_COLORS = {
-    "bathroom": "#AED6F1",
-    "bedroom": "#A9DFBF",
-    "living_room": "#F9E79F",
-    "kitchen": "#F1948A",
-    "corridor": "#D7BDE2",
-    "dining_room": "#FAD7A0",
+    "bathroom":    "#AED6F1",
+    "bedroom":     "#D7BDE2",
+    "living_room": "#FAD7A0",
+    "kitchen":     "#A9DFBF",
+    "corridor":    "#CCD1D1",
+    "dining_room": "#F9E79F",
+    "other":       "#EAEDED",
 }
 ROOM_ABBR = {
-    "bathroom": "Bath",
-    "bedroom": "Bed",
+    "bathroom":    "Bath",
+    "bedroom":     "Bed",
     "living_room": "Living",
-    "kitchen": "Kitchen",
-    "corridor": "Corridor",
+    "kitchen":     "Kitchen",
+    "corridor":    "Corridor",
     "dining_room": "Dining",
+    "other":       "Other",
 }
 
 DATA_DIR = Path(__file__).resolve().parent.parent
@@ -108,22 +112,18 @@ def make_fonts():
     return fallback, fallback
 
 
-def polygon_centroid(points):
-    n = len(points)
-    area = 0.0
-    cx = 0.0
-    cy = 0.0
-    for k in range(n):
-        x0, y0 = points[k]
-        x1, y1 = points[(k + 1) % n]
-        cross = x0 * y1 - x1 * y0
-        area += cross
-        cx += (x0 + x1) * cross
-        cy += (y0 + y1) * cross
-    area *= 0.5
-    if abs(area) < 1e-6:
+def representative_point(points):
+    """
+    Use shapely's pole of inaccessibility — guaranteed inside the polygon
+    even for concave / L-shaped / frame rooms (unlike shoelace centroid).
+    Falls back to vertex average if shapely fails.
+    """
+    try:
+        rp = ShapelyPolygon(points).representative_point()
+        return rp.x, rp.y
+    except Exception:
+        n = len(points)
         return sum(p[0] for p in points) / n, sum(p[1] for p in points) / n
-    return cx / (6 * area), cy / (6 * area)
 
 
 def render_one(args):
@@ -169,7 +169,7 @@ def render_one(args):
         pts_px = [to_px(x, y) for x, y in pts_world]
         draw.polygon(pts_px, fill=color, outline="#444444")
 
-        cx, cy = polygon_centroid(pts_world)
+        cx, cy = representative_point(pts_world)
         label = ROOM_ABBR.get(rtype, rtype)
         tx, ty = to_px(cx, cy)
         left, top, right, bottom = draw.textbbox((0, 0), label, font=font)

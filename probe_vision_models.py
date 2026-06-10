@@ -153,6 +153,28 @@ MODELS = [
     "llama-4-scout-17b-16e-instruct",
     "llama-4-maverick-17b-128e-instruct",
     "deepseek-r1-distill-llama-70b",
+    "qwen3.5-omni-plus-2026-03-15",
+    "qwen3-omni-flash-realtime-2025-09-15",
+    "qwen3-omni-flash-realtime",
+    "qwen-omni-turbo-realtime-2025-05-08",
+    "qwen-omni-turbo-realtime-latest",
+    "qwen3.5-omni-flash-realtime-2026-03-15",
+    "qwen3-omni-flash-2025-12-01",
+    "qwen3-omni-flash",
+    "qwen3.5-omni-plus",
+    "qwen-omni-turbo-realtime",
+    "qwen-omni-turbo-latest",
+    "qwen-omni-turbo",
+    "qwen2.5-omni-7b",
+    "qwen3.5-omni-plus-realtime",
+    "qwen-omni-turbo-2025-03-26",
+    "qwen3.5-omni-flash",
+    "qwen3-omni-flash-realtime-2025-12-01",
+    "qwen-omni-turbo-2025-01-19",
+    "qwen3.5-omni-plus-realtime-2026-03-15",
+    "qwen3.5-omni-flash-realtime",
+    "qwen3-omni-flash-2025-09-15",
+    "qwen3.5-omni-flash-2026-03-15"
 ]
 
 PROBE_PROMPT = "图中有几个房间？只回答数字。"
@@ -163,7 +185,34 @@ REJECT_KEYWORDS = [
     "unsupported", "does not support", "cannot process", "not support",
     "image input", "no image", "text only", "文字模型",
     "模型不支持", "该模型", "功能不支持",
+    # Models that say "please provide an image" (i.e. they didn't receive it)
+    "请提供图片", "请提供图像", "提供图片", "提供图像",
+    # Models that say "I can't view / access the image"
+    "无法查看", "无法直接查看", "无法访问", "无法获取图",
+    "看不到图", "看不到图片", "看不到这张",
+    "can't view", "cannot view", "can't access the image",
+    "need to know the description of the image",
+    "i need to know the description",
+    "i can't view", "i cannot view",
 ]
+
+# Models that reject non-streaming requests (400 stream-only error)
+STREAM_ONLY_MODELS = {"glm-4.5", "glm-4.5-air", "qwq-plus"}
+
+
+def _use_stream(model: str) -> bool:
+    """
+    Use streaming for:
+    - Models that outright reject non-stream requests (STREAM_ONLY_MODELS).
+    - Thinking-forced models: they emit a long <think>...</think> block before
+      the actual answer. Non-stream blocks until the full response is ready,
+      which easily exceeds the HTTP timeout. With stream we collect tokens as
+      they arrive, so the connection stays alive throughout.
+    """
+    if model in STREAM_ONLY_MODELS:
+        return True
+    model_lower = model.lower()
+    return "thinking" in model_lower or "qwen3.7" in model_lower
 
 
 def parse_args():
@@ -180,37 +229,79 @@ def parse_args():
 
 
 def is_rejection(text: str) -> bool:
-    lower = text.lower()
+    stripped = text.strip()
+    # A floor plan always has at least one room; "0" means the model didn't see the image
+    if stripped == "0":
+        return True
+    lower = stripped.lower()
     return any(kw in lower for kw in REJECT_KEYWORDS)
 
 
-def probe(model: str, img_b64: str, client: OpenAI, prompt: str) -> dict:
+def _build_kwargs(model: str) -> dict:
+    """
+    Build extra kwargs for models with special requirements.
+
+    - qwen3/qwq/qvq family: disable thinking by default to keep responses fast.
+      Exception: models that enforce thinking mode reject enable_thinking=False.
+      Detected by 'thinking' in name OR the qwen3.7-max family (enforces thinking
+      even without the word 'thinking' in the model name).
+    """
+    model_lower = model.lower()
+    wants_thinking_flag = (
+        "qwen3" in model_lower
+        or model_lower.startswith("qwq")
+        or model_lower.startswith("qvq")
+    )
+    is_thinking_forced = "thinking" in model_lower or "qwen3.7" in model_lower
+    if wants_thinking_flag and not is_thinking_forced:
+        return {"extra_body": {"enable_thinking": False}}
+    return {}
+
+
+def probe(model: str, img_b64: str, client: OpenAI, slow_client: OpenAI, prompt: str) -> dict:
     t0 = time.time()
-    result = {"model": model, "vision": False, "error": "", "response": "", "elapsed": 0.0}
+    is_thinking = _use_stream(model)
+    result = {"model": model, "vision": False, "thinking": is_thinking,
+              "error": "", "response": "", "elapsed": 0.0}
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+            {"type": "text", "text": prompt},
+        ],
+    }]
+    kwargs = _build_kwargs(model)
+    active_client = slow_client if is_thinking else client
     try:
-        kwargs = {}
-        if "qwen3" in model.lower() or model.lower().startswith("qwq") or model.lower().startswith("qvq"):
-            kwargs["extra_body"] = {"enable_thinking": False}
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-            max_tokens=64,
-            temperature=0.0,
-            **kwargs,
-        )
-        text = (resp.choices[0].message.content or "").strip()
+        if is_thinking:
+            stream = active_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=64,
+                temperature=0.0,
+                stream=True,
+                **kwargs,
+            )
+            text = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    text += delta.content
+            text = text.strip()
+        else:
+            resp = active_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=64,
+                temperature=0.0,
+                **kwargs,
+            )
+            text = (resp.choices[0].message.content or "").strip()
         result["response"] = text[:200]
         result["vision"] = bool(text) and not is_rejection(text)
     except Exception as e:
         err = str(e)
         result["error"] = err[:300]
-        # Some errors explicitly say multimodal not supported
         result["vision"] = False
     result["elapsed"] = round(time.time() - t0, 2)
     return result
@@ -223,11 +314,14 @@ def main():
     if not args.img.exists():
         raise SystemExit(f"Test image not found: {args.img}")
 
-    # Hard-cut HTTP requests slightly above max_elapsed so slow models don't block workers
+    # Fast client: cut off slightly above max_elapsed so slow non-thinking models don't block workers.
+    # Slow client: no artificial cap — thinking/stream models run until they finish or truly hang.
     effective_timeout = min(args.timeout, args.max_elapsed + 2)
+    slow_timeout = 300.0
     img_b64 = base64.b64encode(args.img.read_bytes()).decode("ascii")
     client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=effective_timeout)
-    print(f"HTTP timeout: {effective_timeout}s (max_elapsed={args.max_elapsed}s)\n")
+    slow_client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=slow_timeout)
+    print(f"HTTP timeout: fast={effective_timeout}s  thinking={slow_timeout}s  (max_elapsed={args.max_elapsed}s)\n")
 
     print(f"Probing {len(MODELS)} models with {args.workers} workers...")
     print(f"Test image: {args.img}\n")
@@ -236,7 +330,7 @@ def main():
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(probe, m, img_b64, client, PROBE_PROMPT): m for m in MODELS}
+        futures = {pool.submit(probe, m, img_b64, client, slow_client, PROBE_PROMPT): m for m in MODELS}
         done_count = 0
         with args.out.open("w", encoding="utf-8") as f:
             for fut in as_completed(futures):
@@ -248,8 +342,15 @@ def main():
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
                 results.append(r)
 
-    passed_fast = sorted([r for r in results if r["vision"] and r["elapsed"] <= args.max_elapsed], key=lambda r: r["elapsed"])
-    passed_slow = sorted([r for r in results if r["vision"] and r["elapsed"] > args.max_elapsed], key=lambda r: r["elapsed"])
+    passed_fast = sorted(
+        [r for r in results if r["vision"] and not r["thinking"] and r["elapsed"] <= args.max_elapsed],
+        key=lambda r: r["elapsed"])
+    passed_thinking = sorted(
+        [r for r in results if r["vision"] and r["thinking"]],
+        key=lambda r: r["elapsed"])
+    passed_slow = sorted(
+        [r for r in results if r["vision"] and not r["thinking"] and r["elapsed"] > args.max_elapsed],
+        key=lambda r: r["elapsed"])
     failed = sorted([r for r in results if not r["vision"]], key=lambda r: r["model"])
 
     def fmt(r):
@@ -259,7 +360,10 @@ def main():
         f"=== Vision-capable & fast (<={args.max_elapsed}s): {len(passed_fast)} models ===",
         *[fmt(r) for r in passed_fast],
         "",
-        f"=== Vision-capable but SLOW (>{args.max_elapsed}s): {len(passed_slow)} models ===",
+        f"=== Vision-capable (thinking/stream, no time limit): {len(passed_thinking)} models ===",
+        *[fmt(r) for r in passed_thinking],
+        "",
+        f"=== Vision-capable but SLOW (>{args.max_elapsed}s, non-thinking): {len(passed_slow)} models ===",
         *[fmt(r) for r in passed_slow],
         "",
         f"=== Not vision-capable: {len(failed)} models ===",
@@ -268,7 +372,7 @@ def main():
     args.summary.write_text("\n".join(summary_lines), encoding="utf-8")
 
     print(f"\n{'='*50}")
-    print(f"PASS fast: {len(passed_fast)}  PASS slow: {len(passed_slow)}  FAIL: {len(failed)}")
+    print(f"PASS fast: {len(passed_fast)}  PASS thinking: {len(passed_thinking)}  PASS slow: {len(passed_slow)}  FAIL: {len(failed)}")
     print(f"Results: {args.out}")
     print(f"Summary: {args.summary}")
 

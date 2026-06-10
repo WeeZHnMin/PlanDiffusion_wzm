@@ -1,46 +1,65 @@
 """
-Sample N records from train_jsonl and render one PNG per record using Pillow.
+Generate 10,000 additional images from train_jsonl, skipping any record
+already used in viz_50000, viz_100000, or viz_150000.
 
 Usage:
-    python data/scripts/visualize_jsonl.py          # default 50000
-    python data/scripts/visualize_jsonl.py 10000    # custom count
+    python data/scripts/visualize_extra10k.py
 """
 
 import json
 import random
-import sys
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from shapely.geometry import Polygon as ShapelyPolygon
 
-N_TOTAL = int(sys.argv[1]) if len(sys.argv) > 1 else 50000
-SEED = 42
+N_TOTAL = 10000
+SEED = 789
 IMG_SIZE = 640
 MARGIN = 36
 
 ROOM_COLORS = {
-    "bathroom": "#AED6F1",
-    "bedroom": "#A9DFBF",
-    "living_room": "#F9E79F",
-    "kitchen": "#F1948A",
-    "corridor": "#D7BDE2",
-    "dining_room": "#FAD7A0",
+    "bathroom":    "#AED6F1",
+    "bedroom":     "#D7BDE2",
+    "living_room": "#FAD7A0",
+    "kitchen":     "#A9DFBF",
+    "corridor":    "#CCD1D1",
+    "dining_room": "#F9E79F",
+    "other":       "#EAEDED",
 }
 ROOM_ABBR = {
-    "bathroom": "Bath",
-    "bedroom": "Bed",
+    "bathroom":    "Bath",
+    "bedroom":     "Bed",
     "living_room": "Living",
-    "kitchen": "Kitchen",
-    "corridor": "Corridor",
+    "kitchen":     "Kitchen",
+    "corridor":    "Corridor",
     "dining_room": "Dining",
+    "other":       "Other",
 }
 
 DATA_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = DATA_DIR / "Architext_v1" / "train_jsonl"
-OUT_DIR = DATA_DIR / f"viz_{N_TOTAL}"
+EXISTING_MAPS = [
+    DATA_DIR / "viz_150000" / "mapping.jsonl",
+]
+OUT_DIR = DATA_DIR / "viz_10000"
 OUT_DIR.mkdir(exist_ok=True)
 MAP_FILE = OUT_DIR / "mapping.jsonl"
+
+
+def load_used_set():
+    used = set()
+    for path in EXISTING_MAPS:
+        if not path.exists():
+            print(f"Warning: {path} not found, skipped.")
+            continue
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                used.add((row["source_file"], row["source_line"]))
+    print(f"Loaded {len(used):,} already-used records to exclude.")
+    return used
 
 
 def has_same_type_chain(rec, min_chain=3):
@@ -65,12 +84,14 @@ def has_same_type_chain(rec, min_chain=3):
     return False
 
 
-def load_all():
+def load_all(used_set):
     records = []
     files = sorted(SRC_DIR.glob("train_*.jsonl"), key=lambda p: int(p.stem.split("_")[1]))
     for jf in files:
         with open(jf, encoding="utf-8") as f:
             for line_no, line in enumerate(f, start=1):
+                if (jf.name, line_no) in used_set:
+                    continue
                 rec = json.loads(line)
                 if not has_same_type_chain(rec):
                     rec["_src_file"] = jf.name
@@ -89,22 +110,13 @@ def make_fonts():
     return fallback, fallback
 
 
-def polygon_centroid(points):
-    n = len(points)
-    area = 0.0
-    cx = 0.0
-    cy = 0.0
-    for k in range(n):
-        x0, y0 = points[k]
-        x1, y1 = points[(k + 1) % n]
-        cross = x0 * y1 - x1 * y0
-        area += cross
-        cx += (x0 + x1) * cross
-        cy += (y0 + y1) * cross
-    area *= 0.5
-    if abs(area) < 1e-6:
+def representative_point(points):
+    try:
+        rp = ShapelyPolygon(points).representative_point()
+        return rp.x, rp.y
+    except Exception:
+        n = len(points)
         return sum(p[0] for p in points) / n, sum(p[1] for p in points) / n
-    return cx / (6 * area), cy / (6 * area)
 
 
 def render_one(args):
@@ -114,7 +126,6 @@ def render_one(args):
         return
 
     rooms = rec["rooms"]
-    adj = rec["adjacency"]
     all_x = [c[0] for r in rooms for c in r["coords"]]
     all_y = [c[1] for r in rooms for c in r["coords"]]
     if not all_x:
@@ -137,14 +148,13 @@ def render_one(args):
     canvas_h = int(world_h * scale + 2 * MARGIN)
     img = Image.new("RGB", (canvas_w, canvas_h), "white")
     draw = ImageDraw.Draw(img, "RGBA")
-    font, title_font = make_fonts()
+    font, _ = make_fonts()
 
     def to_px(x, y):
         px = MARGIN + (x - world_x0) * scale
         py = MARGIN + (world_y1 - y) * scale
         return px, py
 
-    centroids = []
     for room in rooms:
         rtype = room["type"]
         color = ROOM_COLORS.get(rtype, "#DDDDDD")
@@ -152,8 +162,7 @@ def render_one(args):
         pts_px = [to_px(x, y) for x, y in pts_world]
         draw.polygon(pts_px, fill=color, outline="#444444")
 
-        cx, cy = polygon_centroid(pts_world)
-        centroids.append((cx, cy))
+        cx, cy = representative_point(pts_world)
         label = ROOM_ABBR.get(rtype, rtype)
         tx, ty = to_px(cx, cy)
         left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
@@ -161,28 +170,18 @@ def render_one(args):
         th = bottom - top
         draw.text((tx - tw / 2, ty - th / 2), label, fill="#222222", font=font)
 
-    for i, neighbors in enumerate(adj):
-        for j in neighbors:
-            if j > i:
-                x0, y0 = to_px(centroids[i][0], centroids[i][1])
-                x1, y1 = to_px(centroids[j][0], centroids[j][1])
-                draw.line((x0, y0, x1, y1), fill=(153, 153, 153, 160), width=1)
-
-    prompt = rec.get("prompt", "")
-    suffix = "..." if len(prompt) > 60 else ""
-    title = f"[{idx + 1}] {prompt[:60]}{suffix}"
-    draw.text((8, 8), title, fill="#333333", font=title_font)
-
     img.save(str(out_path), format="PNG", optimize=True)
 
 
 if __name__ == "__main__":
-    print("Loading and filtering records...")
-    all_records = load_all()
-    print(f"Valid records after filter: {len(all_records):,}")
+    used_set = load_used_set()
+
+    print("Loading and filtering records (excluding already-used)...")
+    all_records = load_all(used_set)
+    print(f"Available records after exclusion and filter: {len(all_records):,}")
 
     if len(all_records) < N_TOTAL:
-        print(f"Warning: only {len(all_records)} valid records, less than requested {N_TOTAL}.")
+        print(f"Warning: only {len(all_records)} available, less than requested {N_TOTAL}.")
         sampled = all_records
     else:
         random.seed(SEED)
@@ -209,7 +208,7 @@ if __name__ == "__main__":
     with Pool(n_workers) as pool:
         for _ in pool.imap_unordered(render_one, tasks, chunksize=40):
             done += 1
-            if done % 2000 == 0:
+            if done % 1000 == 0:
                 print(f"  {done}/{len(tasks)}")
 
     total_kb = sum(f.stat().st_size for f in OUT_DIR.glob("*.png")) // 1024
