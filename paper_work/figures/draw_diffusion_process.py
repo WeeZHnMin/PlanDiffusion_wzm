@@ -11,6 +11,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch
+from matplotlib.path import Path as MPath
+import matplotlib.patches as mpl_patches
 
 # ── DDPM schedule ─────────────────────────────────────────────────────────────
 T_MAX  = 1000
@@ -84,41 +86,55 @@ scale = np.abs(pts0).max()
 pts_norm = pts0 / scale * 2.7     # t=0 spans ~±2.7 in display range ±3.2
 
 # ── Figure ────────────────────────────────────────────────────────────────────
-TIMESTEPS = [999, 749, 499, 249, 0]
-LABELS    = ['$t=1000$', '$t=750$', '$t=500$', '$t=250$', '$t=0$']
-N_panels  = len(TIMESTEPS)
+TIMESTEPS    = [999, 749, 499, 249, 0, None]
+LABELS       = ['$t=1000$', '$t=750$', '$t=500$', '$t=250$', '$t=0$', 'Node Types']
+# snake order: row0 left→right, row1 right→left
+PANEL_POS    = [(0,0), (0,1), (0,2), (1,2), (1,1), (1,0)]
+ARROW_LABELS = ['Diffusion', 'Diffusion', 'Diffusion', 'Diffusion', 'Type\nPrediction']
+N_COLS, N_ROWS = 3, 2
 
 PANEL_W  = 1.8
-ARROW_W  = 0.24
-FIG_H    = 2.8
-FIG_W    = PANEL_W * N_panels + ARROW_W * (N_panels - 1) + 0.1
-LEGEND_H = 0.45
+PANEL_H  = 2.0
+ARROW_W  = 0.75
+GAP_ROW  = 0.1
+LEGEND_H = 0.42
+FIG_W    = PANEL_W * N_COLS + ARROW_W * (N_COLS - 1) + 0.2
+FIG_H    = PANEL_H * N_ROWS + GAP_ROW + LEGEND_H + 0.3
+
+L, R, T  = 0.02, 0.02, 0.03
+B        = LEGEND_H / FIG_H
+arrow_w_frac = ARROW_W / FIG_W
+panel_w_frac = (1 - L - R - arrow_w_frac * (N_COLS - 1)) / N_COLS
+gap_row_frac = GAP_ROW / FIG_H
+panel_h_frac = (1 - T - B - gap_row_frac) / N_ROWS
 
 fig = plt.figure(figsize=(FIG_W, FIG_H))
-panel_bottom = LEGEND_H / FIG_H + 0.01
-panel_height = 1.0 - panel_bottom - 0.02
-axes = []
-for col in range(N_panels):
-    left  = col * (PANEL_W + ARROW_W) / FIG_W + 0.008
-    width = PANEL_W / FIG_W - 0.008
-    ax = fig.add_axes([left, panel_bottom, width, panel_height])
-    axes.append(ax)
+
+# Build axes at each (row, col) grid position
+grid_axes = {}
+for r, c in PANEL_POS:
+    if (r, c) in grid_axes:
+        continue
+    x0 = L + c * (panel_w_frac + arrow_w_frac)
+    y0 = B + (N_ROWS - 1 - r) * (panel_h_frac + gap_row_frac)
+    grid_axes[(r, c)] = fig.add_axes([x0, y0, panel_w_frac, panel_h_frac])
 
 DISPLAY_RANGE = 3.5
 NODE_R = 0.24
 
-for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
-    ax = axes[col]
+for idx, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
+    r, c = PANEL_POS[idx]
+    ax   = grid_axes[(r, c)]
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_xlim(-DISPLAY_RANGE, DISPLAY_RANGE)
     ax.set_ylim(-DISPLAY_RANGE, DISPLAY_RANGE)
 
     # Noisy coords
-    if t_idx == 0:
+    if t_idx is None or t_idx == 0:
         pts_t = pts_norm.copy()
     else:
-        pts_t = q_sample(pts_norm, t_idx, seed=col * 7 + 13)  # 每帧独立噪声
+        pts_t = q_sample(pts_norm, t_idx, seed=idx * 7 + 13)
 
     # Draw edges
     for i in range(len(valid)):
@@ -132,9 +148,12 @@ for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
 
     # Draw nodes
     for i, ni in enumerate(valid):
-        cid = cids[ni]
-        fc  = combo_fc(cid)
-        ec  = combo_ec(cid)
+        if t_idx is None:
+            fc = combo_fc(cids[ni])
+            ec = combo_ec(cids[ni])
+        else:
+            fc = '#d8d8d8'
+            ec = '#aaaaaa'
         ax.add_patch(plt.Circle((pts_t[i,0], pts_t[i,1]), NODE_R,
                                 color=fc, ec=ec, lw=0.6, zorder=3))
 
@@ -150,35 +169,84 @@ for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
     ax.set_title(label, fontsize=16, pad=6,
                  fontfamily='serif', fontstyle='italic')
 
-    # Arrow between panels (except after last)
-    if col < N_panels - 1:
-        x_arrow = ax.get_position().x1
-        y_mid   = (ax.get_position().y0 + ax.get_position().y1) / 2
-        fig.add_artist(
-            FancyArrowPatch(
-                (x_arrow + 0.002, y_mid),
-                (x_arrow + 0.028, y_mid),
-                transform=fig.transFigure,
-                arrowstyle='->', color='#888888',
-                mutation_scale=18, lw=1.5
-            )
-        )
+    # Arrow + label to next panel
+    if idx < len(TIMESTEPS) - 1:
+        r_next, c_next = PANEL_POS[idx + 1]
+        pos_cur  = grid_axes[(r, c)].get_position()
+        pos_next = grid_axes[(r_next, c_next)].get_position()
+        alabel   = ARROW_LABELS[idx]
 
-# ── Shared legend at bottom ───────────────────────────────────────────────────
+        if r == r_next:
+            # horizontal arrow
+            if c_next > c:   # rightward
+                xa0 = pos_cur.x1  + 0.005
+                xa1 = pos_next.x0 - 0.005
+            else:             # leftward
+                xa0 = pos_cur.x0  - 0.005
+                xa1 = pos_next.x1 + 0.005
+            ya = (pos_cur.y0 + pos_cur.y1) / 2
+            fig.add_artist(FancyArrowPatch(
+                (xa0, ya), (xa1, ya),
+                transform=fig.transFigure,
+                arrowstyle='->', color='#555555',
+                mutation_scale=22, lw=2.0))
+            # row 0 (rightward): label above; row 1 (leftward): label below
+            if c_next > c:
+                fig.text((xa0 + xa1) / 2, ya + 0.032, alabel,
+                         ha='center', va='bottom', fontsize=9.5,
+                         color='#333333', transform=fig.transFigure)
+            else:
+                fig.text((xa0 + xa1) / 2, ya - 0.018, alabel,
+                         ha='center', va='top', fontsize=9.5,
+                         color='#333333', transform=fig.transFigure)
+        else:
+            # bent arrow: right → down → left  (wraps around right side)
+            x_start = pos_cur.x1
+            y_start = (pos_cur.y0 + pos_cur.y1) / 2
+            x_right = pos_cur.x1 + 0.055
+            y_end   = (pos_next.y0 + pos_next.y1) / 2
+            x_end   = pos_next.x1
+
+            # draw three-segment line (no arrowhead yet)
+            verts = [(x_start, y_start),
+                     (x_right, y_start),
+                     (x_right, y_end),
+                     (x_end + 0.008, y_end)]
+            codes = [MPath.MOVETO, MPath.LINETO, MPath.LINETO, MPath.LINETO]
+            seg = mpl_patches.PathPatch(
+                MPath(verts, codes),
+                facecolor='none', edgecolor='#555555', lw=2.0,
+                transform=fig.transFigure, clip_on=False, zorder=10)
+            fig.add_artist(seg)
+
+            # arrowhead at the end (pointing left onto right edge of next panel)
+            fig.add_artist(FancyArrowPatch(
+                (x_end + 0.008, y_end), (x_end, y_end),
+                transform=fig.transFigure,
+                arrowstyle='->', color='#555555',
+                mutation_scale=22, lw=1.0))
+
+            # label to the right of the vertical segment
+            fig.text(x_right + 0.012, (y_start + y_end) / 2, alabel,
+                     ha='left', va='center', fontsize=9.5,
+                     color='#333333', transform=fig.transFigure)
+
+
+# ── Legend at bottom ─────────────────────────────────────────────────────────
 present = sorted({cids[ni] for ni in valid})
 handles = [
     mpatches.Patch(facecolor=combo_fc(cid), edgecolor=combo_ec(cid),
                    label=combo_label(cid), linewidth=0.8)
     for cid in present
 ]
-ax_leg = fig.add_axes([0.01, 0.01, 0.98, LEGEND_H / FIG_H])
+leg_y0 = B - LEGEND_H / FIG_H
+ax_leg = fig.add_axes([L, leg_y0, 1 - L - R, LEGEND_H / FIG_H])
 ax_leg.axis('off')
 ax_leg.legend(handles=handles,
               loc='center', ncol=len(present),
-              fontsize=12.0, frameon=True,
-              framealpha=0.95, edgecolor='#CCCCCC',
-              title='Node Type', title_fontsize=13.0,
-              columnspacing=0.5, handlelength=0.9, handletextpad=0.35,
+              fontsize=9.5, frameon=False,
+              title='Node Type', title_fontsize=10.5,
+              columnspacing=0.5, handlelength=0.9, handletextpad=0.4,
               borderpad=0.4)
 
 plt.savefig('paper_work/figures/diffusion_process.pdf',

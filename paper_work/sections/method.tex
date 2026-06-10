@@ -14,18 +14,23 @@ $\mathcal{E}$ 为边集合（相邻角点间的连接关系）。
 邻接矩阵 $\mathbf{A} \in \{0,1\}^{N \times N}$。
 
 目标是学习联合分布 $p(\mathbf{A}, \mathbf{X}, \mathbf{y} \mid \mathcal{T})$，
-我们将其分解为两个串联子问题：
+我们将其分解为三个串联子问题：
 \begin{equation}
     p(\mathbf{A},\mathbf{X},\mathbf{y} \mid \mathcal{T})
-    = \underbrace{p_{\theta_1}(\mathbf{A} \mid \mathcal{T})}_{\text{Stage 1}}
+    = \underbrace{p_{\theta_1}(\mathbf{A} \mid \mathcal{T})}_{\text{图拓扑生成}}
     \cdot
-    \underbrace{p_{\theta_2}(\mathbf{X}, \mathbf{y} \mid \mathbf{A}, \mathcal{T})}_{\text{Stage 2}}
+    \underbrace{p_{\theta_2}(\mathbf{X} \mid \mathbf{A}, \mathcal{T})}_{\text{坐标扩散}}
+    \cdot
+    \underbrace{p_{\theta_3}(\mathbf{y} \mid \mathbf{X}, \mathbf{A}, \mathcal{T})}_{\text{类型预测}}
     \label{eq:factorize}
 \end{equation}
 （1）\textbf{图拓扑生成}：自回归建模 $p_{\theta_1}(\mathbf{A} \mid \mathcal{T})$，
-输出图的连接结构；
-（2）\textbf{节点坐标与类型扩散}：以 $(\mathbf{A}, \mathcal{T})$ 为条件，
-通过扩散模型建模 $p_{\theta_2}(\mathbf{X}, \mathbf{y} \mid \mathbf{A}, \mathcal{T})$。
+输出图的连接结构与节点数量；
+（2）\textbf{节点坐标扩散}：以 $(\mathbf{A}, \mathcal{T})$ 为条件，
+通过 DDPM 建模 $p_{\theta_2}(\mathbf{X} \mid \mathbf{A}, \mathcal{T})$；
+（3）\textbf{节点类型预测}：以生成坐标 $\mathbf{X}$、图结构 $\mathbf{A}$ 和文本 $\mathcal{T}$ 为条件，
+独立分类器建模 $p_{\theta_3}(\mathbf{y} \mid \mathbf{X}, \mathbf{A}, \mathcal{T})$。
+三个模型完全解耦训练，推理时串联执行。
 
 % -----------------------------------------------------------------------------
 \subsection{数据集}
@@ -58,7 +63,11 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 与使用房间中心点的方案相比，
 顶点图保留了平面图完整的几何拓扑信息，
 并使图结构与几何形状之间保持一一对应。
-全部训练样本中共出现 32 种组合类型，每种分配唯一整数 ID（1--32）。
+房间类型按固定字母序排列后取有序并集作为组合键，
+例如仅属于卫生间的顶点为类型~1（bathroom），
+同时属于卫生间与卧室公共墙角的顶点为类型~8（bathroom + bedroom）。
+全部训练样本中共出现 32 种组合类型，每种分配唯一整数 ID（1--32），
+完整映射见附录表~\ref{tab:combo_types}。
 
 \paragraph{自然语言标注}
 我们将顶点图渲染为彩色平面图图像，
@@ -68,9 +77,9 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 回避视觉指代词，使描述可独立于图像作为文本条件使用。
 
 \paragraph{统计}
-最终数据集包含 \textbf{149,609} 条样本，
+最终数据集包含 \textbf{149,609} 条样本（原始 150,000 条中过滤掉文本超过 224 token 的 391 条），
 每条样本含邻接矩阵（$40{\times}40$）、节点坐标（$40{\times}2$）、
-组合类型 ID（$40$）及文本描述（WordPiece 编码，长度不超过 128 token）。
+组合类型 ID（$40$）及 WordPiece 文本描述。
 数据集关键统计如表~\ref{tab:dataset_stats} 所示。
 
 \begin{table}[h]
@@ -84,10 +93,10 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 \midrule
 样本总数           & \multicolumn{3}{c}{149,609} \\
 节点数             & 9    & 22.4 & 40  \\
-边数               & 12   & 28.6 & 49  \\
-文本长度（token）  & 33   & 81.8 & 145 \\
-单类型节点占比     & \multicolumn{3}{c}{60.7\%} \\
-多类型节点占比     & \multicolumn{3}{c}{39.3\%} \\
+边数               & 12   & 28.6 & 50  \\
+文本长度（token）  & 33   & 81.8 & 149 \\
+单类型节点占比     & \multicolumn{3}{c}{41.1\%} \\
+多类型节点占比     & \multicolumn{3}{c}{58.9\%} \\
 Combo 类型总数     & \multicolumn{3}{c}{32} \\
 \bottomrule
 \end{tabular}
@@ -101,9 +110,8 @@ Combo 类型总数     & \multicolumn{3}{c}{32} \\
 我们采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
 并在其后追加 84 个图结构专用 token，构成大小为 10,084 的统一词表，
 具体如表~\ref{tab:vocab} 所示。
-该词表同时被 Stage~1 和 Stage~2 共享。
-相较于在领域数据上重新训练 BPE，直接复用 BERT WordPiece 词表使系统更易与
-预训练语言模型对接，且对英文建筑描述具有良好的覆盖率。
+图结构专用 token 仅用于图拓扑生成阶段；
+坐标扩散与类型预测阶段的文本嵌入层仅使用前 10,000 个 WordPiece token。
 
 \begin{table}[h]
 \centering
@@ -114,19 +122,19 @@ Combo 类型总数     & \multicolumn{3}{c}{32} \\
 \toprule
 ID 范围 & Token & 说明 \\
 \midrule
-0 -- 9999    & WordPiece token & 文本词表（BERT 前 10k）\\
+0 -- 9999    & WordPiece token & 文本词表（BERT 前 10k），三阶段共用 \\
 10000        & \texttt{PAD}    & 填充 \\
 10001        & \texttt{BOS\_G} & 图序列起始 \\
 10002        & \texttt{EOS\_G} & 图序列终止 \\
 10003        & \texttt{SEP}    & 生成树与补边分隔符 \\
-10004--10043 & $N_k$           & 节点数量（$N=1{\sim}40$） \\
-10044--10083 & 节点 token       & 节点编号（$0{\sim}39$） \\
+10004--10043 & $N_k$           & 节点数量（$N=1{\sim}40$），仅图拓扑阶段 \\
+10044--10083 & 节点 token       & 节点编号（$0{\sim}39$），仅图拓扑阶段 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 % -----------------------------------------------------------------------------
-\subsection{阶段一：自回归图拓扑生成}
+\subsection{图拓扑生成}
 \label{subsec:llm_graph}
 
 \subsubsection{图序列化格式}
@@ -150,7 +158,7 @@ ID 范围 & Token & 说明 \\
 补边为不属于生成树的额外边，每条边用两个 token 表示。
 这一"生成树 + 补边"格式结构规整（父节点序列长度固定为 $N-1$），
 且任意连通图均可唯一表示。
-为增强多样性，对每张图从不同起始节点执行 BFS（增强 ${\times}4$）。
+为增强多样性，对每张图从不同起始节点执行 BFS（增强 ${\times}6$）。
 
 图~\ref{fig:seq_graph} 展示了自回归生成过程中图结构的逐步构建：
 从部分父节点序列对应的局部生成树，到完整生成树，再逐步添加补边，
@@ -206,105 +214,72 @@ lr $= 10^{-4}$，余弦退火至 $10^{-5}$），
 grad clip $= 1.0$，FP16 混合精度。
 
 % -----------------------------------------------------------------------------
-\subsection{阶段二：节点坐标与类型联合扩散}
+\subsection{节点坐标扩散}
 \label{subsec:node_diffusion}
-
-\subsubsection{联合扩散对象}
-
-坐标 $\mathbf{x}_0 \in \mathbb{R}^{N \times 2}$ 可直接在欧氏空间扩散。
-类型标签 $y_i \in \{1,\ldots,32\}$ 为离散量，无法直接施加高斯噪声；
-为此，我们将其映射到连续嵌入空间：
-\begin{equation}
-    \mathbf{e}_0^{(i)} = \mathrm{Emb}(y_i) \in \mathbb{R}^{d},
-    \quad d = 384
-    \label{eq:type_emb}
-\end{equation}
-并在嵌入空间对 $\mathbf{e}_0^{(i)}$ 施加高斯扩散。
-这使坐标与类型可在统一的 Gaussian DDPM 框架下联合训练，
-无需引入离散扩散机制。
 
 \subsubsection{前向过程}
 
+以生成的邻接矩阵 $\mathbf{A}$ 和文本 $\mathcal{T}$ 为条件，
+对节点坐标 $\mathbf{X} \in \mathbb{R}^{N \times 2}$ 施加高斯 DDPM。
 采用线性 beta 调度（$\beta_t \in [10^{-4},\, 0.02]$，$T=1000$），
-令 $\alpha_t = 1 - \beta_t$，$\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$。
-两路前向过程如图~\ref{fig:diffusion} 所示，分别为：
-\begin{align}
-    \mathbf{x}_t &= \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
+令 $\alpha_t = 1 - \beta_t$，$\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$，
+前向过程为：
+\begin{equation}
+    \mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
                   + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon},
-    &\boldsymbol{\epsilon} &\sim \mathcal{N}(\mathbf{0}, \mathbf{I})
-    \label{eq:fwd_coord} \\
-    \mathbf{e}_t^{(i)} &= \sqrt{\bar{\alpha}_t}\,\mathbf{e}_0^{(i)}
-                  + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\delta}^{(i)},
-    &\boldsymbol{\delta}^{(i)} &\sim \mathcal{N}(\mathbf{0}, \mathbf{I})
-    \label{eq:fwd_type}
-\end{align}
+    \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+    \label{eq:fwd_coord}
+\end{equation}
+$t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
+至 $t=1000$ 时坐标分布退化为标准正态分布，
+如图~\ref{fig:diffusion} 所示。
 
 \begin{figure}[t]
     \centering
     \includegraphics[width=\linewidth]{figures/diffusion_process.pdf}
     \caption{
-        节点图的前向扩散过程（$t=0 \to t=1000$）。
-        $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
-        至 $t=1000$ 时坐标分布退化为标准正态分布。
-        节点颜色表示组合类型。
+        节点图的前向扩散过程（$t=1000 \to t=0$，从左上至右下蛇形排列）。
+        扩散面板中节点以灰色圆表示；最右图（Node Types）还原 $t=0$ 坐标后
+        按组合类型着色，展示最终类型预测结果。
+        箭头标注各阶段操作名称。
     }
     \label{fig:diffusion}
 \end{figure}
 
 \subsubsection{去噪网络}
 
-去噪网络 $f_\theta$ 为双流注意力 Transformer（架构详见图~\ref{fig:arch}），
-接收加噪坐标、加噪类型嵌入、时间步、邻接矩阵和文本，
-预测两路噪声：
+去噪网络 $f_{\theta_2}$（\textbf{NodeDiffusionTransformer}）接收
+加噪坐标 $\mathbf{x}_t$、时间步 $t$、邻接矩阵 $\mathbf{A}$、
+节点掩码 $\mathbf{m}$ 和文本 $\mathcal{T}$，预测坐标噪声：
 \begin{equation}
-    \bigl(\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}},\,
-          \hat{\boldsymbol{\epsilon}}_{\mathrm{type}}\bigr)
-    = f_\theta\!\left(\mathbf{x}_t,\,\mathbf{E}_t,\,
-                      t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T}\right)
-    \label{eq:model}
+    \hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}
+    = f_{\theta_2}\!\left(\mathbf{x}_t,\, t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T}\right)
+    \label{eq:model_coord}
 \end{equation}
-其中 $\mathbf{E}_t \in \mathbb{R}^{N \times d}$ 为加噪类型嵌入矩阵，第 $i$ 行为 $\mathbf{e}_t^{(i)}$。
+
+去噪网络整体架构如图~\ref{fig:arch} 所示。
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=0.90\linewidth]{figures/node_diffusion_arch.pdf}
     \caption{
         NodeDiffusionTransformer 架构图。
-        输入的加噪坐标、加噪类型嵌入和时间步在 Fusion 模块融合为节点隐向量，
-        拼接文本嵌入后经 6 层双流注意力编码器处理；
-        最终节点特征分别经 Coordinate Head 和 Type Embedding Head
-        预测两路噪声 $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$ 和
-        $\hat{\boldsymbol{\epsilon}}_{\mathrm{type}}$。
+        输入的加噪坐标 $\mathbf{x}_t$ 经坐标投影与时间步嵌入相加，
+        构成节点初始隐向量；拼接文本嵌入后经 6 层双流注意力编码器处理；
+        最终节点特征经 Coordinate Head 预测坐标噪声
+        $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$。
     }
     \label{fig:arch}
 \end{figure}
 
-\paragraph{节点特征融合}
-坐标特征与类型嵌入并非两条独立序列，而是在输入阶段直接相加，
-与时间步嵌入共同构成每个节点的\textbf{单一共享隐向量}：
+\paragraph{节点特征初始化}
+坐标特征与时间步嵌入直接相加，构成每个节点的初始隐向量：
 \begin{equation}
     \mathbf{h}_i^{(0)} = W_c\,\mathbf{x}_t^{(i)}
-                       + \mathbf{e}_t^{(i)}
                        + \mathrm{MLP}\!\left(\gamma(t)\right)
     \label{eq:node_init}
 \end{equation}
-其中 $\gamma(t)$ 为正弦时间步编码，$W_c \in \mathbb{R}^{d \times 2}$。
-这一设计的关键在于：坐标与类型信息在同一表示空间内相互耦合，
-后续所有注意力计算均作用于这一融合向量。
-因此，坐标与类型之间并无独立的 cross-attention 流，
-而是通过共享向量在每一次注意力计算中隐式耦合。
-具体而言，每个注意力头的 Q/K/V 均由融合向量线性投影得到：
-\begin{equation}
-    \mathbf{Q}_i = W_Q\,\mathbf{h}_i^{(\ell)},\quad
-    \mathbf{K}_j = W_K\,\mathbf{h}_j^{(\ell)},\quad
-    \mathbf{V}_j = W_V\,\mathbf{h}_j^{(\ell)}
-    \label{eq:qkv}
-\end{equation}
-由于 $\mathbf{h}_j^{(\ell)}$ 同时携带坐标与类型信息，
-注意力分数 $\mathbf{Q}_i \cdot \mathbf{K}_j^\top$ 及聚合值
-$\sum_j \alpha_{ij}\mathbf{V}_j$ 均隐含了两者的联合感知。
-两个输出 head 也均从同一 $\mathbf{h}_i^{(L)}$ 读取，
-使坐标噪声预测与类型噪声预测在整个去噪过程中保持相互感知。
+其中 $\gamma(t)$ 为正弦时间步编码，$W_c \in \mathbb{R}^{d \times 2}$，$d=384$。
 
 \paragraph{双流注意力层}
 每层包含两条并行注意力流，输出残差相加后经 FFN 处理：
@@ -327,69 +302,128 @@ $\sum_j \alpha_{ij}\mathbf{V}_j$ 均隐含了两者的联合感知。
         \end{cases}
         \label{eq:adj_mask}
     \end{equation}
-    每个节点仅能关注直连邻居，在保证图结构约束的同时，
-    使相邻节点之间的坐标与类型特征得以局部交换。
+    每个节点仅能关注直连邻居，使相邻节点之间的坐标特征得以局部交换。
 
     \item \textbf{全局注意力 $\mathrm{GlobalAttn}$}：
     对拼接序列 $\mathbf{H}_{\mathrm{full}} = [\mathbf{H}_{\mathrm{text}};
     \mathbf{H}_{\mathrm{node}}]$ 做无约束注意力，
-    使每个节点能跨越图结构感知全局布局与文本语义，
-    并使所有节点的融合特征（含坐标与类型）之间形成完全连接。
+    使每个节点能跨越图结构感知全局布局与文本语义。
     文本嵌入通过可学习 BPE 嵌入层（维度 $d=384$）获得，
     无需预训练语言模型。
 \end{itemize}
 
-共堆叠 6 层，model\_channels $= 384$，6 头，dropout $= 0.1$。
+共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$。
+
+\paragraph{坐标预测头}
+编码器输出为拼接序列 $[\mathbf{H}_{\mathrm{text}}^{(L)};\,\mathbf{H}_{\mathrm{node}}^{(L)}]$；
+取后 $N$ 个 token 得到节点表示 $\{\mathbf{h}_i^{(L)}\}_{i=1}^{N}$，
+对每个节点独立预测坐标噪声：
+\begin{equation}
+    \hat{\boldsymbol{\epsilon}}_{\mathrm{coord},i}
+    = \mathrm{Linear}(192{\to}2)\;\circ\;\mathrm{Linear}(384{\to}192)\;\circ\;\mathrm{ReLU}\;\circ\;\mathrm{Linear}(384{\to}384)\;\left(\mathbf{h}_i^{(L)}\right)
+\end{equation}
 
 \subsubsection{训练目标}
 
-联合训练目标为：
+训练目标为有效节点上的 MSE：
 \begin{equation}
-    \mathcal{L} = \mathcal{L}_{\mathrm{coord}} + \lambda\,\mathcal{L}_{\mathrm{type}}
-    \label{eq:loss}
-\end{equation}
-\begin{align}
     \mathcal{L}_{\mathrm{coord}}
-        &= \frac{\displaystyle\sum_{i} m_i
+        = \frac{\displaystyle\sum_{i} m_i
                  \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{coord},i}
                        - \boldsymbol{\epsilon}_i\right\|^2}
                 {2\displaystyle\sum_i m_i}
-    \label{eq:loss_coord} \\
-    \mathcal{L}_{\mathrm{type}}
-        &= \frac{\displaystyle\sum_{i} m_i
-                 \left\|\hat{\boldsymbol{\epsilon}}_{\mathrm{type},i}
-                       - \boldsymbol{\delta}_i\right\|^2}
-                {d\displaystyle\sum_i m_i}
-    \label{eq:loss_type}
-\end{align}
-其中 $m_i$ 为节点有效掩码，$\lambda = 1.0$。
-$\mathcal{L}_{\mathrm{type}}$ 在嵌入空间预测类型噪声，
-与 $\mathcal{L}_{\mathrm{coord}}$ 共享扩散时间步，
-同时起到对坐标预测的语义正则化作用。
+    \label{eq:loss_coord}
+\end{equation}
+其中 $m_i$ 为节点有效掩码（padding 节点不计入 loss）。
 
 优化器为 AdamW（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
 grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精度。
+训练数据由原始图通过随机节点重排增强 ${\times}8$。
 
-\subsubsection{推理：坐标采样与类型恢复}
+\subsubsection{推理：DDPM 逆采样}
 
-逆过程执行标准 DDPM 采样（1000 步）：
+执行标准 DDPM 逆过程（1000 步）：
 \begin{equation}
-    p_{\theta_2}(\mathbf{x}_{t-1} \mid \mathbf{x}_t, \mathbf{A}, \mathcal{T})
-    = \mathcal{N}\!\left(\mathbf{x}_{t-1};\,\boldsymbol{\mu}_\theta,\,\tilde{\beta}_t\mathbf{I}\right)
-    \label{eq:reverse}
-\end{equation}
-\begin{equation}
+    \mathbf{x}_{t-1} \sim \mathcal{N}\!\left(\boldsymbol{\mu}_\theta,\;\tilde{\beta}_t\mathbf{I}\right),
+    \quad
     \boldsymbol{\mu}_\theta = \frac{1}{\sqrt{\alpha_t}}\!\left(
         \mathbf{x}_t - \frac{\beta_t}{\sqrt{1-\bar{\alpha}_t}}
         \hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}\right)
-    \label{eq:mu}
+    \label{eq:reverse}
 \end{equation}
-类型嵌入路同步采样得到 $\hat{\mathbf{e}}_0^{(i)}$，
-再通过最近邻查找恢复离散类型：
+从 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$ 出发，逐步去噪得到 $\hat{\mathbf{X}} = \mathbf{x}_0$。
+
+% -----------------------------------------------------------------------------
+\subsection{节点类型预测}
+\label{subsec:type_classifier}
+
+\subsubsection{解耦设计动机}
+
+节点类型 $y_i \in \{1,\ldots,32\}$ 为离散标签，
+在扩散完成、获得干净坐标 $\hat{\mathbf{X}}$ 后，
+可将类型预测视为以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件的独立分类任务。
+这一解耦设计避免了离散扩散或嵌入空间最近邻查找的复杂性，
+且使类型分类器可在真实坐标（$T=0$）上以强监督充分训练，
+不受扩散噪声干扰。
+
+\subsubsection{模型结构}
+
+\textbf{NodeTypeClassifier} 与 NodeDiffusionTransformer 结构同构——
+均采用双流 EncoderLayer（邻接局部注意力 + 全局注意力），
+但超参数独立，权重完全不共享，训练亦完全分离。
+NodeTypeClassifier 的配置为 $d=384$，6 层，6 头；
+与之对比，NodeDiffusionTransformer 为 $d=256$，6 层，4 头。
+两者的对比结构如图~\ref{fig:type_arch} 所示，关键差异如下：
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.72\textwidth]{figures/type_classifier_arch.pdf}
+    \caption{NodeDiffusionTransformer 与 NodeTypeClassifier 结构对比。
+    两者均采用同构的双流编码器设计，但输入端（有无时间步嵌入）与输出头不同，
+    超参数与权重完全独立。}
+    \label{fig:type_arch}
+\end{figure}
+
+\begin{itemize}
+    \item \textbf{无时间步嵌入}：输入始终为干净坐标（$t=0$），节点初始隐向量为：
+    \begin{equation}
+        \mathbf{h}_i^{(0)} = W_c\,\mathbf{x}_0^{(i)},
+        \quad W_c \in \mathbb{R}^{d \times 2}
+        \label{eq:type_node_init}
+    \end{equation}
+
+    \item \textbf{类型预测头}：替换坐标头，对每个节点输出 33 维 logit
+    （0 为 padding，1--32 为有效类型）：
+    \begin{equation}
+        \hat{\mathbf{z}}_i = \mathrm{Linear}(d{\to}33)\;\circ\;\mathrm{ReLU}\;\circ\;\mathrm{Linear}(d{\to}d)\;\circ\;\mathrm{LayerNorm}\left(\mathbf{h}_i^{(L)}\right)
+        \label{eq:type_head}
+    \end{equation}
+\end{itemize}
+
+\subsubsection{训练目标}
+
+采用交叉熵损失，padding 节点（$y_i = 0$）不计入：
 \begin{equation}
-    \hat{y}_i = \arg\min_{k \in \{1,\ldots,32\}}
-                \left\|\hat{\mathbf{e}}_0^{(i)} - \mathrm{Emb}(k)\right\|_2
-    \label{eq:type_recover}
+    \mathcal{L}_{\mathrm{type}}
+    = -\frac{1}{\sum_i m_i}
+      \sum_{i} m_i \log \frac{\exp(\hat{z}_{i,y_i})}{\sum_{k=1}^{32}\exp(\hat{z}_{i,k})}
+    \label{eq:loss_type}
+\end{equation}
+评估指标为有效节点上的分类准确率：
+\begin{equation}
+    \mathrm{Acc} = \frac{\displaystyle\sum_i m_i \cdot \mathbf{1}[\arg\max_k \hat{z}_{i,k} = y_i]}{\displaystyle\sum_i m_i}
+\end{equation}
+
+优化器为 AdamW（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
+grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精度。
+
+\subsubsection{推理：直接分类}
+
+在推理阶段，NodeTypeClassifier 接收扩散生成的坐标 $\hat{\mathbf{X}}$ 作为输入，
+输出每个节点的类型标签：
+\begin{equation}
+    \hat{y}_i = \arg\max_{k \in \{1,\ldots,32\}} \hat{z}_{i,k}
+    \label{eq:type_infer}
 \end{equation}
 
 % -----------------------------------------------------------------------------
@@ -397,15 +431,17 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 \label{subsec:inference}
 
 给定文本 $\mathcal{T}$，完整推理分三步：
-（1）Stage~1 自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$；
-（2）Stage~2 以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
-从 $(\mathbf{x}_T, \mathbf{E}_T) \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
-出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$ 与类型 $\hat{\mathbf{y}}$；
-（3）反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
+（1）图拓扑生成：自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$；
+（2）坐标扩散：以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
+从 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$；
+（3）类型预测：以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件，
+NodeTypeClassifier 输出每节点类型 $\hat{\mathbf{y}}$；
+最终反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
 
 \paragraph{最小度约束}
-Stage~1 在生成补边序列（\texttt{SEP} 之后）时，
-施加\textbf{最小度约束}：若当前图中存在度数小于 2 的节点，
+图拓扑生成阶段在补边序列（\texttt{SEP} 之后）施加\textbf{最小度约束}：
+若当前图中存在度数小于 2 的节点，
 则在 logit 采样前将 \texttt{EOS\_G} 对应的 logit 置为 $-\infty$，
 强制模型继续生成补边，直至所有节点满足 $\deg(v_i) \geq 2$。
 
@@ -424,30 +460,31 @@ Stage~1 在生成补边序列（\texttt{SEP} 之后）时，
 \begin{algorithmic}[1]
 \REQUIRE 文本描述 $\mathcal{T}$
 \ENSURE 节点坐标 $\hat{\mathbf{X}}$，节点类型 $\hat{\mathbf{y}}$，邻接矩阵 $\mathbf{A}$
-\STATE \textbf{Stage 1：图拓扑生成}
+\STATE \textbf{图拓扑生成}
 \STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$
 \FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
-    \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP} \COMMENT{约束①：因果树约束 $p_k < k$；约束②：SEP 时机}
+    \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP} \COMMENT{约束①：因果树 $p_k < k$；约束②：SEP 时机}
     \STATE 采样 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
 \ENDFOR
-\STATE 强制插入 \texttt{SEP} \COMMENT{约束②：恰好 $N-1$ 个父节点后强制 SEP}
+\STATE 强制插入 \texttt{SEP}
 \WHILE{未采样到 \texttt{EOS\_G}}
-    \STATE 屏蔽所有会使当前图出现三角环的节点 token \COMMENT{约束③：禁止三角环}
+    \STATE 屏蔽所有会使图出现三角环的节点 token \COMMENT{约束③：禁止三角环}
     \IF{$\exists\, i : \deg(v_i) < 2$}
-        \STATE 屏蔽 \texttt{EOS\_G} \COMMENT{约束④：度数下限，所有节点度 $\geq 2$ 方可结束}
+        \STATE 屏蔽 \texttt{EOS\_G} \COMMENT{约束④：所有节点度 $\geq 2$ 方可结束}
     \ENDIF
     \STATE 采样下一个 token $s \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
 \ENDWHILE
 \STATE 解析序列得 $\mathbf{A} \in \{0,1\}^{N \times N}$，节点掩码 $\mathbf{m}$
-\STATE \textbf{Stage 2：坐标与类型扩散}
-\STATE 采样初始噪声 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$，$\mathbf{E}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+\STATE \textbf{节点坐标扩散}
+\STATE 采样初始噪声 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
 \FOR{$t = T, T{-}1, \ldots, 1$}
-    \STATE $(\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}, \hat{\boldsymbol{\epsilon}}_{\mathrm{type}}) = f_\theta(\mathbf{x}_t, \mathbf{E}_t, t, \mathbf{A}, \mathbf{m}, \mathcal{T})$
+    \STATE $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}} = f_{\theta_2}(\mathbf{x}_t, t, \mathbf{A}, \mathbf{m}, \mathcal{T})$
     \STATE $\mathbf{x}_{t-1} \leftarrow$ DDPM 逆步（$\mathbf{x}_t$，$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$，$t$）
-    \STATE $\mathbf{E}_{t-1} \leftarrow$ DDPM 逆步（$\mathbf{E}_t$，$\hat{\boldsymbol{\epsilon}}_{\mathrm{type}}$，$t$）
 \ENDFOR
 \STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_0$
-\STATE $\hat{y}_i = \arg\min_{k} \|\hat{\mathbf{e}}_0^{(i)} - \mathrm{Emb}(k)\|_2$，$\forall i$
+\STATE \textbf{节点类型预测}
+\STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$ \COMMENT{NodeTypeClassifier 前向}
+\STATE $\hat{y}_i = \arg\max_{k} \hat{z}_{i,k}$，$\forall i$
 \RETURN $\hat{\mathbf{X}},\; \hat{\mathbf{y}},\; \mathbf{A}$
 \end{algorithmic}
 \end{algorithm}

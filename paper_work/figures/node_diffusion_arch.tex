@@ -1,208 +1,182 @@
-% NodeDiffusionTransformer Architecture  (top-to-bottom layout)
+% NodeDiffusion architecture — text-block style, clean layout
 % Compile: xelatex node_diffusion_arch.tex
-\documentclass[tikz, border=10pt]{standalone}
+\documentclass[tikz, border=14pt]{standalone}
+\usepackage{amsmath}
 \usepackage{tikz}
-\usepackage{amsmath, amssymb}
 \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
 
-\definecolor{Ccoord}{RGB}{48,118,180}
-\definecolor{Ctype}{RGB}{58,145,95}
-\definecolor{Ctime}{RGB}{140,95,170}
-\definecolor{Ctext}{RGB}{200,128,35}
-\definecolor{Cfuse}{RGB}{218,150,38}
-\definecolor{Cmodel}{RGB}{65,112,145}
-\definecolor{Chead}{RGB}{178,76,66}
-\definecolor{Cgray}{RGB}{100,100,100}
+% ── Palette ──────────────────────────────────────────────────────────────────
+\definecolor{Ci}{RGB}{207,226,248}   % blue  – inputs
+\definecolor{Ce}{RGB}{250,228,182}   % amber – embedding
+\definecolor{Cs}{RGB}{188,220,230}   % steel – encoder
+\definecolor{Cp}{RGB}{247,202,202}   % pink  – prediction
+\definecolor{Cbdr}{RGB}{148,148,148}
 
+% ── Styles ───────────────────────────────────────────────────────────────────
 \tikzset{
-  box/.style={
-    draw=#1!58, fill=#1!7, rounded corners=4pt,
-    minimum width=2.2cm, minimum height=0.72cm,
-    align=center, inner xsep=6pt, inner ysep=4pt,
-    font=\scriptsize, line width=0.72pt,
-    text=#1!86!black
+  % parameter: fill color
+  B/.style n args={1}{
+    draw=Cbdr, fill=#1, rounded corners=3pt,
+    minimum width=2.9cm, minimum height=0.8cm,
+    align=center, inner sep=6pt, font=\small\sffamily
   },
-  wide/.style={
-    draw=#1!58, fill=#1!7, rounded corners=4pt,
-    minimum width=4.35cm, minimum height=0.78cm,
-    align=center, inner xsep=7pt, inner ysep=5pt,
-    font=\scriptsize, line width=0.72pt,
-    text=#1!86!black
+  W/.style n args={1}{
+    draw=Cbdr, fill=#1, rounded corners=3pt,
+    minimum width=6.2cm, minimum height=0.8cm,
+    align=center, inner sep=6pt, font=\small\sffamily
   },
-  layer/.style={
-    draw=#1!58, fill=#1!6, rounded corners=4pt,
-    minimum width=4.10cm, minimum height=0.68cm,
-    align=center, inner xsep=6pt, inner ysep=4pt,
-    font=\scriptsize, line width=0.72pt,
-    text=#1!86!black
+  C/.style n args={1}{
+    circle, draw=Cbdr, fill=#1,
+    minimum size=0.58cm, inner sep=0pt, font=\small\sffamily
   },
-  group/.style={
-    draw=#1!32, fill=#1!3, rounded corners=6pt,
-    line width=0.8pt
-  },
-  title/.style={
-    font=\footnotesize\bfseries, text=#1!82!black
-  },
-  arr/.style={
-    -{Stealth[length=4.8pt,width=3.8pt]},
-    line width=0.86pt, color=#1!72
-  },
-  lightarr/.style={
-    -{Stealth[length=4pt,width=3pt]},
-    line width=0.68pt, color=#1!58
-  }
+  grp/.style={draw=Cbdr!55, fill=black!2,
+    rounded corners=6pt, line width=0.7pt, dashed},
+  ttl/.style={font=\small\sffamily\bfseries, text=black!60},
+  a/.style={-{Stealth[length=5pt,width=4pt]},
+    line width=0.9pt, color=black!50},
+  sk/.style={-{Stealth[length=4pt,width=3pt]},
+    line width=0.75pt, color=black!55, dashed}
 }
 
 \begin{document}
-\begin{tikzpicture}[node distance=0.42cm and 0.68cm]
+\begin{tikzpicture}
 
-% ---------------------------------------------------------------------
-% Row 1: Raw inputs (horizontal)
-% ---------------------------------------------------------------------
-\node[box=Ctext] at (1.1cm, 0) (txt)
-  {$\mathcal{T}=(w_1,\ldots,w_T)$\\[-1pt] text tokens};
-\node[box=Ccoord, right=0.3cm of txt] (xin)
-  {$\mathbf{x}_t\in\mathbb{R}^{2\times N}$\\[-1pt] noisy coordinates};
-\node[box=Ctype, right=0.3cm of xin] (ein)
-  {$\mathbf{E}_t\in\mathbb{R}^{N\times d}$\\[-1pt] noisy type embeddings};
-\node[box=Ctime, right=0.3cm of ein] (tin)
-  {$t$\\[-1pt] diffusion step};
+% ─────────────────────────────────────────────────────────────────────────────
+%  ROW 0  Raw inputs
+% ─────────────────────────────────────────────────────────────────────────────
+\node[B={Ci}] (txt) at (-4.8, 0)  {Text Tokens};
+\node[B={Ci}] (xin) at (-1.6, 0)  {Noisy Coords};
+\node[B={Ci}] (tin) at ( 1.6, 0)  {Diffusion Step};
+\node[B={Ci}] (adj) at ( 4.8, 0)  {Adjacency Matrix};
 
-% ---------------------------------------------------------------------
-% Row 2: Projections (below each raw input)
-% ---------------------------------------------------------------------
-\node[box=Ctext, below=0.5cm of txt] (txtemb)
-  {$\mathrm{Embed}(\mathcal{T})$\\[-1pt]
-   $\mathbf{H}_{\mathrm{text}}\in\mathbb{R}^{T\times d}$};
-\node[box=Ccoord, below=0.5cm of xin] (xproj)
-  {$W_c:\mathbb{R}^2\!\to\!\mathbb{R}^d$\\[-1pt] coordinate projection};
-\node[box=Ctype, below=0.5cm of ein] (eproj)
-  {type table / identity\\[-1pt] node type code};
-\node[box=Ctime, below=0.5cm of tin] (tproj)
-  {$\mathrm{MLP}(\gamma(t))$\\[-1pt] time embedding};
+% ─────────────────────────────────────────────────────────────────────────────
+%  ROW 1  Projection / Embedding
+% ─────────────────────────────────────────────────────────────────────────────
+\node[B={Ce}, below=0.55cm of txt] (te)  {BPE Embedding};
+\node[B={Ce}, below=0.55cm of xin] (cp)  {Coord Projection};
+\node[B={Ce}, below=0.55cm of tin] (tm)  {Time Embedding};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  Group: Inputs
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{scope}[on background layer]
+  \node[grp, fit=(txt)(xin)(tin)(adj)(te)(cp)(tm), inner sep=7pt] (Ginput) {};
+\end{scope}
+\node[ttl, anchor=south west] at ([yshift=2pt]Ginput.north west) {Inputs};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ROW 2  Node token init  (coord proj + time emb → per-node feature)
+% ─────────────────────────────────────────────────────────────────────────────
+\node[W={Ce}] (ni) at (0, -3.0)
+  {Node Feature Init};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ROW 3  Sequence concat
+% ─────────────────────────────────────────────────────────────────────────────
+\node[W={Ce}] (sc) at (0, -4.1)
+  {Concat \textbf{[} Text Features \textbf{|} Node Features \textbf{]}};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ENCODER  ×6
+% ─────────────────────────────────────────────────────────────────────────────
+\node[W={Cs}] (ln1)  at (0,  -6.3)  {LayerNorm};
+\node[B={Cs}] (ga)   at (-1.75, -7.7) {Global\\[-2pt]Attention};
+\node[B={Cs}] (aa)   at ( 1.95, -7.7) {Adjacency\\[-2pt]Attention};
+\node[C={Cs}, font=\normalsize\sffamily,
+      below=0.3cm of ga, xshift=1.75cm] (attn_sum) {$+$};
+\node[W={Cs}, below=0.3cm of attn_sum] (add1) {Residual Add\quad\textit{\footnotesize(asymmetric)}};
+\node[W={Cs}, below=0.6cm of add1] (ln2)  {LayerNorm};
+\node[W={Cs}, below=0.6cm of ln2]  (ffn)  {Feed-Forward Network};
+\node[C={Cs}, below=0.6cm of ffn]  (add2) {$+$};
 
 \begin{scope}[on background layer]
-  \node[group=Cgray,
-        fit=(txt)(xin)(ein)(tin)(txtemb)(xproj)(eproj)(tproj),
-        inner sep=8pt] (inputs) {};
+  \node[grp, fit=(ln1)(ga)(aa)(add1)(ln2)(ffn)(add2), inner sep=11pt]
+    (Genc) {};
 \end{scope}
-\node[title=Cgray, anchor=south west] at ([yshift=2pt]inputs.north west)
-  {Inputs};
+\node[ttl, anchor=south west] at ([yshift=2pt]Genc.north west)
+  {$\times$6\; Encoder Layers};
 
-% ---------------------------------------------------------------------
-% Row 2: Fusion (below inputs, centered)
-% ---------------------------------------------------------------------
-\node[wide=Cfuse] (nodefuse) at (5.705cm, -3.5cm)
-  {$\mathbf{h}^{(0)}_i =
-    W_c\mathbf{x}^{(i)}_t+\mathbf{e}^{(i)}_t+\mathrm{MLP}(\gamma(t))$\\[2pt]
-   node tokens $\mathbf{H}^{(0)}_{\mathrm{node}}\in\mathbb{R}^{N\times d}$};
-\node[wide=Cfuse, below=0.5cm of nodefuse] (seqcat)
-  {$\mathbf{H}^{(0)}_{\mathrm{full}}
-    =[\,\mathbf{H}_{\mathrm{text}};\mathbf{H}^{(0)}_{\mathrm{node}}\,]$\\[2pt]
-   full sequence in $\mathbb{R}^{(T+N)\times d}$};
+% ─────────────────────────────────────────────────────────────────────────────
+%  PREDICTION
+% ─────────────────────────────────────────────────────────────────────────────
+\node[W={Cp}, below=1.4cm of add2] (sel)  {Select Node Features};
+\node[W={Cp}, below=0.6cm of sel]  (head) {Coordinate Head};
+\node[W={Ci}, below=0.6cm of head] (out)
+  {Predicted Noise\quad$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$};
 
 \begin{scope}[on background layer]
-  \node[group=Cfuse, fit=(nodefuse)(seqcat), inner sep=9pt] (fusionbox) {};
+  \node[grp, fit=(sel)(head)(out), inner sep=7pt] (Gpred) {};
 \end{scope}
-\node[title=Cfuse, anchor=south west] at ([yshift=2pt]fusionbox.north west)
-  {Fusion};
+\node[ttl, anchor=south west] at ([yshift=2pt]Gpred.north west) {Prediction};
 
-% ---------------------------------------------------------------------
-% Row 3: Encoder (parallel branches, below fusion)
-% ---------------------------------------------------------------------
-\node[layer=Cmodel] (adjattn) at (3cm, -7cm)
-  {\textbf{Adjacency attention}\\[-1pt]
-   node-only QKV, mask $M^{\mathrm{adj}}(\mathbf{A})$};
-\node[layer=Cmodel, right=0.8cm of adjattn] (globalattn)
-  {\textbf{Global attention}\\[-1pt]
-   text and node tokens attend jointly};
+% ─────────────────────────────────────────────────────────────────────────────
+%  ARROWS
+% ─────────────────────────────────────────────────────────────────────────────
 
-\node[circle, draw=Cmodel!58, fill=Cmodel!7, minimum size=0.52cm,
-      font=\small, text=Cmodel!86!black, line width=0.72pt]
-  (sumnode) at ($(adjattn.south)!0.5!(globalattn.south)+(0,-0.75)$) {$+$};
+% inputs → projections
+\draw[a] (txt) -- (te);
+\draw[a] (xin) -- (cp);
+\draw[a] (tin) -- (tm);
 
-\node[layer=Cmodel] (ffn) at (5.7cm, -9.2cm)
-  {Residual + LayerNorm\\[-1pt]
-   FFN: Linear $\to$ ReLU $\to$ Linear};
+% coord proj + time emb → node token init
+\draw[a] (cp.south) -- (cp.south |- ni.north);
+\draw[a] (tm.south) -- (tm.south |- ni.north);
 
-\node[box=Cmodel, below=1cm of adjattn, xshift=-1.1cm] (adj)
-  {$\mathbf{A}\in\{0,1\}^{N\times N}$\\[-1pt] adjacency};
+% text embed → seq concat: down then right into sc.west
+\draw[a] (te.south) |- (sc.west);
 
-\begin{scope}[on background layer]
-  \node[group=Cmodel, dashed,
-        fit=(adjattn)(globalattn)(sumnode)(ffn)(adj), inner sep=9pt]
-    (encbox) {};
-\end{scope}
-\node[title=Cmodel, anchor=south west] at ([yshift=2pt]encbox.north west)
-  {$\times 6$ Encoder Layers};
+% node init → seq concat
+\draw[a] (ni.south) -- (sc.north);
 
-% ---------------------------------------------------------------------
-% Row 4: Prediction (below encoder)
-% ---------------------------------------------------------------------
-\node[wide=Cmodel] (nodeout) at (5.7cm, -11.2cm)
-  {$\mathbf{H}^{(6)}_{\mathrm{node}}\in\mathbb{R}^{N\times d}$\\[2pt]
-   select the final $N$ node positions};
+% seq concat → encoder
+\draw[a] (sc.south) -- (ln1.north);
 
-\node[box=Chead] (coordhead) at (2.3cm, -12.6cm)
-  {\textbf{Coordinate Head}\\[-1pt] Linear $\to$ ReLU $\to$ Linear};
-\node[box=Chead] (typehead) at (9.3cm, -12.6cm)
-  {\textbf{Type Embedding Head}\\[-1pt] Linear $\to$ ReLU $\to$ Linear};
+% ln1 → dual attention: T-shape fork, arrows enter blocks from top (downward)
+% fork point sits halfway between ln1.south and ga/aa.north
+\coordinate (attn_fork) at (0, -7.0);
+\draw[line width=0.9pt, color=black!50] (ln1.south) -- (attn_fork);
+\draw[line width=0.9pt, color=black!50]
+  (ga.north |- attn_fork) -- (aa.north |- attn_fork);
+\draw[a] (ga.north  |- attn_fork) -- (ga.north);
+\draw[a] (aa.north  |- attn_fork) -- (aa.north);
 
-\node[box=Ccoord, below=0.5cm of coordhead] (coordout)
-  {$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$\\[2pt]
-   $\mathbb{R}^{2\times N}$};
-\node[box=Ctype, below=0.5cm of typehead] (typeout)
-  {$\hat{\boldsymbol{\epsilon}}_{\mathrm{type}}$\\[2pt]
-   $\mathbb{R}^{N\times d}$};
+% attentions → sum circle → residual add
+% xshift centres the circle at x=0 (ga is at x=-1.75)
+\draw[a] (ga.south) |- (attn_sum.west);
+\draw[a] (aa.south) |- (attn_sum.east);
+\draw[a] (attn_sum.south) -- (add1.north);
 
-\begin{scope}[on background layer]
-  \node[group=Chead,
-        fit=(nodeout)(coordhead)(typehead)(coordout)(typeout),
-        inner sep=9pt] (heads) {};
-\end{scope}
-\node[title=Chead, anchor=south west] at ([yshift=2pt]heads.north west)
-  {Prediction};
+% residual skip 1 (left): seq-concat bypasses ln1+attns to add1
+\draw[sk]
+  let \p1 = (sc.south), \p2 = (add1.west), \p3 = (Genc.west) in
+  (\x1, \y1-0.2cm)
+  -- (\x3-0.32cm, \y1-0.2cm)
+  -- (\x3-0.32cm, \y2)
+  -- (\x2, \y2);
 
-% ---------------------------------------------------------------------
-% Arrows
-% ---------------------------------------------------------------------
+% add1 → ln2 → ffn → add2
+\draw[a] (add1.south) -- (ln2.north);
+\draw[a] (ln2.south)  -- (ffn.north);
+\draw[a] (ffn.south)  -- (add2.north);
 
-% Input row arrows (top → bottom)
-\draw[arr=Ctext]  (txt.south)  -- (txtemb.north);
-\draw[arr=Ccoord] (xin.south)  -- (xproj.north);
-\draw[arr=Ctype]  (ein.south)  -- (eproj.north);
-\draw[arr=Ctime]  (tin.south)  -- (tproj.north);
+% residual skip 2 (right): add1 bypasses ln2+ffn to add2
+\draw[sk]
+  let \p1 = (add1.south), \p2 = (add2.east), \p3 = (Genc.east) in
+  (\x1, \y1-0.2cm)
+  -- (\x3+0.32cm, \y1-0.2cm)
+  -- (\x3+0.32cm, \y2)
+  -- (\x2, \y2);
 
-% Inputs → Fusion
-\draw[arr=Ctext]  (txtemb.south) |- (seqcat.west);
-\draw[arr=Ccoord] (xproj.south)  -- ++(0,-0.4) -| ([xshift=-0.4cm]nodefuse.north);
-\draw[arr=Ctype]  (eproj.south)  -- ++(0,-0.4) -| (nodefuse.north);
-\draw[arr=Ctime]  (tproj.south)  -- ++(0,-0.8) -| ([xshift=0.5cm]nodefuse.north);
+% adjacency → adjacency attention: straight down then enter from east
+\draw[a]
+  (adj.south)
+  -- (adj.south |- aa.east)
+  -- (aa.east);
 
-% Fusion internal
-\draw[arr=Cfuse] (nodefuse.south) -- (seqcat.north);
-
-% Fusion → Encoder (split to both branches + residual)
-\draw[arr=Cfuse] (seqcat.south) -- ++(0,-0.5) -| (adjattn.north);
-\draw[arr=Cfuse] (seqcat.south) -- ++(0,-0.5) -| (globalattn.north);
-\draw[arr=Cfuse] (seqcat.south) -- ++(0,-0.5) -| (sumnode.north);
-
-% adj → adjattn
-\draw[arr=Cmodel] (adj.west) -- ++(-0.2,0) |- (adjattn.west);
-
-% Encoder parallel merge
-\draw[arr=Cmodel] (adjattn.south)    |- (sumnode.west);
-\draw[arr=Cmodel] (globalattn.south) |- (sumnode.east);
-\draw[arr=Cmodel] (sumnode.south)    -- (ffn.north);
-
-% Encoder → Prediction
-\draw[arr=Cmodel] (ffn.south) -- (nodeout.north);
-
-% Prediction split
-\draw[arr=Chead] (nodeout.south) -- ++(0,-0.3) -| (coordhead.north);
-\draw[arr=Chead] (nodeout.south) -- ++(0,-0.3) -| (typehead.north);
-\draw[arr=Ccoord] (coordhead.south) -- (coordout.north);
-\draw[arr=Ctype]  (typehead.south)  -- (typeout.north);
+% encoder → prediction
+\draw[a] (add2.south) -- (sel.north);
+\draw[a] (sel.south)  -- (head.north);
+\draw[a] (head.south) -- (out.north);
 
 \end{tikzpicture}
 \end{document}

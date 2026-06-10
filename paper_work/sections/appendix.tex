@@ -1,0 +1,40 @@
+% ============================================================
+%  附录
+% ============================================================
+\appendix
+
+\section{组合类型完整映射表}
+\label{sec:appendix_combo}
+
+表~\ref{tab:combo_types} 列出全部 32 种组合类型的整数 ID 与对应的房间类型集合。
+房间类型按固定字母序排列（bathroom $<$ bedroom $<$ corridor $<$ dining\_room $<$ kitchen $<$ living\_room $<$ other），
+ID~0 保留为填充标记（padding）。
+
+\begin{table}[H]
+\centering
+\caption{节点组合类型映射表（共 32 种，ID 0 为填充）}
+\label{tab:combo_types}
+\small
+\begin{tabular}{clcl}
+\toprule
+\textbf{ID} & \textbf{组合类型（英文）} & \textbf{ID} & \textbf{组合类型（英文）} \\
+\midrule
+1  & bathroom                                        & 17 & bathroom + kitchen + living\_room \\
+2  & bedroom                                         & 18 & bathroom + corridor \\
+3  & living\_room                                    & 19 & bathroom + corridor + living\_room \\
+4  & kitchen                                         & 20 & bathroom + corridor + kitchen \\
+5  & corridor                                        & 21 & bathroom + corridor + kitchen + living\_room \\
+6  & dining\_room                                    & 22 & bedroom + living\_room \\
+7  & other                                           & 23 & bedroom + kitchen \\
+8  & bathroom + bedroom                              & 24 & bedroom + kitchen + living\_room \\
+9  & bathroom + bedroom + living\_room               & 25 & bedroom + corridor \\
+10 & bathroom + bedroom + kitchen                    & 26 & bedroom + corridor + living\_room \\
+11 & bathroom + bedroom + kitchen + living\_room     & 27 & bedroom + corridor + kitchen \\
+12 & bathroom + bedroom + corridor                   & 28 & bedroom + corridor + kitchen + living\_room \\
+13 & bathroom + bedroom + corridor + living\_room    & 29 & kitchen + living\_room \\
+14 & bathroom + bedroom + corridor + kitchen         & 30 & corridor + living\_room \\
+15 & bathroom + living\_room                         & 31 & corridor + kitchen \\
+16 & bathroom + kitchen                              & 32 & corridor + kitchen + living\_room \\
+\bottomrule
+\end{tabular}
+\end{table}
