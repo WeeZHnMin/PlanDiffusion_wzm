@@ -48,19 +48,74 @@
 \end{itemize}
 
 \paragraph{实现细节}
-\todo{待补充：训练硬件、训练时长、推理时间。}
+三个子模块均在单张 NVIDIA GPU 上独立训练。
+图拓扑生成（LlamaForCausalLM，约 20M 参数）训练共 150 epoch（预训练 50 + 微调 100），
+batch size 64，学习率余弦退火 $10^{-4} \to 10^{-5}$。
+节点坐标扩散（NodeDiffusionTransformer，约 15M 参数）训练 200k steps，batch size 64。
+节点类型预测（NodeTypeClassifier，约 15M 参数）训练 500k steps，batch size 64。
+推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
+坐标扩散（DDPM 1000步逆采样）$\to$ 类型分类（单次前向）$\to$ render.py 渲染输出。
+\todo{补充：具体训练硬件型号、各阶段训练时长、端到端推理耗时。}
 
 \subsection{主实验结果}
 \label{subsec:main_results}
 
-\todo{待写：与 Architext 基线的对比。}
+表~\ref{tab:main_results} 报告了各子模块及端到端生成的定量结果。
+
+\begin{table}[h]
+\centering
+\caption{主实验结果}
+\label{tab:main_results}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+方法 & 输入模态 & GVR↑ & Degree KL↓ & Node-count KL↓ & Coord-RMSE↓ & Type Acc.↑ \\
+\midrule
+Architext~\cite{galanos2023architext}   & 文本 & \todo{} & \todo{} & \todo{} & — & — \\
+HouseDiffusion~\cite{shabani2023housediffusion} & 气泡图 & — & — & — & \todo{} & — \\
+ChatHouseDiffusion~\cite{qin2025chathousediffusion} & 文本 & \todo{} & \todo{} & \todo{} & \todo{} & — \\
+\midrule
+PlanDiffusion（本文） & 文本 & \todo{} & \todo{} & \todo{} & \todo{} & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{填入实验数值后删除本行。}
 
 \subsection{消融实验}
 \label{subsec:ablation}
 
-\todo{待写。}
+\begin{table}[h]
+\centering
+\caption{消融实验：各条件输入对坐标扩散的影响}
+\label{tab:ablation}
+\small
+\begin{tabular}{lccc}
+\toprule
+变体 & 图结构条件 & 文本条件 & Coord-RMSE↓ \\
+\midrule
+w/o 图结构（仅文本）    & ✗ & ✓ & \todo{} \\
+w/o 文本（仅图结构）    & ✓ & ✗ & \todo{} \\
+完整模型（图 + 文本）   & ✓ & ✓ & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{填入消融实验数值后删除本行。}
 
 \subsection{定性结果}
 \label{subsec:qualitative}
 
-\todo{待写：生成结果可视化。}
+\begin{figure}[htbp]
+    \centering
+    \todo{插入端到端生成结果图：每行为一个文本条件，
+    展示生成的顶点图（含边和节点类型着色）以及 render.py 输出的彩色平面图。}
+    \caption{
+        PlanDiffusion 端到端生成结果。
+        每组从左至右依次为：输入文本描述、生成顶点图（节点按组合类型着色）、
+        渲染平面图（房间按类型填色，标注房间名）。
+    }
+    \label{fig:qualitative}
+\end{figure}
+
+\todo{填入定性结果图后删除本行。}

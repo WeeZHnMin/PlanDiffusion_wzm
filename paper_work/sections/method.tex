@@ -312,7 +312,7 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     无需预训练语言模型。
 \end{itemize}
 
-共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$。
+共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$，约 15M 参数。
 
 \paragraph{坐标预测头}
 编码器输出为拼接序列 $[\mathbf{H}_{\mathrm{text}}^{(L)};\,\mathbf{H}_{\mathrm{node}}^{(L)}]$；
@@ -372,7 +372,8 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 均采用双流 EncoderLayer（邻接局部注意力 + 全局注意力），
 但超参数独立，权重完全不共享，训练亦完全分离。
 NodeTypeClassifier 的配置为 $d=384$，6 层，6 头；
-与之对比，NodeDiffusionTransformer 为 $d=256$，6 层，4 头。
+NodeDiffusionTransformer 同为 $d=384$，6 层，6 头；
+两者超参数相同，但权重完全不共享，训练亦完全分离。
 两者的对比结构如图~\ref{fig:type_arch} 所示，关键差异如下：
 
 \begin{figure}[H]
@@ -430,14 +431,40 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精�
 \subsection{推理流程}
 \label{subsec:inference}
 
-给定文本 $\mathcal{T}$，完整推理分三步：
-（1）图拓扑生成：自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$；
-（2）坐标扩散：以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
+给定文本 $\mathcal{T}$，完整推理分四步：
+
+\noindent
+（1）\textbf{图拓扑生成}：自回归生成图序列 token，解析得邻接矩阵 $\mathbf{A}$ 与节点数 $N$。
+
+\noindent
+（2）\textbf{坐标扩散}：以 $(\mathbf{A}, \mathbf{m}, \mathcal{T})$ 为条件，
 从 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
-出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$；
-（3）类型预测：以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件，
-NodeTypeClassifier 输出每节点类型 $\hat{\mathbf{y}}$；
-最终反归一化坐标，结合 $\mathbf{A}$ 与 $\hat{\mathbf{y}}$ 渲染矢量平面图。
+出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$。
+
+\noindent
+（3）\textbf{节点类型预测}：以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件，
+NodeTypeClassifier 输出每个节点的组合类型 $\hat{y}_i \in \{1,\ldots,32\}$，
+并将其解码为该节点所属的房间类型集合。
+
+\noindent
+（4）\textbf{面提取与房间类型投票}：
+以半边遍历（half-edge traversal）在平面图 $(\hat{\mathbf{X}}, \mathbf{A})$ 上提取所有有界面，
+每个面对应一个房间多边形。
+对每个面 $f_k$，采用特异性评分决定其房间类型：
+\begin{equation}
+    r_k = \arg\max_{t}\; \frac{\mathrm{fc}_k(t)}{\mathrm{ec}_k(t) + 1}
+    \label{eq:vote}
+\end{equation}
+其中 $\mathrm{fc}_k(t)$ 为面内含类型 $t$ 的节点数，
+$\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数。
+该分数衡量类型 $t$ 对当前面的"专属程度"：
+若某类型集中分布在面内而在外部邻居中罕见，则得分高；
+若某类型（如走廊）遍布各相邻面，则其外部计数大、得分被压低，
+从而避免走廊类型"污染"相邻房间的投票结果。
+同分时按固定优先序
+（bathroom $>$ bedroom $>$ living\_room $>$ kitchen $>$ corridor $>$ dining\_room $>$ other）
+取最靠前者。
+最终输出各面的房间类型 $\{r_k\}$ 与对应多边形，即为完整的矢量平面图。
 
 \paragraph{最小度约束}
 图拓扑生成阶段在补边序列（\texttt{SEP} 之后）施加\textbf{最小度约束}：
@@ -459,7 +486,7 @@ NodeTypeClassifier 输出每节点类型 $\hat{\mathbf{y}}$；
 \label{alg:inference}
 \begin{algorithmic}[1]
 \REQUIRE 文本描述 $\mathcal{T}$
-\ENSURE 节点坐标 $\hat{\mathbf{X}}$，节点类型 $\hat{\mathbf{y}}$，邻接矩阵 $\mathbf{A}$
+\ENSURE 房间多边形列表 $\mathcal{F}$，各面房间类型 $\{r_k\}$
 \STATE \textbf{图拓扑生成}
 \STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$
 \FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
@@ -484,7 +511,17 @@ NodeTypeClassifier 输出每节点类型 $\hat{\mathbf{y}}$；
 \STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_0$
 \STATE \textbf{节点类型预测}
 \STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$ \COMMENT{NodeTypeClassifier 前向}
-\STATE $\hat{y}_i = \arg\max_{k} \hat{z}_{i,k}$，$\forall i$
-\RETURN $\hat{\mathbf{X}},\; \hat{\mathbf{y}},\; \mathbf{A}$
+\STATE $\hat{y}_i = \arg\max_{k} \hat{z}_{i,k}$，$\forall i$ \COMMENT{combo type id $\in \{1,\ldots,32\}$，解码为所属房间类型集合}
+\STATE \textbf{面提取与房间类型投票}
+\STATE $\mathcal{F} \leftarrow \textsc{FindFaces}(\hat{\mathbf{X}},\, \mathbf{A})$ \COMMENT{半边遍历，排除面积最大的外部无界面}
+\FOR{每个面 $f_k \in \mathcal{F}$}
+    \FOR{每种房间类型 $t$}
+        \STATE $\mathrm{fc}(t) \leftarrow |\{i \in f_k : t \in \hat{y}_i\}|$ \COMMENT{面内含类型 $t$ 的节点数}
+        \STATE $\mathrm{ec}(t) \leftarrow |\{j \notin f_k : j \in \mathcal{N}(f_k),\, t \in \hat{y}_j\}|$ \COMMENT{面外一跳邻居中含类型 $t$ 的节点数}
+        \STATE $\mathrm{score}(t) \leftarrow \dfrac{\mathrm{fc}(t)}{\mathrm{ec}(t) + 1}$ \COMMENT{特异性分数：类型集中于面内时得分高}
+    \ENDFOR
+    \STATE $r_k \leftarrow \arg\max_{t}\, \mathrm{score}(t)$，同分时按固定优先序取最前者
+\ENDFOR
+\RETURN 房间多边形 $\mathcal{F}$，各面房间类型 $\{r_k\}$
 \end{algorithmic}
 \end{algorithm}

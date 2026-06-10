@@ -72,3 +72,4 @@ data/convert_rs/target/
 .playwright-mcp/
 
 tools/
+caption_floorplans_mimo.py
