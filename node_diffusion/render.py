@@ -62,8 +62,16 @@ ROOM_LABELS = {
 # ── Vocab ─────────────────────────────────────────────────────────────────────
 
 def load_vocab(path: Path) -> Dict[int, List[str]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return {int(k): v for k, v in payload["id_to_combo"].items()}
+    """Load combo vocab. Returns {combo_id: [room_type_str, ...]}."""
+    import ast
+    payload    = json.loads(path.read_text(encoding="utf-8"))
+    combo_to_id = payload["combo_to_id"]      # {"[1]": 1, "[1, 2]": 8, ...}
+    base_names  = payload["base_type_names"]   # {"1": "bathroom", "2": "bedroom", ...}
+    id_to_combo: Dict[int, List[str]] = {}
+    for combo_str, cid in combo_to_id.items():
+        type_ids = ast.literal_eval(combo_str)  # "[1, 2]" → [1, 2]
+        id_to_combo[int(cid)] = [base_names[str(tid)] for tid in type_ids]
+    return id_to_combo
 
 
 # ── Half-edge face finder ─────────────────────────────────────────────────────
