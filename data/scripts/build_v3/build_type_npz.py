@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument('--jsonl',   default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--bert',    default='models/bert-base-uncased')
     p.add_argument('--output',  default='data/processed/node_diffusion_cross_att/type_dataset.npz')
-    p.add_argument('--augment', type=int, default=8)
+    p.add_argument('--augment', type=int, default=12)
     p.add_argument('--seed',    type=int, default=42)
     return p.parse_args()
 

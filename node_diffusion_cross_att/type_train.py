@@ -26,7 +26,7 @@ from .type_model import NodeTypeClassifier
 def build_parser(defaults=None):
     defaults = defaults or {}
     p = argparse.ArgumentParser()
-    p.add_argument('--data_path',     default=defaults.get('data_path',     'data/processed/node_diffusion_cross_att/graph_dataset.npz'))
+    p.add_argument('--data_path',     default=defaults.get('data_path',     'data/processed/node_diffusion_cross_att/type_dataset.npz'))
     p.add_argument('--save_dir',      default=defaults.get('save_dir',      'checkpoints/node_type'))
     p.add_argument('--resume',        default='',  help='path to checkpoint .pt')
     p.add_argument('--batch_size',    type=int,   default=defaults.get('batch_size',    64))
@@ -36,8 +36,9 @@ def build_parser(defaults=None):
     p.add_argument('--log_interval',  type=int,   default=defaults.get('log_interval',  100))
     p.add_argument('--save_interval', type=int,   default=defaults.get('save_interval', 10000))
     p.add_argument('--model_channels',  type=int,   default=defaults.get('model_channels',  384))
-    p.add_argument('--num_layers',      type=int,   default=defaults.get('num_layers',      6))
+    p.add_argument('--num_layers',      type=int,   default=defaults.get('num_layers',      4))
     p.add_argument('--num_heads',       type=int,   default=defaults.get('num_heads',       6))
+    p.add_argument('--dropout',         type=float, default=defaults.get('dropout',         0.4))
     p.add_argument('--bert',            default=defaults.get('bert', 'models/bert-base-uncased'))
     p.add_argument('--unfreeze_layers', type=int,   default=defaults.get('unfreeze_layers', 0))
     return p
@@ -77,6 +78,7 @@ def main(argv=None, defaults=None):
         model_channels  = args.model_channels,
         num_layers      = args.num_layers,
         num_heads       = args.num_heads,
+        dropout         = args.dropout,
         bert_name       = args.bert,
         unfreeze_layers = args.unfreeze_layers,
     ).to(device)
