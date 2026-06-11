@@ -19,7 +19,7 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from .dataset import NodeDataset
+from .dataset import TypeDataset
 from .type_model import NodeTypeClassifier
 
 
@@ -100,7 +100,7 @@ def main(argv=None, defaults=None):
         start_step = ckpt['step'] + 1
         print(f'resumed from step {start_step}')
 
-    dataset = NodeDataset(args.data_path)
+    dataset = TypeDataset(args.data_path)
     loader  = DataLoader(dataset, batch_size=args.batch_size,
                          shuffle=True, num_workers=0, drop_last=True)
     data = inf_loader(loader)

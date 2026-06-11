@@ -30,6 +30,11 @@
     minimum width=4.4cm, minimum height=0.8cm,
     align=center, inner sep=6pt, font=\small\sffamily
   },
+  HW/.style n args={1}{
+    draw=Cbdr, fill=#1, rounded corners=3pt,
+    minimum width=2.85cm, minimum height=0.8cm,
+    align=center, inner sep=4pt, font=\small\sffamily
+  },
   C/.style n args={1}{
     circle, draw=Cbdr, fill=#1,
     minimum size=0.58cm, inner sep=0pt, font=\small\sffamily
@@ -86,12 +91,16 @@
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  ENCODER  ×6
-%  Sub-layers: (1) Adj Self-Attn  (2) Cross-Attn  (3) FFN
+%  Sub-layers: (1) Adj Attn + Global Attn (parallel sum)  (2) Cross-Attn  (3) FFN
 % ─────────────────────────────────────────────────────────────────────────────
-\node[W={Cs}]  (ln1)  at (0, -5.2)  {LayerNorm};
-\node[W={Cs}, below=0.55cm of ln1]  (aa)
-  {Adjacency Self-Attention};
-\node[C={Cs}, below=0.4cm of aa]    (add1) {$+$};
+\node[W={Cs}]  (ln1)  at (0, -5.7)  {LayerNorm};
+
+% dual-stream: two narrow boxes side by side (2.85cm each, gap ~0.45cm, total ~6.15cm)
+\node[HW={Cs}] (ga) at (-1.65, -7.25) {Global\\[-2pt]\footnotesize Self-Attn};
+\node[HW={Cs}] (aa) at ( 1.65, -7.25) {Adj\\[-2pt]\footnotesize Self-Attn};
+
+% single + merges both stream outputs AND residual
+\node[C={Cs}]  (add1) at (0, -8.35) {$+$};
 
 \node[W={Cs}, below=0.55cm of add1] (ln2)  {LayerNorm};
 \node[W={Cs}, below=0.55cm of ln2]  (ca)
@@ -103,7 +112,7 @@
 \node[C={Cs}, below=0.4cm of ffn]   (add3) {$+$};
 
 \begin{scope}[on background layer]
-  \node[grp, fit=(ln1)(aa)(add1)(ln2)(ca)(add2)(ln3)(ffn)(add3),
+  \node[grp, fit=(ln1)(aa)(ga)(add1)(ln2)(ca)(add2)(ln3)(ffn)(add3),
         inner sep=11pt] (Genc) {};
 \end{scope}
 \node[ttl, anchor=south west] at ([yshift=2pt]Genc.north west)
@@ -136,14 +145,18 @@
 \draw[a] (cp.south) -- (cp.south |- ni.north);
 \draw[a] (tm.south) -- (tm.south |- ni.north);
 
-% node init → encoder
+% node init → ln1
 \draw[a] (ni.south) -- (ln1.north);
 
-% ln1 → adj self-attn → add1
-\draw[a] (ln1.south) -- (aa.north);
-\draw[a] (aa.south)  -- (add1.north);
+% ln1 → fork → adj and global
+\draw[a] (ln1.south) -| (aa.north);
+\draw[a] (ln1.south) -| (ga.north);
 
-% residual skip 1: ni bypasses ln1+aa to add1
+% adj and global outputs → add1
+\draw[a] (aa.south) |- (add1.east);
+\draw[a] (ga.south) |- (add1.west);
+
+% residual skip 1: ni bypasses ln1+dual-stream to add1
 \draw[sk]
   let \p1=(ni.south), \p2=(add1.west), \p3=(Genc.west) in
   (\x1, \y1-0.15cm)
@@ -157,9 +170,7 @@
 \draw[a] (ca.south)   -- (add2.north);
 
 % text features → cross-attn from left
-\draw[a]
-  (tp.south)
-  |- ([yshift=0.0cm]ca.west);
+\draw[a] (tp.south) |- ([yshift=0.0cm]ca.west);
 
 % adjacency → adj self-attn from right
 \draw[a]

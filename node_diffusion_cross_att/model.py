@@ -61,19 +61,20 @@ class FeedForward(nn.Module):
 
 class EncoderLayer(nn.Module):
     """
-    1. adj_attn   : 节点间邻接局部注意力（保留图结构先验）
-    2. cross_attn : 节点查询文本（Q=节点, K/V=BERT特征），文本为强制依赖路径
+    1. adj_attn + global_attn (并联相加) : 局部图结构 + 全局节点关系
+    2. cross_attn : 节点查询文本（Q=节点, K/V=BERT特征）
     3. ffn
     """
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
-        self.norm1      = nn.LayerNorm(d_model)
-        self.norm_cross = nn.LayerNorm(d_model)
-        self.norm2      = nn.LayerNorm(d_model)
-        self.adj_attn   = MultiHeadAttention(heads, d_model, dropout)
-        self.cross_attn = MultiHeadAttention(heads, d_model, dropout)
-        self.ff         = FeedForward(d_model, dropout)
-        self.dropout    = nn.Dropout(dropout)
+        self.norm1       = nn.LayerNorm(d_model)
+        self.norm_cross  = nn.LayerNorm(d_model)
+        self.norm2       = nn.LayerNorm(d_model)
+        self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
+        self.global_attn = MultiHeadAttention(heads, d_model, dropout)
+        self.cross_attn  = MultiHeadAttention(heads, d_model, dropout)
+        self.ff          = FeedForward(d_model, dropout)
+        self.dropout     = nn.Dropout(dropout)
 
     def forward(self, x, adj_mask, text_feat, text_mask):
         # x         : [B, N_nodes, d]
@@ -81,8 +82,12 @@ class EncoderLayer(nn.Module):
         # adj_mask  : [B, N_nodes, N_nodes]  1=masked
         # text_mask : [B, 1, T_text]         1=padding token
 
+        # dual-stream: adj (local) + global (unmasked), outputs summed
         x2 = self.norm1(x)
-        x  = x + self.dropout(self.adj_attn(x2, x2, x2, adj_mask))
+        x  = x + self.dropout(
+            self.adj_attn(x2, x2, x2, adj_mask) +
+            self.global_attn(x2, x2, x2, None)
+        )
 
         x2 = self.norm_cross(x)
         x  = x + self.dropout(self.cross_attn(x2, text_feat, text_feat, text_mask))
