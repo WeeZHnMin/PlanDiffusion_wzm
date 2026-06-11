@@ -65,7 +65,7 @@ class GaussianDiffusion:
         with torch.no_grad():
             s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
             s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
-            pred_x0    = (xt - s2 * pred_coord_noise) / s1
+            pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
             raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
             coord_rmse = raw_mse.sqrt().item()
 
