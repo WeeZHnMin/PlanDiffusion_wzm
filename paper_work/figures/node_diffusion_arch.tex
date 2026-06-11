@@ -1,4 +1,4 @@
-% NodeDiffusion architecture — text-block style, clean layout
+% NodeDiffusion architecture — BERT + Cross-Attention version
 % Compile: xelatex node_diffusion_arch.tex
 \documentclass[tikz, border=14pt]{standalone}
 \usepackage{amsmath}
@@ -6,15 +6,15 @@
 \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
 
 % ── Palette ──────────────────────────────────────────────────────────────────
-\definecolor{Ci}{RGB}{207,226,248}   % blue  – inputs
+\definecolor{Ci}{RGB}{207,226,248}   % blue  – inputs / outputs
 \definecolor{Ce}{RGB}{250,228,182}   % amber – embedding
 \definecolor{Cs}{RGB}{188,220,230}   % steel – encoder
 \definecolor{Cp}{RGB}{247,202,202}   % pink  – prediction
+\definecolor{Ct}{RGB}{220,240,220}   % green – BERT
 \definecolor{Cbdr}{RGB}{148,148,148}
 
 % ── Styles ───────────────────────────────────────────────────────────────────
 \tikzset{
-  % parameter: fill color
   B/.style n args={1}{
     draw=Cbdr, fill=#1, rounded corners=3pt,
     minimum width=2.9cm, minimum height=0.8cm,
@@ -23,6 +23,11 @@
   W/.style n args={1}{
     draw=Cbdr, fill=#1, rounded corners=3pt,
     minimum width=6.2cm, minimum height=0.8cm,
+    align=center, inner sep=6pt, font=\small\sffamily
+  },
+  BW/.style n args={1}{
+    draw=Cbdr, fill=#1, rounded corners=3pt,
+    minimum width=4.4cm, minimum height=0.8cm,
     align=center, inner sep=6pt, font=\small\sffamily
   },
   C/.style n args={1}{
@@ -44,68 +49,76 @@
 % ─────────────────────────────────────────────────────────────────────────────
 %  ROW 0  Raw inputs
 % ─────────────────────────────────────────────────────────────────────────────
-\node[B={Ci}] (txt) at (-4.8, 0)  {Text Tokens};
-\node[B={Ci}] (xin) at (-1.6, 0)  {Noisy Coords};
-\node[B={Ci}] (tin) at ( 1.6, 0)  {Diffusion Step};
-\node[B={Ci}] (adj) at ( 4.8, 0)  {Adjacency Matrix};
+\node[B={Ci}] (txt) at (-4.8,  0)  {Text Tokens};
+\node[B={Ci}] (xin) at (-1.6,  0)  {Noisy Coords};
+\node[B={Ci}] (tin) at ( 1.6,  0)  {Diffusion Step};
+\node[B={Ci}] (adj) at ( 4.8,  0)  {Adjacency Matrix};
 
 % ─────────────────────────────────────────────────────────────────────────────
-%  ROW 1  Projection / Embedding
+%  ROW 1  Text branch: BERT (frozen)
 % ─────────────────────────────────────────────────────────────────────────────
-\node[B={Ce}, below=0.55cm of txt] (te)  {BPE Embedding};
+\node[B={Ct}, below=0.55cm of txt] (bert)
+  {BERT\\[-2pt]\footnotesize(frozen)};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  ROW 1  Node branch: coord proj + time emb
+% ─────────────────────────────────────────────────────────────────────────────
 \node[B={Ce}, below=0.55cm of xin] (cp)  {Coord Projection};
 \node[B={Ce}, below=0.55cm of tin] (tm)  {Time Embedding};
 
 % ─────────────────────────────────────────────────────────────────────────────
-%  Group: Inputs
+%  ROW 2  Text proj  +  Node feature init
+% ─────────────────────────────────────────────────────────────────────────────
+\node[B={Ct}, below=0.55cm of bert] (tp)
+  {Linear Projection\\[-2pt]\footnotesize$768 \to d$};
+
+\node[W={Ce}] (ni) at (0, -3.0)
+  {Node Feature Init\quad\footnotesize(Coord Proj $+$ Time Emb)};
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  Group: Inputs + Embeddings
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{scope}[on background layer]
-  \node[grp, fit=(txt)(xin)(tin)(adj)(te)(cp)(tm), inner sep=7pt] (Ginput) {};
+  \node[grp, fit=(txt)(xin)(tin)(adj)(bert)(tp)(cp)(tm)(ni),
+        inner sep=7pt] (Ginput) {};
 \end{scope}
-\node[ttl, anchor=south west] at ([yshift=2pt]Ginput.north west) {Inputs};
-
-% ─────────────────────────────────────────────────────────────────────────────
-%  ROW 2  Node token init  (coord proj + time emb → per-node feature)
-% ─────────────────────────────────────────────────────────────────────────────
-\node[W={Ce}] (ni) at (0, -3.0)
-  {Node Feature Init};
-
-% ─────────────────────────────────────────────────────────────────────────────
-%  ROW 3  Sequence concat
-% ─────────────────────────────────────────────────────────────────────────────
-\node[W={Ce}] (sc) at (0, -4.1)
-  {Concat \textbf{[} Text Features \textbf{|} Node Features \textbf{]}};
+\node[ttl, anchor=south west] at ([yshift=2pt]Ginput.north west) {Inputs \& Embeddings};
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  ENCODER  ×6
+%  Sub-layers: (1) Adj Self-Attn  (2) Cross-Attn  (3) FFN
 % ─────────────────────────────────────────────────────────────────────────────
-\node[W={Cs}] (ln1)  at (0,  -6.3)  {LayerNorm};
-\node[B={Cs}] (ga)   at (-1.75, -7.7) {Global\\[-2pt]Attention};
-\node[B={Cs}] (aa)   at ( 1.95, -7.7) {Adjacency\\[-2pt]Attention};
-\node[C={Cs}, font=\normalsize\sffamily,
-      below=0.3cm of ga, xshift=1.75cm] (attn_sum) {$+$};
-\node[W={Cs}, below=0.3cm of attn_sum] (add1) {Residual Add\quad\textit{\footnotesize(asymmetric)}};
-\node[W={Cs}, below=0.6cm of add1] (ln2)  {LayerNorm};
-\node[W={Cs}, below=0.6cm of ln2]  (ffn)  {Feed-Forward Network};
-\node[C={Cs}, below=0.6cm of ffn]  (add2) {$+$};
+\node[W={Cs}]  (ln1)  at (0, -5.2)  {LayerNorm};
+\node[W={Cs}, below=0.55cm of ln1]  (aa)
+  {Adjacency Self-Attention};
+\node[C={Cs}, below=0.4cm of aa]    (add1) {$+$};
+
+\node[W={Cs}, below=0.55cm of add1] (ln2)  {LayerNorm};
+\node[W={Cs}, below=0.55cm of ln2]  (ca)
+  {Cross-Attention\\[-2pt]\footnotesize Q = Node\;|\;K,V = Text};
+\node[C={Cs}, below=0.4cm of ca]    (add2) {$+$};
+
+\node[W={Cs}, below=0.55cm of add2] (ln3)  {LayerNorm};
+\node[W={Cs}, below=0.55cm of ln3]  (ffn)  {Feed-Forward Network};
+\node[C={Cs}, below=0.4cm of ffn]   (add3) {$+$};
 
 \begin{scope}[on background layer]
-  \node[grp, fit=(ln1)(ga)(aa)(add1)(ln2)(ffn)(add2), inner sep=11pt]
-    (Genc) {};
+  \node[grp, fit=(ln1)(aa)(add1)(ln2)(ca)(add2)(ln3)(ffn)(add3),
+        inner sep=11pt] (Genc) {};
 \end{scope}
 \node[ttl, anchor=south west] at ([yshift=2pt]Genc.north west)
-  {$\times$6\; Encoder Layers};
+  {$\times 6$\; Encoder Layers};
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  PREDICTION
 % ─────────────────────────────────────────────────────────────────────────────
-\node[W={Cp}, below=1.4cm of add2] (sel)  {Select Node Features};
-\node[W={Cp}, below=0.6cm of sel]  (head) {Coordinate Head};
+\node[W={Cp}, below=1.2cm of add3] (head)
+  {Coordinate Head};
 \node[W={Ci}, below=0.6cm of head] (out)
   {Predicted Noise\quad$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$};
 
 \begin{scope}[on background layer]
-  \node[grp, fit=(sel)(head)(out), inner sep=7pt] (Gpred) {};
+  \node[grp, fit=(head)(out), inner sep=7pt] (Gpred) {};
 \end{scope}
 \node[ttl, anchor=south west] at ([yshift=2pt]Gpred.north west) {Prediction};
 
@@ -114,68 +127,69 @@
 % ─────────────────────────────────────────────────────────────────────────────
 
 % inputs → projections
-\draw[a] (txt) -- (te);
+\draw[a] (txt) -- (bert);
 \draw[a] (xin) -- (cp);
 \draw[a] (tin) -- (tm);
+\draw[a] (bert) -- (tp);
 
-% coord proj + time emb → node token init
+% coord proj + time emb → node feature init
 \draw[a] (cp.south) -- (cp.south |- ni.north);
 \draw[a] (tm.south) -- (tm.south |- ni.north);
 
-% text embed → seq concat: down then right into sc.west
-\draw[a] (te.south) |- (sc.west);
+% node init → encoder
+\draw[a] (ni.south) -- (ln1.north);
 
-% node init → seq concat
-\draw[a] (ni.south) -- (sc.north);
+% ln1 → adj self-attn → add1
+\draw[a] (ln1.south) -- (aa.north);
+\draw[a] (aa.south)  -- (add1.north);
 
-% seq concat → encoder
-\draw[a] (sc.south) -- (ln1.north);
-
-% ln1 → dual attention: T-shape fork, arrows enter blocks from top (downward)
-% fork point sits halfway between ln1.south and ga/aa.north
-\coordinate (attn_fork) at (0, -7.0);
-\draw[line width=0.9pt, color=black!50] (ln1.south) -- (attn_fork);
-\draw[line width=0.9pt, color=black!50]
-  (ga.north |- attn_fork) -- (aa.north |- attn_fork);
-\draw[a] (ga.north  |- attn_fork) -- (ga.north);
-\draw[a] (aa.north  |- attn_fork) -- (aa.north);
-
-% attentions → sum circle → residual add
-% xshift centres the circle at x=0 (ga is at x=-1.75)
-\draw[a] (ga.south) |- (attn_sum.west);
-\draw[a] (aa.south) |- (attn_sum.east);
-\draw[a] (attn_sum.south) -- (add1.north);
-
-% residual skip 1 (left): seq-concat bypasses ln1+attns to add1
+% residual skip 1: ni bypasses ln1+aa to add1
 \draw[sk]
-  let \p1 = (sc.south), \p2 = (add1.west), \p3 = (Genc.west) in
-  (\x1, \y1-0.2cm)
-  -- (\x3-0.32cm, \y1-0.2cm)
+  let \p1=(ni.south), \p2=(add1.west), \p3=(Genc.west) in
+  (\x1, \y1-0.15cm)
+  -- (\x3-0.32cm, \y1-0.15cm)
   -- (\x3-0.32cm, \y2)
   -- (\x2, \y2);
 
-% add1 → ln2 → ffn → add2
+% add1 → ln2 → cross-attn → add2
 \draw[a] (add1.south) -- (ln2.north);
-\draw[a] (ln2.south)  -- (ffn.north);
-\draw[a] (ffn.south)  -- (add2.north);
+\draw[a] (ln2.south)  -- (ca.north);
+\draw[a] (ca.south)   -- (add2.north);
 
-% residual skip 2 (right): add1 bypasses ln2+ffn to add2
-\draw[sk]
-  let \p1 = (add1.south), \p2 = (add2.east), \p3 = (Genc.east) in
-  (\x1, \y1-0.2cm)
-  -- (\x3+0.32cm, \y1-0.2cm)
-  -- (\x3+0.32cm, \y2)
-  -- (\x2, \y2);
+% text features → cross-attn from left
+\draw[a]
+  (tp.south)
+  |- ([yshift=0.0cm]ca.west);
 
-% adjacency → adjacency attention: straight down then enter from east
+% adjacency → adj self-attn from right
 \draw[a]
   (adj.south)
   -- (adj.south |- aa.east)
   -- (aa.east);
 
+% residual skip 2: add1 bypasses ln2+ca to add2
+\draw[sk]
+  let \p1=(add1.south), \p2=(add2.east), \p3=(Genc.east) in
+  (\x1, \y1-0.15cm)
+  -- (\x3+0.32cm, \y1-0.15cm)
+  -- (\x3+0.32cm, \y2)
+  -- (\x2, \y2);
+
+% add2 → ln3 → ffn → add3
+\draw[a] (add2.south) -- (ln3.north);
+\draw[a] (ln3.south)  -- (ffn.north);
+\draw[a] (ffn.south)  -- (add3.north);
+
+% residual skip 3: add2 bypasses ln3+ffn to add3
+\draw[sk]
+  let \p1=(add2.south), \p2=(add3.east), \p3=(Genc.east) in
+  (\x1, \y1-0.15cm)
+  -- (\x3+0.32cm, \y1-0.15cm)
+  -- (\x3+0.32cm, \y2)
+  -- (\x2, \y2);
+
 % encoder → prediction
-\draw[a] (add2.south) -- (sel.north);
-\draw[a] (sel.south)  -- (head.north);
+\draw[a] (add3.south) -- (head.north);
 \draw[a] (head.south) -- (out.north);
 
 \end{tikzpicture}
