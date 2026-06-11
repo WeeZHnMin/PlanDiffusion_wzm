@@ -34,7 +34,7 @@ def build_parser(defaults=None):
     parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 6))
     parser.add_argument("--timesteps", type=int, default=defaults.get("timesteps", 1000))
     parser.add_argument("--bert", default=defaults.get("bert", "models/bert-base-uncased"))
-    parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 2),
+    parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0),
                         help="BERT 最后几层解冻参与训练（0=全冻结）")
     parser.add_argument("--ablation", default="", choices=["", "no_text", "no_graph"],
                         help="消融变体: no_text=去掉文本条件, no_graph=去掉图结构条件")

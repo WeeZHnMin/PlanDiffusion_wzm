@@ -106,7 +106,7 @@ class NodeDiffusionTransformer(nn.Module):
 
     def __init__(self, model_channels=384, num_layers=6, num_heads=6,
                  dropout=0.1, bpe_vocab_size=None,
-                 bert_name='models/bert-base-uncased', unfreeze_layers=2):
+                 bert_name='models/bert-base-uncased', unfreeze_layers=0):
         super().__init__()
         self.model_channels = model_channels
 
