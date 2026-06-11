@@ -66,6 +66,18 @@ class ContrastiveDataset(Dataset):
         }
 
 
+# ── collate：动态截断到 batch 内实际最长 token 数 ─────────────────────────────
+
+def collate_fn(batch):
+    max_len = max(b['attention_mask'].sum().item() for b in batch)
+    max_len = int(max_len)
+    for b in batch:
+        b['input_ids']      = b['input_ids'][:max_len]
+        b['attention_mask'] = b['attention_mask'][:max_len]
+    keys = batch[0].keys()
+    return {k: torch.stack([b[k] for b in batch]) for k in keys}
+
+
 # ── 参数 ──────────────────────────────────────────────────────────────────────
 
 def build_parser():
@@ -75,7 +87,7 @@ def build_parser():
     p.add_argument('--save_dir',         default='checkpoints/contrastive')
     p.add_argument('--resume',           default='')
     p.add_argument('--stride',           type=int,   default=8)
-    p.add_argument('--batch_size',       type=int,   default=256)
+    p.add_argument('--batch_size',       type=int,   default=192)
     p.add_argument('--total_steps',      type=int,   default=60000)
     p.add_argument('--lr_bert',          type=float, default=5e-5,
                    help='解冻的 BERT 层学习率（较小）')
@@ -156,7 +168,8 @@ def main(argv=None):
     # ── 数据 ──
     ds     = ContrastiveDataset(args.data_path, stride=args.stride)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
-                        num_workers=4, drop_last=True, pin_memory=True)
+                        num_workers=4, drop_last=True, pin_memory=True,
+                        collate_fn=collate_fn)
 
     def infinite():
         while True:
