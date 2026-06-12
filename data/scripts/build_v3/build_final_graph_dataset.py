@@ -83,6 +83,7 @@ MODEL_RANK: dict[str, int] = {
     "tongyi-xiaomi-analysis-pro":41,
     "qwen-vl-max":               42,
     "qwen-vl-plus":              43,
+    "mimo-v2.5":                44,
     # OCR 模型优先级最低，仅在无其他模型时使用
     "qwen-vl-ocr":              100,
     "qwen-vl-ocr-latest":       101,

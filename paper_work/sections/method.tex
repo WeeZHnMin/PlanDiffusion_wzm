@@ -221,7 +221,13 @@ grad clip $= 1.0$，FP16 混合精度。
 
 以生成的邻接矩阵 $\mathbf{A}$ 和文本 $\mathcal{T}$ 为条件，
 对节点坐标 $\mathbf{X} \in \mathbb{R}^{N \times 2}$ 施加高斯 DDPM。
-采用线性 beta 调度（$\beta_t \in [10^{-4},\, 0.02]$，$T=1000$），
+采用余弦（cosine）噪声调度~\cite{nichol2021improved}（$T=1000$）：
+\begin{equation}
+    \bar{\alpha}_t = \frac{f(t)}{f(0)},\quad
+    f(t) = \cos^2\!\left(\frac{t/T + 0.008}{1.008}\cdot\frac{\pi}{2}\right),\quad
+    \beta_t = 1 - \frac{\bar{\alpha}_t}{\bar{\alpha}_{t-1}}
+    \label{eq:cosine_schedule}
+\end{equation}
 令 $\alpha_t = 1 - \beta_t$，$\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$，
 前向过程为：
 \begin{equation}
@@ -305,18 +311,17 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     每个节点仅能关注直连邻居，使相邻节点之间的坐标特征得以局部交换。
 
     \item \textbf{全局注意力 $\mathrm{GlobalAttn}$}：
-    对拼接序列 $\mathbf{H}_{\mathrm{full}} = [\mathbf{H}_{\mathrm{text}};
-    \mathbf{H}_{\mathrm{node}}]$ 做无约束注意力，
-    使每个节点能跨越图结构感知全局布局与文本语义。
-    文本嵌入通过可学习 BPE 嵌入层（维度 $d=384$）获得，
-    无需预训练语言模型。
+    对节点序列 $\mathbf{H}_{\mathrm{node}}$ 做无掩码的全局自注意力，
+    使每个节点能感知全局布局信息。
+    文本语义则由每层独立的交叉注意力（$\mathrm{CrossAttn}$，$Q=\mathbf{H}_\mathrm{node}$，$K{=}V=\mathbf{H}_\mathrm{text}$）接入，
+    文本特征由冻结的 BERT-base-uncased 编码后经线性投影（$768\to d$）得到。
 \end{itemize}
 
 共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$，约 15M 参数。
 
 \paragraph{坐标预测头}
-编码器输出为拼接序列 $[\mathbf{H}_{\mathrm{text}}^{(L)};\,\mathbf{H}_{\mathrm{node}}^{(L)}]$；
-取后 $N$ 个 token 得到节点表示 $\{\mathbf{h}_i^{(L)}\}_{i=1}^{N}$，
+编码器输出即为 $N$ 个节点的隐向量 $\{\mathbf{h}_i^{(L)}\}_{i=1}^{N} \in \mathbb{R}^{N \times d}$
+（文本语义已通过各层交叉注意力融合，序列中始终只含节点 token），
 对每个节点独立预测坐标噪声：
 \begin{equation}
     \hat{\boldsymbol{\epsilon}}_{\mathrm{coord},i}
@@ -371,9 +376,9 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 \textbf{NodeTypeClassifier} 与 NodeDiffusionTransformer 结构同构——
 均采用双流 EncoderLayer（邻接局部注意力 + 全局注意力），
 但超参数独立，权重完全不共享，训练亦完全分离。
-NodeTypeClassifier 的配置为 $d=384$，6 层，6 头；
-NodeDiffusionTransformer 同为 $d=384$，6 层，6 头；
-两者超参数相同，但权重完全不共享，训练亦完全分离。
+NodeTypeClassifier 的配置为 $d=384$，4 层，6 头，dropout $=0.4$；
+NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$；
+两者结构同构但超参数独立，权重完全不共享，训练亦完全分离。
 两者的对比结构如图~\ref{fig:type_arch} 所示，关键差异如下：
 
 \begin{figure}[H]
@@ -481,45 +486,47 @@ $\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数。
 
 完整推理流程如算法~\ref{alg:inference} 所示。
 
-\begin{algorithm}[t]
+\begin{algorithm}[H]
 \caption{PlanDiffusion 推理}
 \label{alg:inference}
 \begin{algorithmic}[1]
 \REQUIRE 文本描述 $\mathcal{T}$
 \ENSURE 房间多边形列表 $\mathcal{F}$，各面房间类型 $\{r_k\}$
-\STATE \textbf{图拓扑生成}
+\STATE \textbf{// Step 1: 图拓扑生成}
 \STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$
 \FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
-    \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP} \COMMENT{约束①：因果树 $p_k < k$；约束②：SEP 时机}
-    \STATE 采样 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
+    \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP}
+    \STATE 采样父节点 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{约束①：$p_k < k$；约束②：SEP 时机}
 \ENDFOR
 \STATE 强制插入 \texttt{SEP}
-\WHILE{未采样到 \texttt{EOS\_G}}
-    \STATE 屏蔽所有会使图出现三角环的节点 token \COMMENT{约束③：禁止三角环}
-    \IF{$\exists\, i : \deg(v_i) < 2$}
-        \STATE 屏蔽 \texttt{EOS\_G} \COMMENT{约束④：所有节点度 $\geq 2$ 方可结束}
+\WHILE{上一步未采样到 \texttt{EOS\_G}}
+    \IF{$\forall\, i : \deg(v_i) \geq 2$}
+        \STATE 开放 \texttt{EOS\_G}
     \ENDIF
-    \STATE 采样下一个 token $s \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$
+    \STATE 采样第一端点 $u \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{约束④：度 $\geq 2$ 方可结束}
+    \IF{$u = \texttt{EOS\_G}$}
+        \STATE 退出循环
+    \ELSE
+        \STATE 屏蔽与 $u$ 构成三角环或已相连的节点 token
+        \STATE 采样第二端点 $v \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$，将边 $(u,v)$ 加入 $\mathbf{A}$ \COMMENT{约束③：禁三角}
+    \ENDIF
 \ENDWHILE
 \STATE 解析序列得 $\mathbf{A} \in \{0,1\}^{N \times N}$，节点掩码 $\mathbf{m}$
-\STATE \textbf{节点坐标扩散}
-\STATE 采样初始噪声 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
-\FOR{$t = T, T{-}1, \ldots, 1$}
-    \STATE $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}} = f_{\theta_2}(\mathbf{x}_t, t, \mathbf{A}, \mathbf{m}, \mathcal{T})$
-    \STATE $\mathbf{x}_{t-1} \leftarrow$ DDPM 逆步（$\mathbf{x}_t$，$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$，$t$）
+\STATE \textbf{// Step 2: 节点坐标扩散}
+\STATE 采样初始噪声 $\mathbf{x}_{T-1} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+\FOR{$t = T{-}1,\, T{-}2,\, \ldots,\, 0$}
+    \STATE $\hat{\boldsymbol{\epsilon}} = f_{\theta_2}(\mathbf{x}_t,\, t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$
+    \STATE $\boldsymbol{\mu}_\theta \leftarrow \dfrac{1}{\sqrt{\alpha_t}}\!\left(\mathbf{x}_t - \dfrac{\beta_t}{\sqrt{1-\bar{\alpha}_t}}\hat{\boldsymbol{\epsilon}}\right)$
+    \STATE $\mathbf{x}_{t-1} \leftarrow \boldsymbol{\mu}_\theta + \sqrt{\tilde{\beta}_t}\,\boldsymbol{\varepsilon}\cdot\mathbf{1}[t>0],\quad \boldsymbol{\varepsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
 \ENDFOR
-\STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_0$
-\STATE \textbf{节点类型预测}
-\STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$ \COMMENT{NodeTypeClassifier 前向}
-\STATE $\hat{y}_i = \arg\max_{k} \hat{z}_{i,k}$，$\forall i$ \COMMENT{combo type id $\in \{1,\ldots,32\}$，解码为所属房间类型集合}
-\STATE \textbf{面提取与房间类型投票}
-\STATE $\mathcal{F} \leftarrow \textsc{FindFaces}(\hat{\mathbf{X}},\, \mathbf{A})$ \COMMENT{半边遍历，排除面积最大的外部无界面}
+\STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_{-1}$ \COMMENT{$t=0$ 时 $\boldsymbol{\varepsilon}$ 项为零，直接取均值}
+\STATE \textbf{// Step 3: 节点类型预测}
+\STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$
+\STATE $\hat{y}_i = \arg\max_{k \in \{1,\ldots,32\}} \hat{z}_{i,k},\quad \forall\, i$
+\STATE \textbf{// Step 4: 面提取与房间类型投票}
+\STATE $\mathcal{F} \leftarrow \textsc{FindFaces}(\hat{\mathbf{X}},\, \mathbf{A})$ \COMMENT{半边遍历，排除最大无界面}
 \FOR{每个面 $f_k \in \mathcal{F}$}
-    \FOR{每种房间类型 $t$}
-        \STATE $\mathrm{fc}(t) \leftarrow |\{i \in f_k : t \in \hat{y}_i\}|$ \COMMENT{面内含类型 $t$ 的节点数}
-        \STATE $\mathrm{ec}(t) \leftarrow |\{j \notin f_k : j \in \mathcal{N}(f_k),\, t \in \hat{y}_j\}|$ \COMMENT{面外一跳邻居中含类型 $t$ 的节点数}
-        \STATE $\mathrm{score}(t) \leftarrow \dfrac{\mathrm{fc}(t)}{\mathrm{ec}(t) + 1}$ \COMMENT{特异性分数：类型集中于面内时得分高}
-    \ENDFOR
+    \STATE $\mathrm{score}(t) \leftarrow \dfrac{|\{i \in f_k : t \in \hat{y}_i\}|}{|\{j \notin f_k : j \in \mathcal{N}(f_k),\, t \in \hat{y}_j\}| + 1},\quad \forall\, t$
     \STATE $r_k \leftarrow \arg\max_{t}\, \mathrm{score}(t)$，同分时按固定优先序取最前者
 \ENDFOR
 \RETURN 房间多边形 $\mathcal{F}$，各面房间类型 $\{r_k\}$

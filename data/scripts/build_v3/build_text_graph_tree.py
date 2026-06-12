@@ -59,7 +59,6 @@ def parse_args():
     p.add_argument("--jsonl",     default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bpe",       default="llm_graph/vocab/wp_tokenizer.json")
     p.add_argument("--output",    default="data/processed/graph_tree/text_graph_tree.npz")
-    p.add_argument("--vocab-out", default="data/processed/graph_tree/vocab_config.json")
     p.add_argument("--augment",   type=int, default=6,
                    help="每张图随机节点重排次数（1=只用原始顺序，3=推荐）")
     p.add_argument("--seed",      type=int, default=42)
@@ -150,25 +149,6 @@ def graph_to_tokens(n: int, parents: list[int],
     return tokens
 
 
-def save_vocab_config(output_path: Path):
-    cfg = {
-        "wp_vocab_size":   10000,
-        "PAD_ID":          PAD_ID,
-        "BOS_ID":          BOS_ID,
-        "EOS_ID":          EOS_ID,
-        "SEP_ID":          SEP_ID,
-        "N_START":         N_START,
-        "NODE_START":      NODE_START,
-        "MAX_NODES":       MAX_NODES,
-        "MAX_TEXT_LEN":    MAX_TEXT_LEN,
-        "MAX_SEQ_LEN":     MAX_SEQ_LEN,
-        "VOCAB_SIZE":      VOCAB_SIZE,
-        "note": "N=k → N_START+(k-1), node_j → NODE_START+j",
-    }
-    output_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False),
-                           encoding="utf-8")
-    print(f"vocab config → {output_path}")
-
 
 def main():
     args  = parse_args()
@@ -254,7 +234,6 @@ def main():
     lens = np.array(lengths_list)
     print(f"序列长度: min={lens.min()} max={lens.max()} mean={lens.mean():.1f} p95={int(np.percentile(lens, 95))}")
 
-    save_vocab_config(Path(args.vocab_out))
 
 
 if __name__ == "__main__":
