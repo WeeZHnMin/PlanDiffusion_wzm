@@ -65,6 +65,8 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
     gt_degrees      = Counter()
     gen_degrees     = Counter()
     n_invalid_gen   = 0
+    n_match_list    = []   # gen_n == gt_n
+    gen_n_list      = []   # 生成的 N 序列，用于检测坍缩
 
     for i, idx in enumerate(indices):
         prefix, gt_seq = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
@@ -86,6 +88,8 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
             for d in node_degrees(gen['adj']):
                 gen_degrees[d] += 1
             ged_list.append(graph_edit_distance(gen['adj'], gt['adj']))
+            n_match_list.append(int(gen['n_nodes'] == gt['n_nodes']))
+            gen_n_list.append(gen['n_nodes'])
         else:
             n_invalid_gen += 1
 
@@ -96,6 +100,11 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
     node_kl     = kl_divergence(gt_node_counts, gen_node_counts)
     degree_kl   = kl_divergence(gt_degrees, gen_degrees)
 
+    # 坍缩诊断
+    n_match_rate = float(np.mean(n_match_list)) if n_match_list else float('nan')
+    gen_n_std    = float(np.std(gen_n_list))    if gen_n_list  else float('nan')
+    gen_n_mean   = float(np.mean(gen_n_list))   if gen_n_list  else float('nan')
+
     return {
         'n_samples':     len(indices),
         'n_valid_gen':   len(ged_list),
@@ -103,6 +112,9 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
         'avg_ged':       round(avg_ged, 4),
         'node_count_kl': round(node_kl,   4),
         'degree_kl':     round(degree_kl, 4),
+        'n_match_rate':  round(n_match_rate, 4),  # gen_N == gt_N 的比例
+        'gen_n_mean':    round(gen_n_mean, 2),     # 生成 N 的均值
+        'gen_n_std':     round(gen_n_std,  2),     # 生成 N 的标准差（接近 0 = 坍缩）
     }
 
 
@@ -141,6 +153,8 @@ def main():
     print(f'  Node-count KL  : {results["node_count_kl"]}')
     print(f'  Degree KL      : {results["degree_kl"]}')
     print(f'  valid gen      : {results["n_valid_gen"]}/{results["n_samples"]}')
+    print(f'  N match rate   : {results["n_match_rate"]:.1%}  (gen_N == gt_N)')
+    print(f'  gen N mean±std : {results["gen_n_mean"]} ± {results["gen_n_std"]}')
     print(f'{"─" * 40}')
 
     with open(args.out, 'w', encoding='utf-8') as f:
