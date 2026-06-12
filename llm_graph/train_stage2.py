@@ -50,7 +50,7 @@ def parse_args():
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
     p.add_argument("--log-every",     type=int,   default=200)
-    p.add_argument("--save-every",    type=int,   default=5_000)
+    p.add_argument("--save-every",    type=int,   default=1_000)
 
     p.add_argument("--hidden-size",       type=int, default=512)
     p.add_argument("--num-layers",        type=int, default=8)
@@ -225,15 +225,20 @@ def main():
         if step % args.save_every == 0 and step > 0:
             win_avg = save_win_loss / max(save_win_steps, 1)
             save_win_loss = save_win_steps = 0
+            raw = model.module if hasattr(model, 'module') else model
+            ckpt = {
+                'model': raw.state_dict(), 'opt': opt.state_dict(),
+                'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
+                'step': step, 'best_loss': best_loss,
+            }
+            torch.save(ckpt, save_dir / 'latest.pt')
             if win_avg < best_loss:
                 best_loss = win_avg
-                raw = model.module if hasattr(model, 'module') else model
-                torch.save({
-                    'model': raw.state_dict(), 'opt': opt.state_dict(),
-                    'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
-                    'step': step, 'best_loss': best_loss,
-                }, save_dir / 'best.pt')
-                print(f'  best saved → step={step} loss={best_loss:.4f}')
+                ckpt['best_loss'] = best_loss
+                torch.save(ckpt, save_dir / 'best.pt')
+                print(f'  best+latest saved → step={step} loss={best_loss:.4f}')
+            else:
+                print(f'  latest saved → step={step} win_avg={win_avg:.4f}')
 
     raw = model.module if hasattr(model, 'module') else model
     torch.save({'model': raw.state_dict(), 'opt': opt.state_dict(),
