@@ -1,29 +1,30 @@
-% NodeTypeClassifier vs NodeDiffusionTransformer
+% NodeDiffusionTransformer vs TextCondGNN — BERT + Cross-Attention architecture
 % Compile: xelatex type_classifier_arch.tex
 \documentclass[tikz, border=14pt]{standalone}
 \usepackage{amsmath}
 \usepackage{tikz}
 \usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
 
-\definecolor{Ci}{RGB}{207,226,248}
-\definecolor{Ce}{RGB}{250,228,182}
-\definecolor{Cs}{RGB}{188,220,230}
-\definecolor{Cp}{RGB}{247,202,202}
-\definecolor{Cg}{RGB}{198,232,198}
+\definecolor{Ci}{RGB}{207,226,248}   % blue  – inputs / outputs
+\definecolor{Ce}{RGB}{250,228,182}   % amber – embedding
+\definecolor{Cs}{RGB}{188,220,230}   % steel – encoder
+\definecolor{Cp}{RGB}{247,202,202}   % pink  – coord head
+\definecolor{Cg}{RGB}{198,232,198}   % green – type head
+\definecolor{Ct}{RGB}{220,240,220}   % mint  – BERT branch
 \definecolor{Cbdr}{RGB}{148,148,148}
 
 \tikzset{
   Bs/.style n args={1}{draw=Cbdr, fill=#1, rounded corners=3pt,
-    minimum width=1.8cm, minimum height=0.68cm,
+    minimum width=2.0cm, minimum height=0.68cm,
     align=center, inner sep=4pt, font=\small\sffamily},
   Bm/.style n args={1}{draw=Cbdr, fill=#1, rounded corners=3pt,
-    minimum width=2.2cm, minimum height=0.68cm,
+    minimum width=2.6cm, minimum height=0.68cm,
     align=center, inner sep=4pt, font=\small\sffamily},
   BnL/.style n args={1}{draw=Cbdr, fill=#1, rounded corners=3pt,
-    minimum width=8.4cm, minimum height=0.68cm,
+    minimum width=5.2cm, minimum height=0.68cm,
     align=center, inner sep=4pt, font=\small\sffamily},
   BnR/.style n args={1}{draw=Cbdr, fill=#1, rounded corners=3pt,
-    minimum width=6.0cm, minimum height=0.68cm,
+    minimum width=4.2cm, minimum height=0.68cm,
     align=center, inner sep=4pt, font=\small\sffamily},
   grp/.style={draw=Cbdr!50, fill=black!3, rounded corners=6pt,
     line width=0.7pt, dashed},
@@ -35,94 +36,101 @@
 \begin{document}
 \begin{tikzpicture}
 
-% ═══════════════════════════════════════════════════════════
-%  LEFT  NodeDiffusionTransformer  (centred at x = -4.9)
-%  Text/Noisy/Diffusion: spacing 2.5cm → centres -7.5 -5.0 -2.5
-%  Adjacency: to the right of the group, enters encoder from right
-% ═══════════════════════════════════════════════════════════
-\node[ttl] at (-4.9, 0.65) {NodeDiffusionTransformer};
+% ═══════════════════════════════════════════════════════════════
+%  LEFT  NodeDiffusionTransformer
+%  Text branch x=-9.0  |  Coord x=-6.2  Time x=-2.8  |  Adj x=0.3
+% ═══════════════════════════════════════════════════════════════
+\node[ttl] at (-4.5, 0.65) {NodeDiffusionTransformer};
 
-\node[Bs={Ci}] (Ltxt) at (-7.5, 0) {Text Tokens};
-\node[Bs={Ci}] (Lxin) at (-5.0, 0) {Noisy Coords};
-\node[Bs={Ci}] (Ltin) at (-2.5, 0) {Diffusion Step};
-\node[Bs={Ci}] (Ladj) at (0.9, 0) {Adjacency Matrix};
+\node[Bs={Ci}] (Ltxt) at (-9.0,  0) {Text Tokens};
+\node[Bs={Ci}] (Lxin) at (-6.2,  0) {Noisy Coords};
+\node[Bs={Ci}] (Ltin) at (-2.8,  0) {Diffusion Step};
+\node[Bs={Ci}] (Ladj) at ( 0.3,  0) {Adjacency\\Matrix};
 
-\node[BnL={Ce}] (Lemb) at (-4.9, -1.3)
-  {BPE Emb\ +\ Coord Proj\ +\ Time Emb};
-\node[BnL={Ce}, below=0.45cm of Lemb] (Lni)  {Node Feature Init};
-\node[BnL={Ce}, below=0.45cm of Lni]  (Lsc)
-  {Concat \textbf{[}Text\,\textbf{|}\,Node\textbf{]}};
-\node[BnL={Cs}, below=0.45cm of Lsc]  (Lenc) {$\times$6\ Encoder Layers};
-\node[BnL={Cs}, below=0.45cm of Lenc] (Lsel) {Select Node Features};
-\node[BnL={Cp}, below=0.45cm of Lsel] (Lhd)  {Coordinate Head};
-\node[BnL={Ci}, below=0.45cm of Lhd]  (Lout)
-  {$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$\quad{\footnotesize[B,\,2,\,N]}};
+\node[Bm={Ct}, below=0.85cm of Ltxt] (Lbert)
+  {BERT\\[-2pt]\footnotesize(frozen)};
+\node[Bm={Ce}, below=0.85cm of Lxin] (Lcp) {Coord Proj};
+\node[Bm={Ce}, below=0.85cm of Ltin] (Ltm) {Time Emb};
 
-% straight down: Text / Noisy / Diffusion → Lemb top edge
-\draw[a] (Ltxt.south) -- (Ltxt.south |- Lemb.north);
-\draw[a] (Lxin.south) -- (Lxin.south |- Lemb.north);
-\draw[a] (Ltin.south) -- (Ltin.south |- Lemb.north);
+\node[Bm={Ct}, below=0.85cm of Lbert] (Ltp)
+  {Linear Proj\\[-2pt]\footnotesize$768{\to}d$};
+\node[BnL={Ce}] (Lni) at (-4.5, -3.3) {Node Feature Init};
 
-% Adjacency: down then left into encoder east
+\node[BnL={Cs}, below=0.85cm of Lni] (Lenc)
+  {$\times 6$\ Encoder Layers\\[-2pt]%
+   \footnotesize Adj-Attn $+$ Global-Attn $+$ Cross-Attn $+$ FFN};
+
+\node[BnL={Cp}, below=0.5cm of Lenc] (Lhd) {Coordinate Head};
+\node[BnL={Ci}, below=0.45cm of Lhd] (Lout)
+  {$\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$\quad\footnotesize[B,\,2,\,N]};
+
+\draw[a] (Ltxt) -- (Lbert);
+\draw[a] (Lbert) -- (Ltp);
+\draw[a] (Lxin) -- (Lcp);
+\draw[a] (Ltin) -- (Ltm);
+\draw[a] (Lcp.south) -- (Lcp.south |- Lni.north);
+\draw[a] (Ltm.south) -- (Ltm.south |- Lni.north);
+\draw[a] (Lni)  -- (Lenc);
+\draw[a] (Lenc) -- (Lhd);
+\draw[a] (Lhd)  -- (Lout);
+\draw[a] (Ltp.south) |- (Lenc.west);
 \draw[a] (Ladj.south) -- (Ladj.south |- Lenc.east) -- (Lenc.east);
 
-\draw[a] (Lemb)--(Lni); \draw[a](Lni)--(Lsc);
-\draw[a] (Lsc)--(Lenc); \draw[a](Lenc)--(Lsel);
-\draw[a] (Lsel)--(Lhd); \draw[a](Lhd)--(Lout);
-
-% group box
 \begin{scope}[on background layer]
-  \node[grp, fit=(Ltxt)(Lxin)(Ltin)(Ladj)(Lemb)(Lni)(Lsc)
-             (Lenc)(Lsel)(Lhd)(Lout), inner sep=8pt] (Gleft) {};
+  \node[grp,
+        fit=(Ltxt)(Lxin)(Ltin)(Ladj)(Lbert)(Lcp)(Ltm)(Ltp)(Lni)(Lenc)(Lhd)(Lout),
+        inner sep=8pt] (Gleft) {};
 \end{scope}
 
-% ═══════════════════════════════════════════════════════════
-%  RIGHT  NodeTypeClassifier  (centred at x = +5.1)
-%  Text / CleanCoords: spacing 2.8cm → centres 3.7  6.5
-%  Adjacency: right of group, enters encoder from right
-% ═══════════════════════════════════════════════════════════
-\node[ttl] at (5.1, 0.65) {NodeTypeClassifier};
+% ═══════════════════════════════════════════════════════════════
+%  RIGHT  TextCondGNN
+%  Text branch x=2.8  |  Coord x=8.0  |  Adj x=10.5
+%  Rni/Renc center x=6.5  (clear of Rtp right edge at 4.1)
+% ═══════════════════════════════════════════════════════════════
+\node[ttl] at (8.0, 0.65) {TextCondGNN};
 
-\node[Bs={Ci}] (Rtxt) at (3.7, 0) {Text Tokens};
-\node[Bm={Ci}] (Rxin) at (6.5, 0) {Clean Coords\ $(t{=}0)$};
-\node[Bs={Ci}] (Radj) at (10.4, 0) {Adjacency Matrix};
+\node[Bs={Ci}] (Rtxt) at ( 4.3, 0) {Text Tokens};
+\node[Bs={Ci}] (Rxin) at ( 8.0, 0) {Clean Coords\\[-2pt]\footnotesize$(t{=}0)$};
+\node[Bs={Ci}] (Radj) at (11.0, 0) {Adjacency\\Matrix};
 
-\node[BnR={Ce}] (Remb) at (5.1, -1.3)
-  {BPE Emb\ +\ Coord Proj};
-\node[BnR={Ce}, below=0.45cm of Remb] (Rni)  {Node Feature Init};
-\node[BnR={Ce}, below=0.45cm of Rni]  (Rsc)
-  {Concat \textbf{[}Text\,\textbf{|}\,Node\textbf{]}};
-\node[BnR={Cs}, below=0.45cm of Rsc]  (Renc) {$\times$6\ Encoder Layers};
-\node[BnR={Cs}, below=0.45cm of Renc] (Rsel) {Select Node Features};
-\node[BnR={Cg}, below=0.45cm of Rsel] (Rhd)  {Type Head};
-\node[BnR={Cg}, below=0.45cm of Rhd]  (Rout)
-  {Predicted Type\quad{\footnotesize[B,\,N,\,33]}};
+\node[Bm={Ct}, below=0.85cm of Rtxt] (Rbert)
+  {BERT\\[-2pt]\footnotesize(frozen)};
+\node[Bm={Ce}, below=0.85cm of Rxin] (Rcp) {Coord Proj};  % x follows Rxin = 6.5
 
-% fan-in: Text / CleanCoords → Remb
-\draw[a] (Rtxt.south) -- ++(0,-0.22) -| ([xshift=-1.4cm]Remb.north);
-\draw[a] (Rxin.south) -- ++(0,-0.22) -| ([xshift=+1.4cm]Remb.north);
+\node[Bm={Ct}, below=0.85cm of Rbert] (Rtp)
+  {Linear Proj\\[-2pt]\footnotesize$768{\to}d$};
+\node[BnR={Ce}] (Rni) at (8.0, -3.3) {Node Feature Init};
 
-% Adjacency: down then left into encoder east
+\node[BnR={Cs}, below=0.85cm of Rni] (Renc)
+  {$\times 4$\ Encoder Layers\\[-2pt]%
+   \footnotesize same EncoderLayer class};
+
+\node[BnR={Cg}, below=0.5cm of Renc] (Rhd) {Type Head};
+\node[BnR={Cg}, below=0.45cm of Rhd] (Rout)
+  {Predicted Type\quad\footnotesize[B,\,N,\,33]};
+
+\draw[a] (Rtxt) -- (Rbert);
+\draw[a] (Rbert) -- (Rtp);
+\draw[a] (Rxin) -- (Rcp);
+\draw[a] (Rcp.south) -- (Rcp.south |- Rni.north);
+\draw[a] (Rni)  -- (Renc);
+\draw[a] (Renc) -- (Rhd);
+\draw[a] (Rhd)  -- (Rout);
+\draw[a] (Rtp.south) |- (Renc.west);
 \draw[a] (Radj.south) -- (Radj.south |- Renc.east) -- (Renc.east);
 
-\draw[a] (Remb)--(Rni); \draw[a](Rni)--(Rsc);
-\draw[a] (Rsc)--(Renc); \draw[a](Renc)--(Rsel);
-\draw[a] (Rsel)--(Rhd); \draw[a](Rhd)--(Rout);
-
-% group box
 \begin{scope}[on background layer]
-  \node[grp, fit=(Rtxt)(Rxin)(Radj)(Remb)(Rni)(Rsc)
-             (Renc)(Rsel)(Rhd)(Rout), inner sep=8pt] (Gright) {};
+  \node[grp,
+        fit=(Rtxt)(Rxin)(Radj)(Rbert)(Rcp)(Rtp)(Rni)(Renc)(Rhd)(Rout),
+        inner sep=8pt] (Gright) {};
 \end{scope}
 
-% ═══════════════════════════════════════════════════════════
-%  ≡ connectors for structurally identical rows
-% ═══════════════════════════════════════════════════════════
-\foreach \La/\Ra in {Lni/Rni, Lsc/Rsc, Lenc/Renc, Lsel/Rsel}{
-  \draw[eq] (\La.east) -- (\Ra.west)
-    node[midway, font=\scriptsize\sffamily, text=black!35,
-         fill=white, inner sep=1pt] {$\equiv$};
-}
+% ═══════════════════════════════════════════════════════════════
+%  ≡ connector — Encoder row only (row 3 has no cross-nodes in gap)
+% ═══════════════════════════════════════════════════════════════
+\draw[eq] (Lenc.east) -- (Renc.west)
+  node[midway, font=\scriptsize\sffamily, text=black!35,
+       fill=white, inner sep=1pt] {$\equiv$};
 
 \end{tikzpicture}
 \end{document}

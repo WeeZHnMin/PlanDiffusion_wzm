@@ -78,7 +78,7 @@
   {Linear Projection\\[-2pt]\footnotesize$768 \to d$};
 
 \node[W={Ce}] (ni) at (0, -3.0)
-  {Node Feature Init\quad\footnotesize(Coord Proj $+$ Time Emb)};
+  {Node Feature Init};
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  Group: Inputs + Embeddings
@@ -93,14 +93,14 @@
 %  ENCODER  ×6
 %  Sub-layers: (1) Adj Attn + Global Attn (parallel sum)  (2) Cross-Attn  (3) FFN
 % ─────────────────────────────────────────────────────────────────────────────
-\node[W={Cs}]  (ln1)  at (0, -5.7)  {LayerNorm};
+\node[W={Cs}]  (ln1)  at (0, -5.3)  {LayerNorm};
 
 % dual-stream: two narrow boxes side by side (2.85cm each, gap ~0.45cm, total ~6.15cm)
-\node[HW={Cs}] (ga) at (-1.65, -7.25) {Global\\[-2pt]\footnotesize Self-Attn};
-\node[HW={Cs}] (aa) at ( 1.65, -7.25) {Adj\\[-2pt]\footnotesize Self-Attn};
+\node[HW={Cs}] (ga) at (-1.65, -6.85) {Global\\[-2pt]\footnotesize Self-Attn};
+\node[HW={Cs}] (aa) at ( 1.65, -6.85) {Adj\\[-2pt]\footnotesize Self-Attn};
 
 % single + merges both stream outputs AND residual
-\node[C={Cs}]  (add1) at (0, -8.35) {$+$};
+\node[C={Cs}]  (add1) at (0, -8.25) {$+$};
 
 \node[W={Cs}, below=0.55cm of add1] (ln2)  {LayerNorm};
 \node[W={Cs}, below=0.55cm of ln2]  (ca)
@@ -148,19 +148,19 @@
 % node init → ln1
 \draw[a] (ni.south) -- (ln1.north);
 
-% ln1 → fork → adj and global
-\draw[a] (ln1.south) -| (aa.north);
-\draw[a] (ln1.south) -| (ga.north);
+% ln1 → two independent vertical arrows to adj and global
+\draw[a] (ln1.south -| aa.north) -- (aa.north);
+\draw[a] (ln1.south -| ga.north) -- (ga.north);
 
-% adj and global outputs → add1
+% adj and global outputs → add1  (down → horizontal → down)
 \draw[a] (aa.south) |- (add1.east);
-\draw[a] (ga.south) |- (add1.west);
+\draw[a] (ga.south) -- ++(0,-0.4cm) -| (add1.north);
 
 % residual skip 1: ni bypasses ln1+dual-stream to add1
 \draw[sk]
   let \p1=(ni.south), \p2=(add1.west), \p3=(Genc.west) in
-  (\x1, \y1-0.15cm)
-  -- (\x3-0.32cm, \y1-0.15cm)
+  (\x1, \y1-0.45cm)
+  -- (\x3-0.32cm, \y1-0.45cm)
   -- (\x3-0.32cm, \y2)
   -- (\x2, \y2);
 
