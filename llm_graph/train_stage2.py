@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument("--stage1-ckpt",   default=None,
                    help="Stage1 checkpoint 初始化权重")
     p.add_argument("--resume",        default=None)
+    p.add_argument("--reset-steps",   action="store_true",
+                   help="续训新数据集时重置步数，只继承模型权重")
 
     p.add_argument("--batch-size",    type=int,   default=26)
     p.add_argument("--epochs",        type=int,   default=20)
@@ -147,14 +149,17 @@ def main():
         sd   = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
         raw  = model.module if hasattr(model, 'module') else model
         raw.load_state_dict(sd, strict=True)
-        opt.load_state_dict(ckpt['opt'])
-        scaler.load_state_dict(ckpt['scaler'])
-        if 'scheduler' in ckpt:
-            scheduler.load_state_dict(ckpt['scheduler'])
-        start_step = ckpt['step'] + 1
-        best_loss  = ckpt.get('best_loss', float('inf'))
-        print(f'resumed from step {start_step} / {total_steps}  '
-              f'({start_step/steps_per_epoch:.1f} epochs done)')
+        if args.reset_steps:
+            print(f'权重已加载，步数重置（原 step={ckpt["step"]}）')
+        else:
+            opt.load_state_dict(ckpt['opt'])
+            scaler.load_state_dict(ckpt['scaler'])
+            if 'scheduler' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler'])
+            start_step = ckpt['step'] + 1
+            best_loss  = ckpt.get('best_loss', float('inf'))
+            print(f'resumed from step {start_step} / {total_steps}  '
+                  f'({start_step/steps_per_epoch:.1f} epochs done)')
 
     def infinite():
         while True:
