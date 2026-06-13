@@ -207,6 +207,7 @@ def generate(
     use_c2: bool = True,   # 约束②：SEP 时机控制
     use_c3: bool = True,   # 约束③：禁止三角环
     use_c4: bool = True,   # 约束④：度数下限 >= 2
+    use_c5: bool = True,   # 约束⑤：N >= 9（训练集下限）
 ) -> list:
     """
     从 prefix_ids（文本 tokens + BOS_G）后开始自回归生成。
@@ -231,6 +232,8 @@ def generate(
 
         if phase == 'N_tok':
             mask[N_START: N_START + MAX_NODES] = False
+            if use_c5:
+                mask[N_START: N_START + 8] = True  # 约束⑤：屏蔽 N=1~8
 
         elif phase == 'parents':
             if use_c1:

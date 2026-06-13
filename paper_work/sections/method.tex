@@ -142,7 +142,6 @@ ID 范围 & Token & 说明 \\
 给定含 $N$ 个节点的图，我们将其序列化为：
 
 \begin{equation}
-\small
 \underbrace{t_1\, t_2 \cdots t_L}_{\text{BPE 文本}}\;
 \texttt{BOS\_G}\;
 \underbrace{N_k}_{N \text{ 个节点}}\;
@@ -493,33 +492,33 @@ $\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数。
 \REQUIRE 文本描述 $\mathcal{T}$
 \ENSURE 房间多边形列表 $\mathcal{F}$，各面房间类型 $\{r_k\}$
 \STATE \textbf{// Step 1: 图拓扑生成}
-\STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$
+\STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$，屏蔽 $N < 9$ 的候选 token \COMMENT{C5：$N \geq 9$}
 \FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
     \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP}
-    \STATE 采样父节点 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{约束①：$p_k < k$；约束②：SEP 时机}
+    \STATE 采样父节点 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{C1：$p_k < k$；C2：SEP 时机}
 \ENDFOR
 \STATE 强制插入 \texttt{SEP}
 \WHILE{上一步未采样到 \texttt{EOS\_G}}
     \IF{$\forall\, i : \deg(v_i) \geq 2$}
         \STATE 开放 \texttt{EOS\_G}
     \ENDIF
-    \STATE 采样第一端点 $u \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{约束④：度 $\geq 2$ 方可结束}
+    \STATE 采样第一端点 $u \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{C4：度 $\geq 2$ 方可结束}
     \IF{$u = \texttt{EOS\_G}$}
         \STATE 退出循环
     \ELSE
         \STATE 屏蔽与 $u$ 构成三角环或已相连的节点 token
-        \STATE 采样第二端点 $v \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$，将边 $(u,v)$ 加入 $\mathbf{A}$ \COMMENT{约束③：禁三角}
+        \STATE 采样第二端点 $v \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$，将边 $(u,v)$ 加入 $\mathbf{A}$ \COMMENT{C3：禁三角}
     \ENDIF
 \ENDWHILE
 \STATE 解析序列得 $\mathbf{A} \in \{0,1\}^{N \times N}$，节点掩码 $\mathbf{m}$
 \STATE \textbf{// Step 2: 节点坐标扩散}
-\STATE 采样初始噪声 $\mathbf{x}_{T-1} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
+\STATE 采样初始噪声 $\mathbf{x}_{T} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$
 \FOR{$t = T{-}1,\, T{-}2,\, \ldots,\, 0$}
     \STATE $\hat{\boldsymbol{\epsilon}} = f_{\theta_2}(\mathbf{x}_t,\, t,\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$
     \STATE $\boldsymbol{\mu}_\theta \leftarrow \dfrac{1}{\sqrt{\alpha_t}}\!\left(\mathbf{x}_t - \dfrac{\beta_t}{\sqrt{1-\bar{\alpha}_t}}\hat{\boldsymbol{\epsilon}}\right)$
     \STATE $\mathbf{x}_{t-1} \leftarrow \boldsymbol{\mu}_\theta + \sqrt{\tilde{\beta}_t}\,\boldsymbol{\varepsilon}\cdot\mathbf{1}[t>0],\quad \boldsymbol{\varepsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
 \ENDFOR
-\STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_{-1}$ \COMMENT{$t=0$ 时 $\boldsymbol{\varepsilon}$ 项为零，直接取均值}
+\STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_{0}$ \COMMENT{$t=0$ 时 $\boldsymbol{\varepsilon}$ 项为零，直接取均值}
 \STATE \textbf{// Step 3: 节点类型预测}
 \STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$
 \STATE $\hat{y}_i = \arg\max_{k \in \{1,\ldots,32\}} \hat{z}_{i,k},\quad \forall\, i$
