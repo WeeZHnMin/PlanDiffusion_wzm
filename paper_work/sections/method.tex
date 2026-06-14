@@ -208,9 +208,9 @@ ID 范围 & Token & 说明 \\
 以预训练权重初始化，输入完整文本+图联合序列，
 loss 仅在图序列部分计算，训练 100 epoch。
 
-两阶段均采用 AdamW（$\beta_1{=}0.9$，$\beta_2{=}0.95$，
+两阶段均采用 AdamW~\cite{loshchilov2019adamw}（$\beta_1{=}0.9$，$\beta_2{=}0.95$，
 lr $= 10^{-4}$，余弦退火至 $10^{-5}$），
-grad clip $= 1.0$，FP16 混合精度。
+grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 
 % -----------------------------------------------------------------------------
 \subsection{节点坐标扩散}
@@ -340,8 +340,8 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
 \end{equation}
 其中 $m_i$ 为节点有效掩码（padding 节点不计入 loss）。
 
-优化器为 AdamW（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精度。
+优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
+grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精度~\cite{micikevicius2018mixed}。
 训练数据由原始图通过随机节点重排增强 ${\times}8$。
 
 \subsubsection{推理：DDPM 逆采样}
@@ -419,8 +419,8 @@ NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$；
     \mathrm{Acc} = \frac{\displaystyle\sum_i m_i \cdot \mathbf{1}[\arg\max_k \hat{z}_{i,k} = y_i]}{\displaystyle\sum_i m_i}
 \end{equation}
 
-优化器为 AdamW（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精度。
+优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
+grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精度~\cite{micikevicius2018mixed}。
 
 \subsubsection{推理：直接分类}
 

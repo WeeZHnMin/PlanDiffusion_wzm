@@ -42,10 +42,9 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
     \item 构建了 PlanText-150K 数据集，
     通过多模型 VLM 标注提供高质量自然语言描述，
     是目前规模最大的带文本标注的住宅平面图数据集之一；
-    \item 设计了双流注意力去噪网络，
-    同时利用邻接局部注意力和文本全局注意力实现图结构与语义的联合条件化；
-    类型预测采用与坐标扩散同构但完全独立的分类器，在干净坐标上直接训练，
-    无需离散扩散或嵌入空间最近邻查找。
+    \item 设计了双流注意力去噪网络（NodeDiffusionTransformer），
+    同时利用邻接局部注意力与文本全局注意力实现图结构与语义的联合条件化，
+    在给定图结构条件下高精度恢复节点坐标。
 \end{itemize}
 
 \begin{figure}[t]
