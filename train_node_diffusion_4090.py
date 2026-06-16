@@ -219,7 +219,7 @@ def main():
     print(f"开始训练: step {start_step} → {total_steps}", flush=True)
 
     # ── 训练循环 ───────────────────────────────────────────────────────────────
-    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
     model.train()
     running_loss = running_rmse = 0.0
     t0 = time.perf_counter()
