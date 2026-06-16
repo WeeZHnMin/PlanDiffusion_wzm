@@ -173,11 +173,13 @@ def main():
     elif args.resume and os.path.exists(args.resume):
         resume_path = args.resume
         print(f"续训（命令行指定）: {resume_path}", flush=True)
-    elif ckpt_path.exists():
-        resume_path = str(ckpt_path)
-        print(f"续训（本地 latest.pt）: {resume_path}", flush=True)
     else:
-        print("本地无 checkpoint，尝试从 HF 拉取 ...", flush=True)
+        # 每次启动都从 HF 拉取最新权重（删除旧的本地文件，确保拿到最新）
+        if ckpt_path.exists():
+            ckpt_path.unlink()
+            print("已删除旧本地权重，从 HF 拉取最新 ...", flush=True)
+        else:
+            print("本地无 checkpoint，从 HF 拉取 ...", flush=True)
         pulled = pull_from_hf(args.hf_repo, hf_token, save_dir)
         if pulled:
             resume_path = pulled
