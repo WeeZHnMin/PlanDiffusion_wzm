@@ -118,7 +118,7 @@ def parse_args():
     p.add_argument("--save_dir",     default="checkpoints/node_diffusion_cross_att")
     p.add_argument("--resume",       default="",  help="本地 checkpoint 路径（优先于 HF 拉取）")
     p.add_argument("--bert",         default="bert-base-uncased")
-    p.add_argument("--hf_repo",      default="wzmmmm/plandiff-double-cross-6k")
+    p.add_argument("--hf_repo",      default="wzmmmm/plandiff-cross-att")
     p.add_argument("--hf_token",     default="",  help="HF token（也可用 HF_TOKEN 环境变量）")
     p.add_argument("--batch_size",   type=int,   default=768)
     p.add_argument("--total_steps",  type=int,   default=1000000)
