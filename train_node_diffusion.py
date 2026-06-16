@@ -125,7 +125,8 @@ def parse_args():
     p.add_argument("--lr",           type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--log_interval", type=int,   default=100)
-    p.add_argument("--save_interval",type=int,   default=1000)
+    p.add_argument("--save_interval",  type=int,   default=1000)
+    p.add_argument("--upload_interval",type=int,   default=2000,  help="每隔多少步上传一次 HF")
     p.add_argument("--timesteps",    type=int,   default=1000)
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",   type=int,   default=6)
@@ -261,7 +262,8 @@ def main():
             }, ckpt_path)
             log_file.flush()
             print(f"  saved → {ckpt_path}", flush=True)
-            push_to_hf_async(ckpt_path, log_path, step, args.hf_repo, hf_token)
+            if step % args.upload_interval == 0:
+                push_to_hf_async(ckpt_path, log_path, step, args.hf_repo, hf_token)
 
     # ── 训练完成 ───────────────────────────────────────────────────────────────
     torch.save({
