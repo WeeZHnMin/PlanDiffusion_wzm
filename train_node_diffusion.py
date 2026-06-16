@@ -44,42 +44,51 @@ def inf_loader(npz_path, batch_size, num_workers=4):
 
 
 # ── HF 异步上传 ────────────────────────────────────────────────────────────────
+# 同一时刻只允许一个上传线程运行，避免并发写同一文件
+_hf_upload_lock = threading.Lock()
+_hf_active_thread: threading.Thread | None = None
+
+
 def _hf_push_worker(ckpt_path, log_path, step, repo_id, token):
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi(token=token)
+    with _hf_upload_lock:
         try:
-            api.delete_repo(repo_id=repo_id, repo_type="model")
-        except Exception:
-            pass
-        api.create_repo(repo_id, private=True, repo_type="model")
-        api.upload_file(
-            path_or_fileobj=str(ckpt_path),
-            path_in_repo="latest.pt",
-            repo_id=repo_id,
-            commit_message=f"step {step}",
-        )
-        if os.path.exists(log_path):
+            from huggingface_hub import HfApi
+            api = HfApi(token=token)
+            # 确保 repo 存在，exist_ok=True 避免重复创建报错
+            api.create_repo(repo_id, private=True, repo_type="model", exist_ok=True)
+            # 上传 checkpoint（直接覆盖，无需删库）
             api.upload_file(
-                path_or_fileobj=str(log_path),
-                path_in_repo="train_log.jsonl",
+                path_or_fileobj=str(ckpt_path),
+                path_in_repo="latest.pt",
                 repo_id=repo_id,
-                commit_message=f"log step {step}",
+                commit_message=f"step {step}",
             )
-        print(f"  [HF] step={step} → latest.pt + train_log.jsonl 已上传", flush=True)
-    except Exception as e:
-        print(f"  [HF] 上传失败: {e}", flush=True)
+            if os.path.exists(log_path):
+                api.upload_file(
+                    path_or_fileobj=str(log_path),
+                    path_in_repo="train_log.jsonl",
+                    repo_id=repo_id,
+                    commit_message=f"log step {step}",
+                )
+            print(f"  [HF] step={step} → latest.pt + train_log.jsonl 已上传", flush=True)
+        except Exception as e:
+            print(f"  [HF] 上传失败: {e}", flush=True)
 
 
 def push_to_hf_async(ckpt_path, log_path, step, repo_id, token):
     if not repo_id or not token:
         return
-    t = threading.Thread(
+    global _hf_active_thread
+    # 若上一次上传还在跑，跳过本次（不堆积队列）
+    if _hf_active_thread is not None and _hf_active_thread.is_alive():
+        print(f"  [HF] step={step} 上传跳过（上次仍在进行中）", flush=True)
+        return
+    _hf_active_thread = threading.Thread(
         target=_hf_push_worker,
         args=(ckpt_path, log_path, step, repo_id, token),
-        daemon=True,
+        daemon=False,  # 非 daemon，主进程退出时等待上传完成
     )
-    t.start()
+    _hf_active_thread.start()
 
 
 # ── 从 HF 拉取 checkpoint ──────────────────────────────────────────────────────
@@ -263,7 +272,10 @@ def main():
     log_file.close()
     push_to_hf_async(ckpt_path, log_path, total_steps, args.hf_repo, hf_token)
     print("训练完成", flush=True)
-    time.sleep(30)  # 等待最后一次异步上传完成
+    # 等待最后一次上传线程结束（非 daemon，会自然阻塞到完成）
+    if _hf_active_thread is not None and _hf_active_thread.is_alive():
+        print("等待最后一次 HF 上传完成 ...", flush=True)
+        _hf_active_thread.join()
 
 
 if __name__ == "__main__":
