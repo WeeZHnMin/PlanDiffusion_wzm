@@ -117,6 +117,7 @@ def parse_args():
     p.add_argument("--data_path",    default="data/processed/node_diffusion_cross_att/graph_dataset.npz")
     p.add_argument("--save_dir",     default="checkpoints/node_diffusion_cross_att")
     p.add_argument("--resume",       default="",  help="本地 checkpoint 路径（优先于 HF 拉取）")
+    p.add_argument("--fresh",        action="store_true", help="强制从头训练，忽略本地和 HF 的所有权重")
     p.add_argument("--bert",         default="bert-base-uncased")
     p.add_argument("--hf_repo",      default="wzmmmm/plandiff-cross-att")
     p.add_argument("--hf_token",     default="",  help="HF token（也可用 HF_TOKEN 环境变量）")
@@ -158,7 +159,9 @@ def main():
 
     # ── 确定 checkpoint 来源 ───────────────────────────────────────────────────
     resume_path = ""
-    if args.resume and os.path.exists(args.resume):
+    if args.fresh:
+        print("--fresh 模式：从头训练，跳过所有权重加载", flush=True)
+    elif args.resume and os.path.exists(args.resume):
         resume_path = args.resume
         print(f"续训（命令行指定）: {resume_path}", flush=True)
     elif ckpt_path.exists():
