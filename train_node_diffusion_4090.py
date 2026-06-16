@@ -120,7 +120,7 @@ def parse_args():
     p.add_argument("--bert",         default="bert-base-uncased")
     p.add_argument("--hf_repo",      default="wzmmmm/plandiff-double-cross-6k")
     p.add_argument("--hf_token",     default="",  help="HF token（也可用 HF_TOKEN 环境变量）")
-    p.add_argument("--batch_size",   type=int,   default=512)
+    p.add_argument("--batch_size",   type=int,   default=768)
     p.add_argument("--total_steps",  type=int,   default=1000000)
     p.add_argument("--lr",           type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
