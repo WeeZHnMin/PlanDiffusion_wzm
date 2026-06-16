@@ -95,8 +95,10 @@ def push_to_hf_async(ckpt_path, log_path, step, repo_id, token):
 def pull_from_hf(repo_id, token, save_dir):
     if not repo_id or not token:
         return None
+    dest = Path(save_dir) / "latest.pt"
     try:
         from huggingface_hub import hf_hub_download
+        import shutil
         local = hf_hub_download(
             repo_id=repo_id,
             filename="latest.pt",
@@ -104,8 +106,13 @@ def pull_from_hf(repo_id, token, save_dir):
             local_dir=str(save_dir),
             force_download=True,
         )
-        print(f"  [HF] 拉取权重成功: {local}", flush=True)
-        return local
+        # hf_hub_download 有时返回缓存路径而非 save_dir/latest.pt，强制复制过去
+        local = Path(local)
+        if local.resolve() != dest.resolve():
+            shutil.copy2(str(local), str(dest))
+            print(f"  [HF] 已复制到: {dest}", flush=True)
+        print(f"  [HF] 拉取权重成功: {dest}", flush=True)
+        return str(dest)
     except Exception as e:
         print(f"  [HF] 拉取权重失败（将从头训练）: {e}", flush=True)
         return None
@@ -150,6 +157,8 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = save_dir / "latest.pt"
     log_path  = save_dir / "train_log.jsonl"
+    # 启动时清空日志（放在最前，确保后续所有 print 都保留在文件中）
+    open(log_path, "w").close()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}", flush=True)
@@ -219,7 +228,7 @@ def main():
     print(f"开始训练: step {start_step} → {total_steps}", flush=True)
 
     # ── 训练循环 ───────────────────────────────────────────────────────────────
-    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
     model.train()
     running_loss = running_rmse = 0.0
     t0 = time.perf_counter()
