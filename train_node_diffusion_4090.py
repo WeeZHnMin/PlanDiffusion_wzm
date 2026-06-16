@@ -114,7 +114,7 @@ def pull_from_hf(repo_id, token, save_dir):
 # ── 参数解析 ───────────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data_path",    default="data/processed/node_diffusion_cross_att/graph_dataset_6k.npz")
+    p.add_argument("--data_path",    default="data/processed/node_diffusion_cross_att/graph_dataset.npz")
     p.add_argument("--save_dir",     default="checkpoints/node_diffusion_cross_att")
     p.add_argument("--resume",       default="",  help="本地 checkpoint 路径（优先于 HF 拉取）")
     p.add_argument("--bert",         default="bert-base-uncased")
