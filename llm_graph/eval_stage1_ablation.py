@@ -83,7 +83,9 @@ def evaluate_variant(
 ) -> dict:
     stats = defaultdict(list)
 
-    for idx in indices:
+    for i, idx in enumerate(indices):
+        if i % 100 == 0:
+            print(f'    {i}/{len(indices)} ...', flush=True)
         prefix, gt_seq = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
         gen_seq = generate(model, prefix, device,
                            max_new_tokens=200, temperature=temperature,
