@@ -237,13 +237,16 @@ def generate(
 
         elif phase == 'parents':
             if use_c1:
-                # 约束①：只允许 node_0 ~ node_{k-1}
-                for j in range(parent_count + 1):
+                # 约束①：只允许 node_0 ~ node_{k-1}，上限 N 防越界
+                for j in range(min(parent_count + 1, N)):
                     mask[NODE_START + j] = False
             else:
                 # 无约束①：允许所有节点 token（仍排除 SEP/EOS）
                 for j in range(N):
                     mask[NODE_START + j] = False
+            # 无约束②时允许模型自行发 SEP 或继续生成 parent
+            if not use_c2:
+                mask[SEP_ID] = False
 
         elif phase == 'edges':
             for j in range(N):
@@ -275,6 +278,10 @@ def generate(
             generated.append(next_id)
             if use_c2 and parent_count == N - 1:
                 # 约束②：强制 SEP
+                generated.append(SEP_ID)
+                phase = 'edges'
+            elif parent_count >= N:
+                # 超出 N-1 个 parent，强制进入 edges 阶段防止越界
                 generated.append(SEP_ID)
                 phase = 'edges'
             elif next_id == SEP_ID:
