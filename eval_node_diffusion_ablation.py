@@ -34,6 +34,7 @@ def parse_args():
     p.add_argument("--out_dir",   default="ablation_out")
     p.add_argument("--bert",      default="bert-base-uncased")
     p.add_argument("--n_eval",    type=int, default=1000)
+    p.add_argument("--batch_size",type=int, default=32)
     p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps", type=int, default=1000)
@@ -255,18 +256,20 @@ class GaussianDiffusion:
 
 
 @torch.no_grad()
-def ddpm_sample(model, diff, cond, device):
+def ddpm_sample_batch(model, diff, cond_batch, device):
+    """批量 DDPM 采样，cond_batch 中每个 tensor 已在 device 上，shape [B, ...]"""
     diff._to(device)
-    x = torch.randn(1, 2, 40, device=device)
+    B = cond_batch["adj_matrix"].shape[0]
+    x = torch.randn(B, 2, 40, device=device)
     for t in reversed(range(diff.T)):
-        tb  = torch.tensor([t], device=device, dtype=torch.long)
-        eps = model(x, tb, **cond).float()
+        tb  = torch.full((B,), t, device=device, dtype=torch.long)
+        eps = model(x, tb, **cond_batch).float()
         ab  = diff.alphas_bar[t]; ap = diff.alphas_bar_prev[t]
         a   = diff.alphas[t];     b  = diff.betas[t]
         x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
         mu  = (ap.sqrt() * b / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
         x   = mu + diff.post_var[t].sqrt() * torch.randn_like(x) if t > 0 else mu
-    return x[0].permute(1, 0).cpu().numpy()
+    return x.permute(0, 2, 1).cpu().numpy()  # [B, 40, 2]
 
 
 # ── 主流程 ─────────────────────────────────────────────────────────────────────
@@ -348,31 +351,47 @@ def main():
     pred_cache = {n: [] for n in models}
     gt_cache, mask_cache, adj_cache, type_cache = [], [], [], []
 
-    for i, idx in enumerate(idxs):
-        gt   = data["node_coords"][idx].astype("float32")
-        adj  = data["adj_matrix"][idx].astype("float32")
-        mask = data["node_mask"][idx].astype("float32")
-        typ  = data["node_combo_ids"][idx].astype("int64")
-        ptok = data["prompt_tokens"][idx].astype("int64")
-        pmsk = data["prompt_mask"][idx].astype("float32")
-        cond = {
-            "adj_matrix":    torch.from_numpy(adj[None]).to(device),
-            "node_mask":     torch.from_numpy(mask[None]).to(device),
-            "prompt_tokens": torch.from_numpy(ptok[None]).to(device),
-            "prompt_mask":   torch.from_numpy(pmsk[None]).to(device),
-        }
-        valid = mask > 0.5
-        gt_cache.append(gt); adj_cache.append(adj)
-        mask_cache.append(valid); type_cache.append(typ)
-        for name, model in models.items():
-            pred = ddpm_sample(model, diffusion, cond, device)
-            rmse = float(np.sqrt(np.mean((pred[valid] - gt[valid]) ** 2)))
-            rmse_list[name].append(rmse)
-            pred_cache[name].append(pred)
+    # 预先加载所有样本到 CPU
+    gt_all   = data["node_coords"][idxs].astype("float32")
+    adj_all  = data["adj_matrix"][idxs].astype("float32")
+    mask_all = data["node_mask"][idxs].astype("float32")
+    typ_all  = data["node_combo_ids"][idxs].astype("int64")
+    ptok_all = data["prompt_tokens"][idxs].astype("int64")
+    pmsk_all = data["prompt_mask"][idxs].astype("float32")
 
-        if (i + 1) % 50 == 0:
-            row = " | ".join(f"{n}: {np.mean(rmse_list[n]):.2f}" for n in models)
-            print(f"  [{i+1}/{len(idxs)}] {row}", flush=True)
+    for i in range(len(idxs)):
+        gt_cache.append(gt_all[i])
+        adj_cache.append(adj_all[i])
+        mask_cache.append(mask_all[i] > 0.5)
+        type_cache.append(typ_all[i])
+
+    BS = args.batch_size
+    n_batches = (len(idxs) + BS - 1) // BS
+
+    for name, model in models.items():
+        print(f"\n评估 {name} ...", flush=True)
+        all_preds = []
+        for bi in range(n_batches):
+            s, e = bi * BS, min((bi + 1) * BS, len(idxs))
+            cond_batch = {
+                "adj_matrix":    torch.from_numpy(adj_all[s:e]).to(device),
+                "node_mask":     torch.from_numpy(mask_all[s:e]).to(device),
+                "prompt_tokens": torch.from_numpy(ptok_all[s:e]).to(device),
+                "prompt_mask":   torch.from_numpy(pmsk_all[s:e]).to(device),
+            }
+            preds = ddpm_sample_batch(model, diffusion, cond_batch, device)  # [B, 40, 2]
+            all_preds.append(preds)
+            if (bi + 1) % 5 == 0 or bi == n_batches - 1:
+                done = min(e, len(idxs))
+                print(f"  [{done}/{len(idxs)}]", flush=True)
+
+        all_preds = np.concatenate(all_preds, axis=0)  # [N, 40, 2]
+        pred_cache[name] = list(all_preds)
+        for i in range(len(idxs)):
+            valid = mask_all[i] > 0.5
+            rmse  = float(np.sqrt(np.mean((all_preds[i][valid] - gt_all[i][valid]) ** 2)))
+            rmse_list[name].append(rmse)
+        print(f"  mean RMSE = {np.mean(rmse_list[name]):.4f}", flush=True)
 
     # ── 输出结果 ──────────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
