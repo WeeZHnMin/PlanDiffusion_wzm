@@ -24,7 +24,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt",      required=True, help="checkpoint 路径")
     p.add_argument("--data_path", default="data/processed/node_diffusion_cross_att/type_dataset_test_10k.npz")
-    p.add_argument("--bert",      default="bert-base-uncased")
+    p.add_argument("--bert",      default="models/bert-base-uncased")
     p.add_argument("--n_eval",    type=int, default=0, help="评估条数，0=全部")
     p.add_argument("--batch_size",type=int, default=64)
     p.add_argument("--seed",      type=int, default=42)
