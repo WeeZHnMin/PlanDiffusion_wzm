@@ -152,6 +152,7 @@ def main():
     hf_token = args.hf_token or os.environ.get("HF_TOKEN", "")
     if hf_token:
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
