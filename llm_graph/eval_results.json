@@ -1,0 +1,11 @@
+{
+  "n_samples": 9999,
+  "n_valid_gen": 9999,
+  "n_invalid_gen": 0,
+  "avg_ged": 35.5045,
+  "node_count_kl": 0.005,
+  "degree_kl": 0.0101,
+  "n_match_rate": 0.2264,
+  "gen_n_mean": 22.39,
+  "gen_n_std": 5.51
+}
