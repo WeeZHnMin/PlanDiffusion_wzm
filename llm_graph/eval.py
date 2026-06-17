@@ -123,7 +123,7 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/best.pt')
-    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree.npz')
+    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
     p.add_argument('--n-samples',   type=int,   default=1000,
                    help='评估样本数（从数据集随机采样）')
     p.add_argument('--temperature', type=float, default=1.0)

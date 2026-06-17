@@ -114,7 +114,7 @@ def evaluate_variant(
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/20260603_045254/best.pt')
-    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree.npz')
+    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
     p.add_argument('--n-samples',   type=int, default=1000,
                    help='每个变体评估的样本数（默认1000）')
     p.add_argument('--temperature', type=float, default=1.0)
