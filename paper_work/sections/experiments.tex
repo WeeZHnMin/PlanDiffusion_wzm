@@ -55,13 +55,16 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 
 \paragraph{实现细节}
 三个子模块均在单张 NVIDIA GPU 上独立训练。
-图拓扑生成（LlamaForCausalLM，约 20M 参数）训练共 150 epoch（预训练 50 + 微调 100），
-batch size 64，学习率余弦退火 $10^{-4} \to 10^{-5}$。
-节点坐标扩散（NodeDiffusionTransformer，约 15M 参数）训练 200k steps，batch size 64。
-节点类型预测（NodeTypeClassifier，约 15M 参数）训练 500k steps，batch size 64。
+图拓扑生成（LlamaForCausalLM，约 20M 参数）在 RTX 3060（6 GB，笔记本）上训练，
+batch size 22，学习率余弦退火 $10^{-4} \to 10^{-5}$，
+共约 345 万步（含中途停止后续训），累计训练时长约 211 小时。
+节点坐标扩散（NodeDiffusionTransformer，约 15M 参数）在 RTX 3080（10 GB）上训练，
+batch size 384，训练 250k steps。
+节点类型预测（NodeTypeClassifier，约 15M 参数）在 RTX 3060（6 GB，笔记本）上训练，
+batch size 64，共训练 320k steps，累计训练时长约 45 小时。
 推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
 坐标扩散（DDPM 1000步逆采样）$\to$ 类型分类（单次前向）$\to$ render.py 渲染输出。
-\todo{补充：具体训练硬件型号、各阶段训练时长、端到端推理耗时。}
+\todo{补充：端到端推理耗时。}
 
 \subsection{主实验结果}
 \label{subsec:main_results}
