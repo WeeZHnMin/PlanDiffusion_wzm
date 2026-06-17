@@ -107,11 +107,15 @@ Combo 类型总数     & \multicolumn{3}{c}{32} \\
 \label{subsec:vocab}
 
 为使文本 token 与图结构 token 共存于同一序列空间，
-我们采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
+图拓扑生成阶段（$\theta_1$）采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
 并在其后追加 84 个图结构专用 token，构成大小为 10,084 的统一词表，
 具体如表~\ref{tab:vocab} 所示。
-图结构专用 token 仅用于图拓扑生成阶段；
-坐标扩散与类型预测阶段的文本嵌入层仅使用前 10,000 个 WordPiece token。
+图结构专用 token 仅用于图拓扑生成阶段。
+
+坐标扩散（$\theta_2$）与节点类型预测（$\theta_3$）阶段的文本条件化方式不同：
+两者均以完整的预训练 BERT-base-uncased 编码器对输入文本进行编码，
+所得上下文表示通过交叉注意力机制注入节点特征，
+而非直接使用词表嵌入。
 
 \begin{table}[h]
 \centering
@@ -198,7 +202,7 @@ ID 范围 & Token & 说明 \\
 
 采用 AdamW~\cite{loshchilov2019adamw}（$\beta_1{=}0.9$，$\beta_2{=}0.95$，
 lr $= 10^{-4}$，余弦退火至 $10^{-5}$），
-grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}，训练 150 epoch。
+grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 
 % -----------------------------------------------------------------------------
 \subsection{节点坐标扩散}
