@@ -4,8 +4,8 @@ Stage2：文本条件图序列微调。
 Loss：只计算 BOS_G 之后的图序列部分。
 
 用法：
-  python -m llm_graph.train_stage2
-  python -m llm_graph.train_stage2 \
+  python -m llm_graph.train
+  python -m llm_graph.train \
       --stage1-ckpt checkpoints/llm_graph/stage1/best.pt \
       --resume      checkpoints/llm_graph/stage2/best.pt
 """

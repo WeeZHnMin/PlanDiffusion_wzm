@@ -7,7 +7,7 @@ Stage1 推理约束消融评估脚本。
   - 最小度≥2率 (Min-deg≥2)：所有节点度 >= 2 的样本占比
 
 用法：
-  python -m llm_graph.eval_stage1_ablation \
+  python -m llm_graph.eval_ablation \
       --ckpt checkpoints/llm_graph/stage2/20260603_045254/best.pt \
       --n-samples 1000
 """
