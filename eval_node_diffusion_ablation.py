@@ -32,7 +32,7 @@ def parse_args():
     p.add_argument("--ckpt_dir",  default="checkpoints/ablation_eval")
     p.add_argument("--out",       default="ablation_attn_results.json")
     p.add_argument("--bert",      default="bert-base-uncased")
-    p.add_argument("--n_eval",    type=int, default=500)
+    p.add_argument("--n_eval",    type=int, default=1000)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps", type=int, default=1000)
     p.add_argument("--model_channels", type=int, default=384)
