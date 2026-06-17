@@ -114,17 +114,16 @@ batch size 64，学习率余弦退火 $10^{-4} \to 10^{-5}$。
 \toprule
 约束配置 & C1 & C2 & C3 & C4 & C5 & GVR↑ \\
 \midrule
-无约束                        & $\times$ & $\times$ & $\times$ & $\times$ & $\times$ & \todo{} \\
-+C1（因果树 $p_k < k$）       & $\checkmark$ & $\times$ & $\times$ & $\times$ & $\times$ & \todo{} \\
-+C2（SEP 时机控制）           & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & $\times$ & \todo{} \\
-+C3（禁三节点环）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & \todo{} \\
-+C4（最小度 $\geq 2$）        & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & \todo{} \\
-+C5（$N \geq 9$）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & \todo{} \\
+无约束                        & $\times$ & $\times$ & $\times$ & $\times$ & $\times$ & 99.6\% \\
++C1（因果树 $p_k < k$）       & $\checkmark$ & $\times$ & $\times$ & $\times$ & $\times$ & 99.9\% \\
++C2（SEP 时机控制）           & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & $\times$ & 100.0\% \\
++C3（禁三节点环）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & 100.0\% \\
++C4（最小度 $\geq 2$）        & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & 100.0\% \\
++C5（$N \geq 9$）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & 100.0\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\todo{填入约束消融数值后删除本行。}
 
 \subsubsection{注意力结构消融（节点坐标扩散）}
 
