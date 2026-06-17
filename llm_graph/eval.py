@@ -124,8 +124,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/best.pt')
     p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
-    p.add_argument('--n-samples',   type=int,   default=1000,
-                   help='评估样本数（从数据集随机采样）')
+    p.add_argument('--n-samples',   type=int,   default=0,
+                   help='评估样本数（0=全部）')
     p.add_argument('--temperature', type=float, default=1.0)
     p.add_argument('--seed',        type=int,   default=42)
     p.add_argument('--out',         default='llm_graph/eval_results.json')
@@ -142,8 +142,12 @@ def main():
     model = load_model(args.ckpt, device)
     all_tokens, all_lengths, all_textlens = load_dataset(args.data)
 
-    rng     = np.random.default_rng(args.seed)
-    indices = rng.choice(len(all_tokens), size=args.n_samples, replace=False)
+    n = len(all_tokens)
+    if args.n_samples > 0 and args.n_samples < n:
+        rng     = np.random.default_rng(args.seed)
+        indices = rng.choice(n, size=args.n_samples, replace=False)
+    else:
+        indices = np.arange(n)
 
     results = evaluate(model, all_tokens, all_lengths, all_textlens,
                        indices, device, temperature=args.temperature)
