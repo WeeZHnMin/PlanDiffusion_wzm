@@ -31,8 +31,10 @@ def parse_args():
     p.add_argument("--data_path", default="data/processed/node_diffusion_cross_att/graph_dataset_6k.npz")
     p.add_argument("--ckpt_dir",  default="checkpoints/ablation_eval")
     p.add_argument("--out",       default="ablation_attn_results.json")
+    p.add_argument("--out_dir",   default="ablation_out")
     p.add_argument("--bert",      default="bert-base-uncased")
     p.add_argument("--n_eval",    type=int, default=1000)
+    p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps", type=int, default=1000)
     p.add_argument("--model_channels", type=int, default=384)
@@ -342,12 +344,15 @@ def main():
     idxs  = sorted(rng.choice(total, size=min(args.n_eval, total), replace=False).tolist())
     print(f"\n数据集: {total}  评估: {len(idxs)} 条")
 
-    rmse_list = {n: [] for n in models}
+    rmse_list  = {n: [] for n in models}
+    pred_cache = {n: [] for n in models}
+    gt_cache, mask_cache, adj_cache, type_cache = [], [], [], []
 
     for i, idx in enumerate(idxs):
         gt   = data["node_coords"][idx].astype("float32")
         adj  = data["adj_matrix"][idx].astype("float32")
         mask = data["node_mask"][idx].astype("float32")
+        typ  = data["node_combo_ids"][idx].astype("int64")
         ptok = data["prompt_tokens"][idx].astype("int64")
         pmsk = data["prompt_mask"][idx].astype("float32")
         cond = {
@@ -357,10 +362,13 @@ def main():
             "prompt_mask":   torch.from_numpy(pmsk[None]).to(device),
         }
         valid = mask > 0.5
+        gt_cache.append(gt); adj_cache.append(adj)
+        mask_cache.append(valid); type_cache.append(typ)
         for name, model in models.items():
             pred = ddpm_sample(model, diffusion, cond, device)
             rmse = float(np.sqrt(np.mean((pred[valid] - gt[valid]) ** 2)))
             rmse_list[name].append(rmse)
+            pred_cache[name].append(pred)
 
         if (i + 1) % 50 == 0:
             row = " | ".join(f"{n}: {np.mean(rmse_list[n]):.2f}" for n in models)
@@ -386,6 +394,118 @@ def main():
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n结果保存至 {args.out}")
+
+    # ── 可视化 ────────────────────────────────────────────────────────────────
+    os.makedirs(args.out_dir, exist_ok=True)
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        NODE_PALETTE = [
+            "#4E8CC2","#7BB9E0","#B0D4F0","#1A5F8A",
+            "#4DA863","#82C78A","#B5E0B8","#1A6B2A",
+            "#D4A520","#E8C060","#F5DC99","#9A7010",
+            "#9B5DB5","#C090D8","#E0C0F0","#6A2E8A",
+            "#D04040","#E88080","#F5B5B5","#8A1A1A",
+            "#808080","#A8A8A8","#C8C8C8","#585858",
+            "#D07830","#E8A870","#F5CCA8","#8A4A10",
+            "#30A0A0","#70C8C8","#A8E0E0","#107070",
+        ]
+
+        def node_color(tid):
+            idx = (int(tid) - 1) % len(NODE_PALETTE) if 1 <= int(tid) <= 32 else -1
+            return NODE_PALETTE[idx] if idx >= 0 else "#CCCCCC"
+
+        def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
+            for ii in range(n):
+                for jj in range(ii + 1, n):
+                    if adj[ii, jj] > 0.5:
+                        ax.plot([xy[ii,0], xy[jj,0]], [xy[ii,1], xy[jj,1]],
+                                color="#BBBBBB", lw=0.7, zorder=1, solid_capstyle="round")
+            for k in range(n):
+                ax.scatter(xy[k,0], xy[k,1], color=node_color(types[k]),
+                           s=28, zorder=3, edgecolors="#444444", linewidths=0.4)
+            ax.set_xlim(*xlim); ax.set_ylim(*ylim)
+            ax.set_aspect("equal"); ax.invert_yaxis()
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_linewidth(0.5); sp.set_color("#AAAAAA")
+            if rmse is not None:
+                ax.text(0.5, -0.06, f"RMSE = {rmse:.1f} px",
+                        transform=ax.transAxes, ha="center", va="top",
+                        fontsize=6, color="#333333")
+
+        plt.rcParams.update({
+            "font.family": "DejaVu Serif", "font.size": 7,
+            "axes.titlesize": 7, "axes.titleweight": "bold",
+            "axes.linewidth": 0.6, "figure.dpi": 300,
+            "savefig.dpi": 300, "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.03,
+        })
+
+        n_viz = min(args.n_viz, len(idxs))
+        rng_viz  = np.random.default_rng(args.seed + 99)
+        viz_idxs = sorted(rng_viz.choice(len(idxs), size=n_viz, replace=False).tolist())
+
+        var_keys = list(models.keys())
+        ROW_LABELS = {"gt": "Ground Truth", **{k: DISPLAY_NAME[k] for k in var_keys}}
+        row_keys = ["gt"] + var_keys
+
+        cell_w, cell_h = 2.4, 2.4
+        label_w = 1.0
+        fig_w = label_w + cell_w * n_viz
+        fig_h = cell_h * len(row_keys)
+        margin = 0.012
+
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        col_starts = [(label_w + cell_w * c) / fig_w for c in range(n_viz)]
+        col_width  = cell_w / fig_w
+        row_starts = [1.0 - cell_h * (r + 1) / fig_h for r in range(len(row_keys))]
+        row_height = cell_h / fig_h
+
+        axes = {}
+        for ri in range(len(row_keys)):
+            for ci in range(n_viz):
+                ax = fig.add_axes([
+                    col_starts[ci] + margin, row_starts[ri] + margin,
+                    col_width - 2*margin, row_height - 2*margin,
+                ])
+                axes[(ri, ci)] = ax
+
+        for ci, si in enumerate(viz_idxs):
+            n_node = int(mask_cache[si].sum())
+            gt_xy  = gt_cache[si]
+            adj_np = adj_cache[si]
+            types  = type_cache[si]
+            pts    = gt_xy[:n_node]
+            pad    = max(12.0, 0.08 * float(np.ptp(pts, axis=0).max()))
+            xlim   = (pts[:,0].min() - pad, pts[:,0].max() + pad)
+            ylim   = (pts[:,1].min() - pad, pts[:,1].max() + pad)
+            axes[(0, ci)].set_title(f"Sample {ci+1}", pad=3, fontsize=7,
+                                    fontweight="bold", color="#222222")
+            for ri, rk in enumerate(row_keys):
+                ax = axes[(ri, ci)]
+                if rk == "gt":
+                    draw_cell(ax, gt_xy, types, adj_np, n_node, xlim, ylim)
+                else:
+                    draw_cell(ax, pred_cache[rk][si], types, adj_np, n_node,
+                              xlim, ylim, rmse=rmse_list[rk][si])
+
+        for ri, rk in enumerate(row_keys):
+            fig.text((label_w * 0.5) / fig_w, row_starts[ri] + row_height * 0.5,
+                     ROW_LABELS.get(rk, rk), ha="center", va="center",
+                     fontsize=7, fontweight="bold", color="#111111", rotation=90)
+
+        out_pdf = os.path.join(args.out_dir, "ablation_viz.pdf")
+        out_png = os.path.join(args.out_dir, "ablation_viz.png")
+        fig.savefig(out_pdf)
+        fig.savefig(out_png, dpi=300)
+        plt.close(fig)
+        print(f"可视化保存至 {out_pdf}")
+        print(f"可视化保存至 {out_png}")
+    except Exception as e:
+        print(f"[WARN] 可视化失败: {e}")
 
 
 if __name__ == "__main__":
