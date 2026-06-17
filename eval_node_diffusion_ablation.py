@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--out_dir",   default="ablation_out")
     p.add_argument("--bert",      default="bert-base-uncased")
     p.add_argument("--n_eval",    type=int, default=1000)
-    p.add_argument("--batch_size",type=int, default=32)
+    p.add_argument("--batch_size",type=int, default=256)
     p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps", type=int, default=1000)
