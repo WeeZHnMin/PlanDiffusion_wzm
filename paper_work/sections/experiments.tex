@@ -152,9 +152,9 @@ batch size 64，共训练 320k steps，累计训练时长约 45 小时。
 \toprule
 注意力变体 & 描述 & Coord-RMSE↓ \\
 \midrule
-仅邻接局部注意力（AdjAttn only）  & 每节点仅关注直连邻居           & \todo{} \\
-仅全局注意力（GlobalAttn only）   & 节点间无掩码全局自注意力       & \todo{} \\
-双流（AdjAttn + GlobalAttn）      & 局部 + 全局并行，本文完整模型  & \todo{} \\
+仅邻接局部注意力（AdjAttn only）  & 每节点仅关注直连邻居           & 68.46 \\
+仅全局注意力（GlobalAttn only）   & 节点间无掩码全局自注意力       & 67.84 \\
+双流（AdjAttn + GlobalAttn）      & 局部 + 全局并行，本文完整模型  & \textbf{65.68} \\
 \bottomrule
 \end{tabular}
 \end{table}
