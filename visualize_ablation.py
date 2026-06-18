@@ -120,7 +120,7 @@ class EncoderLayer_Dual(nn.Module):
 
 
 LAYER_MAP = {"adj_only": EncoderLayer_Adj, "global_only": EncoderLayer_Global, "dual_stream": EncoderLayer_Dual}
-DISPLAY_NAME = {"adj_only": "AdjAttn only", "global_only": "GlobalAttn only", "dual_stream": "Dual-stream"}
+DISPLAY_NAME = {"adj_only": "AdjAttn Only", "global_only": "GlobalAttn Only", "dual_stream": "Dual-stream (Ours)"}
 
 
 class NodeDiffusionTransformer(nn.Module):
@@ -216,7 +216,7 @@ def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
                         color="#BBBBBB", lw=0.7, zorder=1, solid_capstyle="round")
     for k in range(n):
         ax.scatter(xy[k,0], xy[k,1], color=node_color(types[k]),
-                   s=50, zorder=3, edgecolors="#444444", linewidths=0.5)
+                   s=80, zorder=3, edgecolors="#444444", linewidths=0.6)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_aspect("equal"); ax.invert_yaxis()
     ax.set_xticks([]); ax.set_yticks([])
@@ -338,61 +338,61 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     plt.rcParams.update({
-        "font.family": "DejaVu Serif", "font.size": 12,
-        "axes.titlesize": 12, "axes.titleweight": "bold",
-        "axes.linewidth": 0.6, "figure.dpi": 300,
-        "savefig.dpi": 300, "savefig.bbox": "tight", "savefig.pad_inches": 0.03,
+        "font.family": "DejaVu Serif", "font.size": 16,
+        "axes.titlesize": 16, "axes.titleweight": "bold",
+        "axes.linewidth": 0.8, "figure.dpi": 300,
+        "savefig.dpi": 300, "savefig.bbox": "tight", "savefig.pad_inches": 0.05,
     })
 
+    # 转置布局：列=变体(GT+3), 行=样本
     var_keys  = list(models.keys())
-    row_keys  = ["gt"] + var_keys
-    ROW_LABELS = {"gt": "Ground Truth", **{k: DISPLAY_NAME[k] for k in var_keys}}
+    col_keys  = ["gt"] + var_keys
+    COL_LABELS = {"gt": "Ground Truth", **{k: DISPLAY_NAME[k] for k in var_keys}}
 
-    n_viz    = args.n_viz
+    n_viz   = args.n_viz          # 行数 = 样本数
+    n_cols  = len(col_keys)       # 列数 = 变体数(4)
     cell_w, cell_h = 4.0, 4.0
-    label_w  = 1.2
-    fig_w    = label_w + cell_w * n_viz
-    fig_h    = cell_h * len(row_keys)
-    margin   = 0.012
+    label_h = 0.7                 # 列标题行高
+    fig_w   = cell_w * n_cols
+    fig_h   = label_h + cell_h * n_viz
+    margin  = 0.01
 
     fig = plt.figure(figsize=(fig_w, fig_h))
-    col_starts = [(label_w + cell_w * c) / fig_w for c in range(n_viz)]
+    col_starts = [cell_w * c / fig_w for c in range(n_cols)]
     col_width  = cell_w / fig_w
-    row_starts = [1.0 - cell_h * (r + 1) / fig_h for r in range(len(row_keys))]
+    # 内容行从顶部 label_h 以下开始
+    row_starts = [1.0 - (label_h + cell_h * (r + 1)) / fig_h for r in range(n_viz)]
     row_height = cell_h / fig_h
 
     axes = {}
-    for ri in range(len(row_keys)):
-        for ci in range(n_viz):
+    for ri in range(n_viz):
+        for ci in range(n_cols):
             ax = fig.add_axes([col_starts[ci] + margin, row_starts[ri] + margin,
                                col_width - 2*margin, row_height - 2*margin])
             axes[(ri, ci)] = ax
 
-    for ci in range(n_viz):
-        n_node = int(mask_list[ci].sum())
-        gt_xy  = gt_list[ci]
-        adj_np = adj_list[ci]
-        types  = type_list[ci]
-        # 把 GT 和所有变体的预测坐标都纳入范围，避免节点被截断
-        all_pts = [gt_xy[:n_node]] + [pred_cache[rk][ci][:n_node] for rk in var_keys]
+    # 列标题（变体名）写在顶部
+    for ci, ck in enumerate(col_keys):
+        fig.text(col_starts[ci] + col_width * 0.5, 1.0 - label_h * 0.5 / fig_h,
+                 COL_LABELS[ck], ha="center", va="center",
+                 fontsize=16, fontweight="bold", color="#111111")
+
+    for ri in range(n_viz):
+        n_node = int(mask_list[ri].sum())
+        gt_xy  = gt_list[ri]
+        adj_np = adj_list[ri]
+        types  = type_list[ri]
+        all_pts = [gt_xy[:n_node]] + [pred_dict[rk][ri][:n_node] for rk in var_keys]
         all_pts = np.concatenate(all_pts, axis=0)
-        pad    = max(12.0, 0.08 * float(np.ptp(all_pts, axis=0).max()))
-        xlim   = (all_pts[:,0].min() - pad, all_pts[:,0].max() + pad)
-        ylim   = (all_pts[:,1].min() - pad, all_pts[:,1].max() + pad)
-        axes[(0, ci)].set_title(f"Sample {ci+1}", pad=6, fontsize=12,
-                                fontweight="bold", color="#222222")
-        for ri, rk in enumerate(row_keys):
+        pad   = max(12.0, 0.08 * float(np.ptp(all_pts, axis=0).max()))
+        xlim  = (all_pts[:,0].min() - pad, all_pts[:,0].max() + pad)
+        ylim  = (all_pts[:,1].min() - pad, all_pts[:,1].max() + pad)
+        for ci, ck in enumerate(col_keys):
             ax = axes[(ri, ci)]
-            if rk == "gt":
+            if ck == "gt":
                 draw_cell(ax, gt_xy, types, adj_np, n_node, xlim, ylim)
             else:
-                draw_cell(ax, pred_dict[rk][ci], types, adj_np, n_node,
-                          xlim, ylim, rmse=rmse_dict[rk][ci])
-
-    for ri, rk in enumerate(row_keys):
-        fig.text((label_w * 0.5) / fig_w, row_starts[ri] + row_height * 0.5,
-                 ROW_LABELS.get(rk, rk), ha="center", va="center",
-                 fontsize=12, fontweight="bold", color="#111111", rotation=90)
+                draw_cell(ax, pred_dict[ck][ri], types, adj_np, n_node, xlim, ylim)
 
     for ext in ("pdf", "png"):
         out_path = os.path.join(args.out_dir, f"ablation_viz.{ext}")
