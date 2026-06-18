@@ -222,9 +222,6 @@ def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
     ax.set_xticks([]); ax.set_yticks([])
     for sp in ax.spines.values():
         sp.set_linewidth(0.5); sp.set_color("#AAAAAA")
-    if rmse is not None:
-        ax.text(0.5, -0.06, f"RMSE={rmse:.1f}", transform=ax.transAxes,
-                ha="center", va="top", fontsize=11, color="#333333")
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
