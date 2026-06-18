@@ -232,6 +232,7 @@ def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt_dir",   default="checkpoints/ablation_eval")
+    p.add_argument("--hf_token",   default="", help="HF token，权重不存在时自动拉取")
     p.add_argument("--data_path",  default="data/processed/node_diffusion_cross_att/graph_dataset_6k.npz")
     p.add_argument("--bert",       default="bert-base-uncased")
     p.add_argument("--out_dir",    default="ablation_out")
@@ -252,13 +253,32 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN", "")
+    HF_REPOS = {
+        "adj_only":    "wzmmmm/plandiff-adj-cross-6k",
+        "global_only": "wzmmmm/plandiff-global-cross-6k",
+        "dual_stream": "wzmmmm/plandiff-double-cross-6k",
+    }
+
     # ── 加载模型 ──────────────────────────────────────────────────────────────
     models = {}
     for name, layer_cls in LAYER_MAP.items():
         ckpt_path = os.path.join(args.ckpt_dir, name, "latest.pt")
         if not os.path.exists(ckpt_path):
-            print(f"[skip] {name}: {ckpt_path} 不存在")
-            continue
+            if not hf_token:
+                print(f"[skip] {name}: 本地不存在且未提供 --hf_token")
+                continue
+            print(f"本地无权重，从 HF 拉取 {name} ...", flush=True)
+            from huggingface_hub import hf_hub_download
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+            try:
+                ckpt_path = hf_hub_download(
+                    repo_id=HF_REPOS[name], filename="latest.pt", token=hf_token,
+                    local_dir=os.path.join(args.ckpt_dir, name), force_download=False,
+                )
+            except Exception as e:
+                print(f"  [skip] 拉取失败: {e}")
+                continue
         print(f"加载 {name} ...", flush=True)
         m = NodeDiffusionTransformer(layer_cls=layer_cls, model_channels=args.model_channels,
                                      num_layers=args.num_layers, num_heads=args.num_heads,
