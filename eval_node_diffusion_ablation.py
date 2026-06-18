@@ -348,6 +348,7 @@ def main():
     print(f"\n数据集: {total}  评估: {len(idxs)} 条")
 
     rmse_list  = {n: [] for n in models}
+    nrmse_list = {n: [] for n in models}   # neighbor relative RMSE
     pred_cache = {n: [] for n in models}
     gt_cache, mask_cache, adj_cache, type_cache = [], [], [], []
 
@@ -391,24 +392,41 @@ def main():
             valid = mask_all[i] > 0.5
             rmse  = float(np.sqrt(np.mean((all_preds[i][valid] - gt_all[i][valid]) ** 2)))
             rmse_list[name].append(rmse)
-        print(f"  mean RMSE = {np.mean(rmse_list[name]):.4f}", flush=True)
+            # ── Neighbor-RMSE：遍历所有1跳邻居对 (i,j)，计算相对坐标误差 ──
+            adj_i = adj_all[i]   # [40, 40]
+            errs  = []
+            for u in range(40):
+                if not valid[u]:
+                    continue
+                for v in range(40):
+                    if not valid[v] or adj_i[u, v] < 0.5:
+                        continue
+                    gt_rel   = gt_all[i][v]   - gt_all[i][u]
+                    pred_rel = all_preds[i][v] - all_preds[i][u]
+                    errs.append(np.sum((pred_rel - gt_rel) ** 2))
+            nrmse_list[name].append(float(np.sqrt(np.mean(errs))) if errs else 0.0)
+        print(f"  mean RMSE = {np.mean(rmse_list[name]):.4f}  "
+              f"Neighbor-RMSE = {np.mean(nrmse_list[name]):.4f}", flush=True)
 
     # ── 输出结果 ──────────────────────────────────────────────────────────────
-    print(f"\n{'─'*60}")
-    print(f"{'变体':<35} {'Mean':>7} {'Std':>7} {'Median':>8}")
-    print(f"{'─'*60}")
+    print(f"\n{'─'*75}")
+    print(f"{'变体':<35} {'RMSE':>8} {'Neighbor-RMSE':>15}")
+    print(f"{'─'*75}")
     results = {}
     for name in models:
-        r = np.array(rmse_list[name])
+        r  = np.array(rmse_list[name])
+        nr = np.array(nrmse_list[name])
         results[name] = {
             "display": DISPLAY_NAME[name],
-            "mean_rmse": round(float(r.mean()), 4),
-            "std_rmse":  round(float(r.std()),  4),
-            "median_rmse": round(float(np.median(r)), 4),
+            "mean_rmse":         round(float(r.mean()),  4),
+            "std_rmse":          round(float(r.std()),   4),
+            "median_rmse":       round(float(np.median(r)), 4),
+            "mean_neighbor_rmse": round(float(nr.mean()), 4),
+            "std_neighbor_rmse":  round(float(nr.std()),  4),
             "n": len(r),
         }
-        print(f"  {DISPLAY_NAME[name]:<33} {r.mean():>7.2f} {r.std():>7.2f} {np.median(r):>8.2f}")
-    print(f"{'─'*60}")
+        print(f"  {DISPLAY_NAME[name]:<33} {r.mean():>8.2f} {nr.mean():>15.2f}")
+    print(f"{'─'*75}")
 
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)

@@ -351,16 +351,16 @@ def main():
 
     n_viz   = args.n_viz          # 行数 = 样本数
     n_cols  = len(col_keys)       # 列数 = 变体数(4)
-    cell_w, cell_h = 4.0, 4.0
-    label_h = 0.7                 # 列标题行高
-    fig_w   = cell_w * n_cols
+    cell_w, cell_h = 3.0, 3.0
+    label_h = 0.5                 # 列标题行高
+    label_w = 0.9                 # 行标题列宽
+    fig_w   = label_w + cell_w * n_cols
     fig_h   = label_h + cell_h * n_viz
-    margin  = 0.01
+    margin  = 0.005
 
     fig = plt.figure(figsize=(fig_w, fig_h))
-    col_starts = [cell_w * c / fig_w for c in range(n_cols)]
+    col_starts = [(label_w + cell_w * c) / fig_w for c in range(n_cols)]
     col_width  = cell_w / fig_w
-    # 内容行从顶部 label_h 以下开始
     row_starts = [1.0 - (label_h + cell_h * (r + 1)) / fig_h for r in range(n_viz)]
     row_height = cell_h / fig_h
 
@@ -376,6 +376,12 @@ def main():
         fig.text(col_starts[ci] + col_width * 0.5, 1.0 - label_h * 0.5 / fig_h,
                  COL_LABELS[ck], ha="center", va="center",
                  fontsize=16, fontweight="bold", color="#111111")
+
+    # 行标题（Sample 1~N）写在左侧
+    for ri in range(n_viz):
+        fig.text(label_w * 0.5 / fig_w, row_starts[ri] + row_height * 0.5,
+                 f"Sample {ri + 1}", ha="center", va="center",
+                 fontsize=16, fontweight="bold", color="#111111", rotation=90)
 
     for ri in range(n_viz):
         n_node = int(mask_list[ri].sum())
