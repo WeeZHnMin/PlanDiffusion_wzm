@@ -254,6 +254,8 @@ def main():
     print(f"device: {device}")
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN", "")
+    # 直连 huggingface.co（私有仓库需要 token，镜像不支持私有仓库认证）
+    os.environ.pop("HF_ENDPOINT", None)
     HF_REPOS = {
         "adj_only":    "wzmmmm/plandiff-adj-cross-6k",
         "global_only": "wzmmmm/plandiff-global-cross-6k",
