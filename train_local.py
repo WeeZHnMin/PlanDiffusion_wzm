@@ -65,7 +65,8 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = save_dir / "latest.pt"
     log_path  = save_dir / "train_log.jsonl"
-    open(log_path, "w").close()
+    if args.fresh:
+        open(log_path, "w").close()  # 只有 --fresh 时才清空
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}", flush=True)
@@ -157,7 +158,7 @@ def main():
         running_loss += loss.item()
         running_rmse += coord_rmse
 
-        if step % args.log_interval == 0 and step > start_step:
+        if step % args.log_interval == 0 and step > 0:
             n = args.log_interval
             avg_loss = running_loss / n
             avg_rmse = running_rmse / n

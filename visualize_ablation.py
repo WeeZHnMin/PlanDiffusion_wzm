@@ -216,7 +216,7 @@ def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
                         color="#BBBBBB", lw=0.7, zorder=1, solid_capstyle="round")
     for k in range(n):
         ax.scatter(xy[k,0], xy[k,1], color=node_color(types[k]),
-                   s=28, zorder=3, edgecolors="#444444", linewidths=0.4)
+                   s=50, zorder=3, edgecolors="#444444", linewidths=0.5)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_aspect("equal"); ax.invert_yaxis()
     ax.set_xticks([]); ax.set_yticks([])
@@ -224,7 +224,7 @@ def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
         sp.set_linewidth(0.5); sp.set_color("#AAAAAA")
     if rmse is not None:
         ax.text(0.5, -0.06, f"RMSE={rmse:.1f}", transform=ax.transAxes,
-                ha="center", va="top", fontsize=6, color="#333333")
+                ha="center", va="top", fontsize=11, color="#333333")
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -289,7 +289,13 @@ def main():
         state = ckpt["model"]
         if any(k.startswith("module.") for k in state):
             state = {k[7:]: v for k, v in state.items()}
-        m.load_state_dict(state, strict=False)
+        result = m.load_state_dict(state, strict=False)
+        if result.missing_keys:
+            print(f"  [WARN] missing keys ({len(result.missing_keys)}): {result.missing_keys[:5]}")
+        if result.unexpected_keys:
+            print(f"  [WARN] unexpected keys ({len(result.unexpected_keys)}): {result.unexpected_keys[:5]}")
+        if result.missing_keys or result.unexpected_keys:
+            raise RuntimeError(f"{name}: 模型代码与 checkpoint 不匹配，请检查架构定义")
         m.eval()
         models[name] = m
         print(f"  step={ckpt.get('step','?')}  OK", flush=True)
@@ -335,8 +341,8 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     plt.rcParams.update({
-        "font.family": "DejaVu Serif", "font.size": 7,
-        "axes.titlesize": 7, "axes.titleweight": "bold",
+        "font.family": "DejaVu Serif", "font.size": 12,
+        "axes.titlesize": 12, "axes.titleweight": "bold",
         "axes.linewidth": 0.6, "figure.dpi": 300,
         "savefig.dpi": 300, "savefig.bbox": "tight", "savefig.pad_inches": 0.03,
     })
@@ -346,8 +352,8 @@ def main():
     ROW_LABELS = {"gt": "Ground Truth", **{k: DISPLAY_NAME[k] for k in var_keys}}
 
     n_viz    = args.n_viz
-    cell_w, cell_h = 2.4, 2.4
-    label_w  = 1.0
+    cell_w, cell_h = 4.0, 4.0
+    label_w  = 1.2
     fig_w    = label_w + cell_w * n_viz
     fig_h    = cell_h * len(row_keys)
     margin   = 0.012
@@ -370,11 +376,13 @@ def main():
         gt_xy  = gt_list[ci]
         adj_np = adj_list[ci]
         types  = type_list[ci]
-        pts    = gt_xy[:n_node]
-        pad    = max(12.0, 0.08 * float(np.ptp(pts, axis=0).max()))
-        xlim   = (pts[:,0].min() - pad, pts[:,0].max() + pad)
-        ylim   = (pts[:,1].min() - pad, pts[:,1].max() + pad)
-        axes[(0, ci)].set_title(f"Sample {ci+1}", pad=3, fontsize=7,
+        # 把 GT 和所有变体的预测坐标都纳入范围，避免节点被截断
+        all_pts = [gt_xy[:n_node]] + [pred_cache[rk][ci][:n_node] for rk in var_keys]
+        all_pts = np.concatenate(all_pts, axis=0)
+        pad    = max(12.0, 0.08 * float(np.ptp(all_pts, axis=0).max()))
+        xlim   = (all_pts[:,0].min() - pad, all_pts[:,0].max() + pad)
+        ylim   = (all_pts[:,1].min() - pad, all_pts[:,1].max() + pad)
+        axes[(0, ci)].set_title(f"Sample {ci+1}", pad=6, fontsize=12,
                                 fontweight="bold", color="#222222")
         for ri, rk in enumerate(row_keys):
             ax = axes[(ri, ci)]
@@ -387,7 +395,7 @@ def main():
     for ri, rk in enumerate(row_keys):
         fig.text((label_w * 0.5) / fig_w, row_starts[ri] + row_height * 0.5,
                  ROW_LABELS.get(rk, rk), ha="center", va="center",
-                 fontsize=7, fontweight="bold", color="#111111", rotation=90)
+                 fontsize=12, fontweight="bold", color="#111111", rotation=90)
 
     for ext in ("pdf", "png"):
         out_path = os.path.join(args.out_dir, f"ablation_viz.{ext}")
