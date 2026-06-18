@@ -303,16 +303,21 @@ def main():
     os.makedirs(args.ckpt_dir, exist_ok=True)
     models = {}
     for name, repo_id in HF_REPOS.items():
-        print(f"加载 {name} <- {repo_id} ...")
-        try:
-            from huggingface_hub import hf_hub_download
-            path = hf_hub_download(
-                repo_id=repo_id, filename="latest.pt", token=hf_token,
-                local_dir=os.path.join(args.ckpt_dir, name), force_download=True,
-            )
-        except Exception as e:
-            print(f"  [skip] {name}: {e}")
-            continue
+        local_path = os.path.join(args.ckpt_dir, name, "latest.pt")
+        if os.path.exists(local_path):
+            print(f"加载 {name} <- 本地 {local_path} ...")
+            path = local_path
+        else:
+            print(f"加载 {name} <- HF {repo_id} ...")
+            try:
+                from huggingface_hub import hf_hub_download
+                path = hf_hub_download(
+                    repo_id=repo_id, filename="latest.pt", token=hf_token,
+                    local_dir=os.path.join(args.ckpt_dir, name),
+                )
+            except Exception as e:
+                print(f"  [skip] {name}: {e}")
+                continue
         m = NodeDiffusionTransformer(
             layer_cls=LAYER_MAP[name],
             model_channels=args.model_channels,
