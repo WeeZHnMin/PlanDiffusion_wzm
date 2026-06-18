@@ -338,7 +338,9 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     plt.rcParams.update({
-        "font.family": "DejaVu Serif", "font.size": 16,
+        "font.family": "serif",
+        "font.serif":  ["Times New Roman", "Times", "DejaVu Serif"],
+        "font.size": 16,
         "axes.titlesize": 16, "axes.titleweight": "bold",
         "axes.linewidth": 0.8, "figure.dpi": 300,
         "savefig.dpi": 300, "savefig.bbox": "tight", "savefig.pad_inches": 0.05,
@@ -383,16 +385,26 @@ def main():
                  f"Sample {ri + 1}", ha="center", va="center",
                  fontsize=16, fontweight="bold", color="#111111", rotation=90)
 
+    # 计算全局统一坐标范围，所有格子大小一致
+    all_coords = []
+    for ri in range(n_viz):
+        n_node = int(mask_list[ri].sum())
+        all_coords.append(gt_list[ri][:n_node])
+        for rk in var_keys:
+            all_coords.append(pred_dict[rk][ri][:n_node])
+    all_coords = np.concatenate(all_coords, axis=0)
+    pad = max(15.0, 0.08 * float(np.ptp(all_coords, axis=0).max()))
+    cx  = (all_coords[:,0].min() + all_coords[:,0].max()) / 2
+    cy  = (all_coords[:,1].min() + all_coords[:,1].max()) / 2
+    half = max(all_coords[:,0].max() - cx, all_coords[:,1].max() - cy) + pad
+    xlim = (cx - half, cx + half)
+    ylim = (cy - half, cy + half)
+
     for ri in range(n_viz):
         n_node = int(mask_list[ri].sum())
         gt_xy  = gt_list[ri]
         adj_np = adj_list[ri]
         types  = type_list[ri]
-        all_pts = [gt_xy[:n_node]] + [pred_dict[rk][ri][:n_node] for rk in var_keys]
-        all_pts = np.concatenate(all_pts, axis=0)
-        pad   = max(12.0, 0.08 * float(np.ptp(all_pts, axis=0).max()))
-        xlim  = (all_pts[:,0].min() - pad, all_pts[:,0].max() + pad)
-        ylim  = (all_pts[:,1].min() - pad, all_pts[:,1].max() + pad)
         for ci, ck in enumerate(col_keys):
             ax = axes[(ri, ci)]
             if ck == "gt":
