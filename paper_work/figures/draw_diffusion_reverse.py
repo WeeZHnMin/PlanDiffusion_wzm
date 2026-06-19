@@ -162,7 +162,6 @@ def main():
     idx      = args.idx
     adj_np   = data['adj_matrix'][idx].astype('float32')      # [40, 40]
     mask_np  = data['node_mask'][idx].astype('float32')        # [40]
-    gt_np    = data['node_coords'][idx].astype('float32')      # [40, 2]
     ptok_np  = data['prompt_tokens'][idx].astype('int64')      # [T]
     pmsk_np  = data['prompt_mask'][idx].astype('float32')      # [T]
 
@@ -184,32 +183,18 @@ def main():
     snaps = ddpm_sample_with_snapshots(model, diff, cond, device, SAVE_AT)
     print('采样完成')
 
-    # ── 计算统一坐标范围（以 GT 为基准）──────────────────────────────────────
-    gt_valid = gt_np[valid_mask]
-    center   = gt_valid.mean(axis=0)
-    scale    = np.abs(gt_valid - center).max()
-    RANGE    = max(scale * 1.2, 50.0)
+    DISPLAY  = 3.0
 
-    def norm_coords(raw):
-        """将模型输出坐标（像素空间）归一化到以 center 为原点的显示空间。"""
-        return (raw - center) / scale * 2.7
-
-    # GT 归一化
-    gt_norm = norm_coords(gt_np)
-
-    DISPLAY  = 3.5
+    # 以 t=0 的最终坐标为参考，统一所有帧的坐标系
+    final_coords = snaps[0][0].permute(1, 0).cpu().numpy()   # [40, 2]
+    final_valid  = final_coords[valid_mask]
+    ref_center   = final_valid.mean(0)
+    ref_scale    = max(np.abs(final_valid - ref_center).max(), 1.0)
 
     def to_display(snap_tensor):
-        """snap: [1, 2, 40] → [40, 2]，尝试对齐 GT 的尺度。"""
+        """snap: [1, 2, 40] → [40, 2]，以 t=0 坐标系为基准统一归一化。"""
         coords = snap_tensor[0].permute(1, 0).cpu().numpy()  # [40, 2]
-        # 仅对有效节点做缩放对齐（模型输出和 GT 可能量纲不同）
-        v = valid_mask
-        pred_valid = coords[v]
-        gt_valid_  = gt_norm[v]
-        # 简单平移对齐
-        offset = gt_valid_.mean(0) - pred_valid.mean(0)
-        coords = coords + offset
-        return coords
+        return (coords - ref_center) / ref_scale * 2.5
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     TIMESTEPS  = [1000, 750, 500, 250, 0]
@@ -239,28 +224,15 @@ def main():
         axes.append(ax)
 
     for col, (t_val, label) in enumerate(zip(TIMESTEPS, LABELS)):
-        ax   = axes[col]
-        snap = snaps[t_val]
-
-        if t_val == 0:
-            coords = to_display(snap)
-        elif t_val == 1000:
-            # 初始纯噪声：直接用随机坐标，缩放到显示范围
-            coords_raw = snap[0].permute(1, 0).cpu().numpy()
-            coords = coords_raw / (coords_raw[valid_mask].std() + 1e-6) * 2.0
-        else:
-            coords = to_display(snap)
+        ax     = axes[col]
+        coords = to_display(snaps[t_val])   # 所有帧统一归一化
 
         ax.set_xlim(-DISPLAY, DISPLAY)
         ax.set_ylim(-DISPLAY, DISPLAY)
-
-        # 背景框
-        ax.add_patch(mpatches.FancyBboxPatch(
-            (-DISPLAY * 0.97, -DISPLAY * 0.97),
-            DISPLAY * 1.94, DISPLAY * 1.94,
-            boxstyle='round,pad=0.05',
-            lw=0.5, edgecolor='#DDDDDD', facecolor='#FAFAFA',
-            transform=ax.transData, zorder=0))
+        ax.set_facecolor('#FAFAFA')
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#DDDDDD')
+            spine.set_linewidth(0.5)
 
         draw_panel(ax, coords, adj_np, valid_mask,
                    xlim=(-DISPLAY, DISPLAY), ylim=(-DISPLAY, DISPLAY))
