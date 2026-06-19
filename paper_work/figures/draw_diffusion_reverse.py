@@ -195,15 +195,22 @@ def main():
 
     DISPLAY  = 3.0
 
-    # 以 t=0 的最终坐标为参考，统一所有帧的坐标系
+    # 以 t=0 的最终坐标为参考（中间帧 + t=0 统一用此归一化）
     final_coords = snaps[0][0].permute(1, 0).cpu().numpy()   # [40, 2]
     final_valid  = final_coords[valid_mask]
     ref_center   = final_valid.mean(0)
     ref_scale    = max(np.abs(final_valid - ref_center).max(), 1.0)
 
-    def to_display(snap_tensor):
-        """snap: [1, 2, 40] → [40, 2]，以 t=0 坐标系为基准统一归一化。"""
+    def to_display(snap_tensor, self_norm=False):
+        """snap: [1, 2, 40] → [40, 2]。
+        self_norm=True: 用自身节点做归一化（用于 t=1000 噪声帧）。
+        """
         coords = snap_tensor[0].permute(1, 0).cpu().numpy()  # [40, 2]
+        if self_norm:
+            v = coords[valid_mask]
+            c = v.mean(0)
+            s = max(np.abs(v - c).max(), 1e-3)
+            return (coords - c) / s * 2.5
         return (coords - ref_center) / ref_scale * 2.5
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
@@ -235,7 +242,8 @@ def main():
 
     for col, (t_val, label) in enumerate(zip(TIMESTEPS, LABELS)):
         ax     = axes[col]
-        coords = to_display(snaps[t_val])   # 所有帧统一归一化
+        # t=1000 是纯噪声，用自身归一化才能看清连接关系
+        coords = to_display(snaps[t_val], self_norm=(t_val == 1000))
 
         ax.set_xlim(-DISPLAY, DISPLAY)
         ax.set_ylim(-DISPLAY, DISPLAY)
