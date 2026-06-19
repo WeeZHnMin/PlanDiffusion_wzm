@@ -12,6 +12,7 @@
 
 import argparse
 import os
+import time
 
 import matplotlib
 matplotlib.use('Agg')
@@ -180,6 +181,9 @@ def main():
                              figsize=(cols * 2.2, rows * 2.4),
                              squeeze=False)
 
+    timings = []
+    mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
+
     for plot_i, idx in enumerate(chosen):
         adj_np  = data['adj_matrix'][idx].astype('float32')   # [40, 40]
         mask_np = data['node_mask'][idx].astype('float32')    # [40]
@@ -194,10 +198,14 @@ def main():
             'prompt_mask':   torch.from_numpy(pmsk_np).unsqueeze(0),
         }
 
-        mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
-        print(f'  [{plot_i+1}/{len(chosen)}] idx={idx}  n_nodes={n_nodes}  {mode}')
-
+        t0 = time.perf_counter()
         x0 = sample_coords(model, diffusion, cond, device, args.ddim_steps)
+        elapsed = time.perf_counter() - t0
+        timings.append(elapsed)
+
+        print(f'  [{plot_i+1}/{len(chosen)}] idx={idx}  n_nodes={n_nodes}  '
+              f'{mode}  耗时={elapsed:.1f}s')
+
         coords = x0[0].permute(1, 0).cpu().numpy()  # [40, 2]
 
         valid_mask = mask_np > 0.5
@@ -209,12 +217,24 @@ def main():
 
         r, c = divmod(plot_i, cols)
         draw_single(axes[r][c], coords, adj_np, valid_mask,
-                    title=f'idx={idx}  n={n_nodes}')
+                    title=f'idx={idx}  n={n_nodes}  {elapsed:.1f}s')
 
     # 隐藏多余格子
     for k in range(len(chosen), rows * cols):
         r, c = divmod(k, cols)
         axes[r][c].set_visible(False)
+
+    # 计时统计
+    avg_s   = sum(timings) / len(timings)
+    total_s = avg_s * 10000
+    h, rem  = divmod(int(total_s), 3600)
+    m, s    = divmod(rem, 60)
+    print(f'\n{"─"*50}')
+    print(f'采样模式      : {mode}')
+    print(f'样本数        : {len(timings)}')
+    print(f'单条平均耗时  : {avg_s:.2f}s')
+    print(f'推断 10000 条 : 约 {h}h {m}m {s}s  （{total_s/3600:.1f} 小时）')
+    print(f'{"─"*50}')
 
     mode_str = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
     fig.suptitle(f'Node Coord Diffusion on gen_adj_test  [{mode_str}]',
