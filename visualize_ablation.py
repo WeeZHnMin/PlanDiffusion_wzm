@@ -193,30 +193,16 @@ def ddpm_sample_batch(model, diff, cond_batch, device):
 
 # ── 可视化 ────────────────────────────────────────────────────────────────────
 
-NODE_PALETTE = [
-    "#4E8CC2","#7BB9E0","#B0D4F0","#1A5F8A",
-    "#4DA863","#82C78A","#B5E0B8","#1A6B2A",
-    "#D4A520","#E8C060","#F5DC99","#9A7010",
-    "#9B5DB5","#C090D8","#E0C0F0","#6A2E8A",
-    "#D04040","#E88080","#F5B5B5","#8A1A1A",
-    "#808080","#A8A8A8","#C8C8C8","#585858",
-    "#D07830","#E8A870","#F5CCA8","#8A4A10",
-    "#30A0A0","#70C8C8","#A8E0E0","#107070",
-]
+NODE_COLOR = "#4E8CC2"  # 统一节点颜色，不区分类型
 
-def node_color(tid):
-    idx = (int(tid) - 1) % len(NODE_PALETTE) if 1 <= int(tid) <= 32 else -1
-    return NODE_PALETTE[idx] if idx >= 0 else "#CCCCCC"
-
-def draw_cell(ax, xy, types, adj, n, xlim, ylim, rmse=None):
+def draw_cell(ax, xy, adj, n, xlim, ylim):
     for ii in range(n):
         for jj in range(ii + 1, n):
             if adj[ii, jj] > 0.5:
                 ax.plot([xy[ii,0], xy[jj,0]], [xy[ii,1], xy[jj,1]],
                         color="#BBBBBB", lw=0.7, zorder=1, solid_capstyle="round")
-    for k in range(n):
-        ax.scatter(xy[k,0], xy[k,1], color=node_color(types[k]),
-                   s=80, zorder=3, edgecolors="#444444", linewidths=0.6)
+    ax.scatter(xy[:n, 0], xy[:n, 1], color=NODE_COLOR,
+               s=80, zorder=3, edgecolors="#444444", linewidths=0.6)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_aspect("equal"); ax.invert_yaxis()
     ax.set_xticks([]); ax.set_yticks([])
@@ -309,12 +295,11 @@ def main():
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
 
-    gt_list, adj_list, mask_list, type_list = [], [], [], []
+    gt_list, adj_list, mask_list = [], [], []
     for idx in idxs:
         gt_list.append(data["node_coords"][idx].astype("float32"))
         adj_list.append(data["adj_matrix"][idx].astype("float32"))
         mask_list.append(data["node_mask"][idx].astype("float32"))
-        type_list.append(data["node_combo_ids"][idx].astype("int64"))
 
     cond_batch = {
         "adj_matrix":    torch.from_numpy(np.stack([data["adj_matrix"][i]   for i in idxs], 0).astype("float32")).to(device),
@@ -404,13 +389,12 @@ def main():
         n_node = int(mask_list[ri].sum())
         gt_xy  = gt_list[ri]
         adj_np = adj_list[ri]
-        types  = type_list[ri]
         for ci, ck in enumerate(col_keys):
             ax = axes[(ri, ci)]
             if ck == "gt":
-                draw_cell(ax, gt_xy, types, adj_np, n_node, xlim, ylim)
+                draw_cell(ax, gt_xy, adj_np, n_node, xlim, ylim)
             else:
-                draw_cell(ax, pred_dict[ck][ri], types, adj_np, n_node, xlim, ylim)
+                draw_cell(ax, pred_dict[ck][ri], adj_np, n_node, xlim, ylim)
 
     for ext in ("pdf", "png"):
         out_path = os.path.join(args.out_dir, f"ablation_viz.{ext}")

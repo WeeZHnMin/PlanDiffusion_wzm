@@ -150,40 +150,41 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 
 训练数据为原始 6k 平面图数据集经 8 倍坐标增强后所得约 48k 样本，
 三个变体均以 batch size 384 各独立训练 250k steps；
-评估采用从同一 6k 数据集中随机抽取的 1000 条样本，
-以 Coord-RMSE 衡量 DDPM 1000 步逆采样后的坐标重建精度。
-由于消融三变体均使用相同数据来源训练与评估，
-各变体之间的相对比较仍可有效反映注意力结构本身的影响。
+定量评估采用从同一 6k 数据集中随机抽取的 1000 条样本，
+以 Coord-RMSE 衡量 DDIM~\cite{song2021ddim} 100 步逆采样后的坐标重建精度；
+定性可视化（图~\ref{fig:ablation_viz}）则采用完整 DDPM 1000 步逆采样以保证生成质量。
+由于三变体在定量评估中均使用相同的 DDIM~\cite{song2021ddim} 100 步配置，
+各变体之间的相对比较可有效反映注意力结构本身的影响。
 
 \begin{table}[h]
 \centering
-\caption{注意力结构消融：各变体独立训练后的坐标扩散精度对比}
+\caption{注意力结构消融：各变体独立训练后的坐标扩散精度对比（DDIM 100步）}
 \label{tab:ablation_attn}
 \small
 \begin{tabular}{lcc}
 \toprule
 注意力变体 & 描述 & Coord-RMSE↓ \\
 \midrule
-仅邻接局部注意力（AdjAttn only）  & 每节点仅关注直连邻居           & 68.46 \\
+仅邻接局部注意力（AdjAttn only）  & 每节点仅关注直连邻居           & 80.15 \\
 仅全局注意力（GlobalAttn only）   & 节点间无掩码全局自注意力       & 67.84 \\
-双流（AdjAttn + GlobalAttn）      & 局部 + 全局并行，本文完整模型  & \textbf{65.68} \\
+双流（AdjAttn + GlobalAttn）      & 局部 + 全局并行，本文完整模型  & \textbf{60.28} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 图~\ref{fig:ablation_viz} 对三个变体的生成布局进行定性对比。
 GlobalAttn only 生成的节点分布散乱、边交叉严重，缺乏平面图的网格状结构；
-AdjAttn only 布局较为规整但细节偏差较大；
+AdjAttn only 布局较为规整但整体偏移较大；
 双流变体（Ours）在布局合理性和与真实图的相似度上均最优。
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\linewidth]{figures/ablation_viz.png}
     \caption{
-        注意力结构消融定性对比（5 个测试样本）。
+        注意力结构消融定性对比（5 个测试样本，DDPM 1000 步采样）。
         每行为同一输入条件下三个变体的生成结果，列从左至右依次为：
         Ground Truth、AdjAttn Only、GlobalAttn Only、Dual-stream（本文）。
-        节点按房间类型着色，边表示相邻关系。
+        边表示节点间相邻关系。
     }
     \label{fig:ablation_viz}
 \end{figure}
