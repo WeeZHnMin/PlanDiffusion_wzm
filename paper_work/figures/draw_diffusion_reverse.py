@@ -70,32 +70,45 @@ def get_node_color(combo_id):
 
 # ── 逆扩散采样，保存中间帧 ────────────────────────────────────────────────────
 
+def _forward_with_precomputed_text(model, x, tb, adj, mask, text_feat, text_mask):
+    """用预计算的 BERT 特征跑一次前向，跳过 BERT 推理。"""
+    from node_diffusion_cross_att.model import timestep_embedding
+    B, _, N  = x.shape
+    x_in     = x.permute(0, 2, 1).float()                                   # [B, N, 2]
+    t_emb    = model.time_embed(timestep_embedding(tb, model.model_channels)).unsqueeze(1)
+    h        = model.input_emb(x_in) + t_emb                                # [B, N, d]
+    adj_mask = model._build_adj_mask(adj.float(), mask.float())
+    for layer in model.layers:
+        h = layer(h, adj_mask, text_feat, text_mask)
+    return model.coord_head(h).permute(0, 2, 1).float()                     # [B, 2, N]
+
+
 @torch.no_grad()
 def ddpm_sample_with_snapshots(model, diff, cond, device, save_at):
     """
-    save_at: 需要保存的 t 值集合（逆向，从大到小）。
-    返回 dict {t: coords_np [N, 2]}，仅含有效节点。
+    save_at: 需要保存的 t 值集合。
+    返回 dict {t: tensor [1, 2, 40]}。
     """
     diff.to(device)
-    adj  = cond['adj_matrix'].to(device)   # [1, 40, 40]
-    mask = cond['node_mask'].to(device)    # [1, 40]
+    adj  = cond['adj_matrix'].to(device)
+    mask = cond['node_mask'].to(device)
     ptok = cond['prompt_tokens'].to(device)
-    pmsk = cond['prompt_mask'].to(device)
+    pmsk = cond['prompt_mask'].to(device).long()
 
     # 预计算 BERT（只跑一次）
-    text_feat, text_mask = model.encode_text(ptok, pmsk)
+    text_hidden = model.bert(input_ids=ptok, attention_mask=pmsk).last_hidden_state
+    text_feat   = model.text_proj(text_hidden)               # [1, T, d]
+    text_mask   = (1 - pmsk.float()).unsqueeze(1)            # [1, 1, T]
 
     x = torch.randn(1, 2, 40, device=device)
     snapshots = {}
 
     for t in reversed(range(diff.T)):
-        if t + 1 in save_at:           # 保存进入本步前的状态
+        if t + 1 in save_at:
             snapshots[t + 1] = x.clone()
 
         tb  = torch.full((1,), t, device=device, dtype=torch.long)
-        eps = model(x, tb,
-                    adj_matrix=adj, node_mask=mask,
-                    text_feat=text_feat, text_mask=text_mask).float()
+        eps = _forward_with_precomputed_text(model, x, tb, adj, mask, text_feat, text_mask)
 
         ab  = diff.alphas_bar[t]
         ap  = diff.alphas_bar_prev[t]
@@ -105,8 +118,8 @@ def ddpm_sample_with_snapshots(model, diff, cond, device, save_at):
         mu  = (ap.sqrt() * b / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
         x   = mu + diff.post_var[t].sqrt() * torch.randn_like(x) if t > 0 else mu
 
-    snapshots[0] = x.clone()   # 最终结果
-    return snapshots            # {t: [1, 2, 40]}
+    snapshots[0] = x.clone()
+    return snapshots
 
 
 # ── 绘图 ──────────────────────────────────────────────────────────────────────
