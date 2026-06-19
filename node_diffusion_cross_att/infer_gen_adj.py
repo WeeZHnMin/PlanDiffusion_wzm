@@ -37,7 +37,7 @@ def parse_args():
     p.add_argument('--data',  default='data/processed/node_diffusion_cross_att/gen_adj_test.npz')
     p.add_argument('--n',     type=int, default=8,   help='随机抽取样本数')
     p.add_argument('--seed',  type=int, default=42)
-    p.add_argument('--ddim_steps', type=int, default=100,
+    p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0 = 完整 DDPM 1000 步）')
     p.add_argument('--snap_threshold', type=float, default=8.0,
                    help='吸附阈值（像素），0=不做吸附')
