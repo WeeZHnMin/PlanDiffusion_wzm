@@ -40,6 +40,8 @@ def parse_args():
     p.add_argument('--seed',  type=int, default=42)
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0 = 完整 DDPM 1000 步）')
+    p.add_argument('--batch_size', type=int, default=1,
+                   help='批量推理大小（>1 时 GPU 并行，速度更快）')
     p.add_argument('--snap_threshold', type=float, default=8.0,
                    help='吸附阈值（像素），0=不做吸附')
     p.add_argument('--out_dir', default='outputs/infer_gen_adj')
@@ -66,7 +68,7 @@ def sample_coords(model, diffusion, cond, device, ddim_steps):
 
     def fwd(x, t_val):
         from node_diffusion_cross_att.model import timestep_embedding
-        tb    = torch.full((1,), t_val, device=device, dtype=torch.long)
+        tb    = torch.full((B,), t_val, device=device, dtype=torch.long)
         x_in  = x.permute(0, 2, 1).float()
         t_emb = model.time_embed(timestep_embedding(tb, model.model_channels)).unsqueeze(1)
         h     = model.input_emb(x_in) + t_emb
@@ -75,7 +77,8 @@ def sample_coords(model, diffusion, cond, device, ddim_steps):
             h = layer(h, am, text_feat, text_mask)
         return model.coord_head(h).permute(0, 2, 1).float()
 
-    x = torch.randn(1, 2, 40, device=device)
+    B = cond['adj_matrix'].shape[0]
+    x = torch.randn(B, 2, 40, device=device)
 
     if ddim_steps > 0:
         step_seq = np.linspace(diff.T - 1, 0, ddim_steps, dtype=int).tolist()
@@ -181,46 +184,58 @@ def main():
                              figsize=(cols * 2.2, rows * 2.4),
                              squeeze=False)
 
-    timings = []
-    mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
+    mode    = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
+    BS      = args.batch_size
+    results = []   # list of (idx, n_nodes, coords [40,2], adj [40,40], mask [40])
+    timings = []   # 每个 batch 的耗时（秒/条）
 
-    for plot_i, idx in enumerate(chosen):
-        adj_np  = data['adj_matrix'][idx].astype('float32')   # [40, 40]
-        mask_np = data['node_mask'][idx].astype('float32')    # [40]
-        ptok_np = data['prompt_tokens'][idx].astype('int64')  # [T]
-        pmsk_np = data['prompt_mask'][idx].astype('float32')  # [T]
-        n_nodes = int(data['n_nodes'][idx])
+    # 按 batch 分组推理
+    for b_start in range(0, len(chosen), BS):
+        batch_idx = chosen[b_start: b_start + BS]
+        B = len(batch_idx)
+
+        adj_list  = [data['adj_matrix' ][i].astype('float32') for i in batch_idx]
+        mask_list = [data['node_mask'  ][i].astype('float32') for i in batch_idx]
+        ptok_list = [data['prompt_tokens'][i].astype('int64') for i in batch_idx]
+        pmsk_list = [data['prompt_mask' ][i].astype('float32') for i in batch_idx]
+        nn_list   = [int(data['n_nodes'][i]) for i in batch_idx]
 
         cond = {
-            'adj_matrix':    torch.from_numpy(adj_np ).unsqueeze(0),
-            'node_mask':     torch.from_numpy(mask_np).unsqueeze(0),
-            'prompt_tokens': torch.from_numpy(ptok_np).unsqueeze(0),
-            'prompt_mask':   torch.from_numpy(pmsk_np).unsqueeze(0),
+            'adj_matrix':    torch.from_numpy(np.stack(adj_list )),
+            'node_mask':     torch.from_numpy(np.stack(mask_list)),
+            'prompt_tokens': torch.from_numpy(np.stack(ptok_list)),
+            'prompt_mask':   torch.from_numpy(np.stack(pmsk_list)),
         }
 
+        print(f'  batch [{b_start//BS + 1}]  idx={batch_idx}  {mode}  ...', end='', flush=True)
         t0 = time.perf_counter()
         x0 = sample_coords(model, diffusion, cond, device, args.ddim_steps)
         elapsed = time.perf_counter() - t0
-        timings.append(elapsed)
+        per_sample = elapsed / B
+        timings.append(per_sample)
+        print(f'  {elapsed:.1f}s  ({per_sample:.2f}s/条)')
 
-        print(f'  [{plot_i+1}/{len(chosen)}] idx={idx}  n_nodes={n_nodes}  '
-              f'{mode}  耗时={elapsed:.1f}s')
+        # 拆分结果
+        for i in range(B):
+            coords    = x0[i].permute(1, 0).cpu().numpy()  # [40, 2]
+            adj_np    = adj_list[i].copy()
+            mask_np   = mask_list[i]
+            valid_mask = mask_np > 0.5
+            if args.snap_threshold > 0:
+                coords, adj_np, snapped = snap_nodes_to_walls(
+                    coords, adj_np, valid_mask, threshold=args.snap_threshold)
+                if snapped:
+                    print(f'    snap idx={batch_idx[i]}: {len(snapped)} 节点吸附')
+            results.append((batch_idx[i], nn_list[i], coords, adj_np, valid_mask))
 
-        coords = x0[0].permute(1, 0).cpu().numpy()  # [40, 2]
-
-        valid_mask = mask_np > 0.5
-        if args.snap_threshold > 0:
-            coords, adj_np, snapped = snap_nodes_to_walls(
-                coords, adj_np, valid_mask, threshold=args.snap_threshold)
-            if snapped:
-                print(f'    snap: {len(snapped)} 节点吸附')
-
+    # 绘图
+    for plot_i, (idx, n_nodes, coords, adj_np, valid_mask) in enumerate(results):
         r, c = divmod(plot_i, cols)
         draw_single(axes[r][c], coords, adj_np, valid_mask,
-                    title=f'idx={idx}  n={n_nodes}  {elapsed:.1f}s')
+                    title=f'idx={idx}  n={n_nodes}')
 
     # 隐藏多余格子
-    for k in range(len(chosen), rows * cols):
+    for k in range(len(results), rows * cols):
         r, c = divmod(k, cols)
         axes[r][c].set_visible(False)
 
@@ -231,7 +246,8 @@ def main():
     m, s    = divmod(rem, 60)
     print(f'\n{"─"*50}')
     print(f'采样模式      : {mode}')
-    print(f'样本数        : {len(timings)}')
+    print(f'batch size    : {BS}')
+    print(f'样本数        : {len(results)}')
     print(f'单条平均耗时  : {avg_s:.2f}s')
     print(f'推断 10000 条 : 约 {h}h {m}m {s}s  （{total_s/3600:.1f} 小时）')
     print(f'{"─"*50}')
