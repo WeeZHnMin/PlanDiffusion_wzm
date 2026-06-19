@@ -1,7 +1,7 @@
 """
 NodeDiffusion 注意力结构消融评估脚本（服务器版）
 
-对三个变体各跑 DDPM 1000 步采样，计算 Coord-RMSE：
+对三个变体各跑采样，计算 Coord-RMSE：
   - adj_only    : wzmmmm/plandiff-adj-cross-6k
   - global_only : wzmmmm/plandiff-global-cross-6k
   - dual_stream : wzmmmm/plandiff-double-cross-6k （或本文完整模型）
@@ -9,6 +9,10 @@ NodeDiffusion 注意力结构消融评估脚本（服务器版）
 用法：
   python eval_node_diffusion_ablation.py --hf_token YOUR_TOKEN
   python eval_node_diffusion_ablation.py --hf_token YOUR_TOKEN --n_eval 200
+  # DDIM 100步（默认，速度快10倍）
+  python eval_node_diffusion_ablation.py --hf_token YOUR_TOKEN --ddim_steps 100
+  # 恢复完整 DDPM 1000步
+  python eval_node_diffusion_ablation.py --hf_token YOUR_TOKEN --ddim_steps 0
 """
 
 import argparse
@@ -37,7 +41,9 @@ def parse_args():
     p.add_argument("--batch_size",type=int, default=128)
     p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
-    p.add_argument("--timesteps", type=int, default=1000)
+    p.add_argument("--timesteps",  type=int, default=1000)
+    p.add_argument("--ddim_steps", type=int, default=100,
+                   help="DDIM 采样步数（0 = 使用完整 DDPM 1000步）")
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
@@ -264,6 +270,42 @@ class GaussianDiffusion:
 
 
 @torch.no_grad()
+def ddim_sample_batch(model, diff, cond_batch, device, ddim_steps=100):
+    """DDIM 确定性采样（eta=0），步数可任意设置（推荐50~200）。"""
+    import numpy as _np
+    diff._to(device)
+    B = cond_batch["adj_matrix"].shape[0]
+    T = diff.T
+
+    text_feat, text_mask = model.encode_text(
+        cond_batch["prompt_tokens"], cond_batch.get("prompt_mask")
+    )
+
+    # 从 T-1 均匀降到 0 的子序列，共 ddim_steps 步
+    step_seq = _np.linspace(T - 1, 0, ddim_steps, dtype=int).tolist()
+
+    x = torch.randn(B, 2, 40, device=device)
+    for i, t in enumerate(step_seq):
+        tb  = torch.full((B,), t, device=device, dtype=torch.long)
+        eps = model(x, tb,
+                    adj_matrix=cond_batch["adj_matrix"],
+                    node_mask=cond_batch["node_mask"],
+                    text_feat=text_feat, text_mask=text_mask).float()
+
+        ab_t   = diff.alphas_bar[t]
+        x0_pred = ((x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)).clamp(-300, 300)
+
+        if i + 1 < len(step_seq):
+            t_prev  = step_seq[i + 1]
+            ab_prev = diff.alphas_bar[t_prev]
+            x = ab_prev.sqrt() * x0_pred + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0_pred  # 最后一步直接返回去噪结果
+
+    return x.permute(0, 2, 1).cpu().numpy()  # [B, 40, 2]
+
+
+@torch.no_grad()
 def ddpm_sample_batch(model, diff, cond_batch, device):
     """批量 DDPM 采样，BERT 特征在循环外预计算一次，避免每步重复跑 BERT。"""
     diff._to(device)
@@ -363,6 +405,10 @@ def main():
     np.random.seed(args.seed)
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
 
+    use_ddim   = args.ddim_steps > 0 and args.ddim_steps < args.timesteps
+    sampler_tag = f"DDIM-{args.ddim_steps}步" if use_ddim else f"DDPM-{args.timesteps}步"
+    print(f"采样器: {sampler_tag}")
+
     data  = np.load(args.data_path, allow_pickle=True)
     total = len(data["node_coords"])
     rng   = np.random.default_rng(args.seed)
@@ -402,7 +448,10 @@ def main():
                 "prompt_tokens": torch.from_numpy(ptok_all[s:e]).to(device),
                 "prompt_mask":   torch.from_numpy(pmsk_all[s:e]).to(device),
             }
-            preds = ddpm_sample_batch(model, diffusion, cond_batch, device)  # [B, 40, 2]
+            if use_ddim:
+                preds = ddim_sample_batch(model, diffusion, cond_batch, device, args.ddim_steps)
+            else:
+                preds = ddpm_sample_batch(model, diffusion, cond_batch, device)  # [B, 40, 2]
             all_preds.append(preds)
             if (bi + 1) % 5 == 0 or bi == n_batches - 1:
                 done = min(e, len(idxs))

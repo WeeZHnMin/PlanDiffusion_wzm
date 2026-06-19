@@ -20,7 +20,7 @@ class TextCondGNN(nn.Module):
     Output: logits        [B, N, 33]
     """
 
-    def __init__(self, d_model=384, num_layers=3, num_heads=6,
+    def __init__(self, d_model=384, num_layers=4, num_heads=6,
                  dropout=0.1, bert_name='models/bert-base-uncased',
                  unfreeze_layers=0, n_types=N_TYPES,
                  # accept legacy alias
