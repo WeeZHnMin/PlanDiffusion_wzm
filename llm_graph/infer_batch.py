@@ -28,7 +28,7 @@ from llm_graph.infer_stage1 import (
     generate, parse_sequence, MAX_NODES, BOS_ID,
 )
 
-MAX_BERT_LEN = 192
+MAX_BERT_LEN = 224
 
 
 def parse_args():
