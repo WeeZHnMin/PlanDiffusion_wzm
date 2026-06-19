@@ -65,7 +65,7 @@ def main():
         for log in logs:
             # 用相对于 ckpt 父目录的路径作为 repo 内文件名，避免覆盖
             try:
-                rel = log.relative_to(Path(args.ckpt).parent.parent)
+                rel = log.relative_to(Path(args.ckpt).parent)
             except ValueError:
                 rel = log.name
             repo_name = str(rel).replace("\\", "/")

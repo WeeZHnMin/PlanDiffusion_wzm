@@ -54,16 +54,26 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 \end{table}
 
 \paragraph{实现细节}
-三个子模块均在单张 NVIDIA GPU 上独立训练。
-图拓扑生成（LlamaForCausalLM，约 20M 参数）在 RTX 3060（6 GB，笔记本）上训练，
-batch size 22，学习率余弦退火 $10^{-4} \to 10^{-5}$，
-共约 345 万步（含中途停止后续训），累计训练时长约 211 小时。
-节点坐标扩散（NodeDiffusionTransformer，约 15M 参数）在 RTX 3080（10 GB）上训练，
-batch size 384，训练 250k steps。
-节点类型预测（NodeTypeClassifier，约 15M 参数）在 RTX 3060（6 GB，笔记本）上训练，
-batch size 64，共训练 320k steps，累计训练时长约 45 小时。
+三个子模块均在单张 NVIDIA GPU 上独立训练，各模块超参数如表~\ref{tab:impl} 所示。
+
+\begin{table}[h]
+\centering
+\caption{各子模块训练配置}
+\label{tab:impl}
+\small
+\begin{tabular}{lllccc}
+\toprule
+子模块 & 模型 & GPU & Batch & Steps & 时长 \\
+\midrule
+图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
+节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & 250k        & —            \\
+节点类型预测   & NodeTypeClassifier（15M）         & RTX 3060（6\,GB）  & 64  & 320k        & $\sim$45\,h  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
-坐标扩散（DDPM 1000步逆采样）$\to$ 类型分类（单次前向）$\to$ render.py 渲染输出。
+坐标扩散（DDPM 1000步逆采样）$\to$ 类型分类（单次前向）$\to$ 渲染输出。
 \todo{补充：端到端推理耗时。}
 
 \subsection{主实验结果}
@@ -104,26 +114,28 @@ batch size 64，共训练 320k steps，累计训练时长约 45 小时。
 \subsubsection{推理约束消融（图拓扑生成）}
 
 表~\ref{tab:ablation_constraints} 在相同模型权重下，
-逐步加入五个解码约束，评估图结构合法性指标的变化。
-\textbf{图有效率（GVR）}：生成图连通且无孤立节点的样本占比；
-\textbf{无三角率}：生成图中不含三节点闭环的比例；
-\textbf{最小度合格率}：所有节点度数 $\geq 2$ 的样本占比。
+逐步加入四个解码约束，评估图结构合法性指标的变化。
+四个约束定义如下：
+\textbf{C1}（因果树约束）：生成第 $k$ 个节点的父节点时，仅允许从已生成的节点 $0{\sim}k{-}1$ 中选取，保证生成树的因果合法性；
+\textbf{C2}（SEP 时机控制）：生成恰好 $N-1$ 个父节点后强制插入 \texttt{SEP}，防止生成树提前或延迟终止；
+\textbf{C3}（禁三节点环）：添加补边时禁止形成三节点闭环，保证图无三角结构；
+\textbf{C4}（最小度约束）：在所有节点度数均 $\geq 2$ 之前禁止发出 \texttt{EOS\_G}，保证无孤立或悬挂节点。
+评估指标：\textbf{图有效率（GVR）}为生成图连通且无孤立节点的样本占比。
 
 \begin{table}[h]
 \centering
-\caption{推理约束消融：逐步启用解码约束对图合法性的影响}
+\caption{推理约束消融：逐步启用解码约束对图合法性的影响（C1--C4 定义见正文）}
 \label{tab:ablation_constraints}
 \small
-\begin{tabular}{lcccccc}
+\begin{tabular}{lccccc}
 \toprule
-约束配置 & C1 & C2 & C3 & C4 & C5 & GVR↑ \\
+约束配置 & C1 & C2 & C3 & C4 & GVR↑ \\
 \midrule
-无约束                        & $\times$ & $\times$ & $\times$ & $\times$ & $\times$ & 99.6\% \\
-+C1（因果树 $p_k < k$）       & $\checkmark$ & $\times$ & $\times$ & $\times$ & $\times$ & 99.9\% \\
-+C2（SEP 时机控制）           & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & $\times$ & 100.0\% \\
-+C3（禁三节点环）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & $\times$ & 100.0\% \\
-+C4（最小度 $\geq 2$）        & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$ & 100.0\% \\
-+C5（$N \geq 9$）             & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & 100.0\% \\
+无约束  & $\times$     & $\times$     & $\times$     & $\times$     & 99.6\%  \\
++C1    & $\checkmark$ & $\times$     & $\times$     & $\times$     & 99.9\%  \\
++C2    & $\checkmark$ & $\checkmark$ & $\times$     & $\times$     & 100.0\% \\
++C3    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$     & 100.0\% \\
++C4    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & 100.0\% \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -159,7 +171,22 @@ batch size 64，共训练 320k steps，累计训练时长约 45 小时。
 \end{tabular}
 \end{table}
 
-\todo{填入注意力消融数值后删除本行。}
+图~\ref{fig:ablation_viz} 对三个变体的生成布局进行定性对比。
+GlobalAttn only 生成的节点分布散乱、边交叉严重，缺乏平面图的网格状结构；
+AdjAttn only 布局较为规整但细节偏差较大；
+双流变体（Ours）在布局合理性和与真实图的相似度上均最优。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{figures/ablation_viz.png}
+    \caption{
+        注意力结构消融定性对比（5 个测试样本）。
+        每行为同一输入条件下三个变体的生成结果，列从左至右依次为：
+        Ground Truth、AdjAttn Only、GlobalAttn Only、Dual-stream（本文）。
+        节点按房间类型着色，边表示相邻关系。
+    }
+    \label{fig:ablation_viz}
+\end{figure}
 
 \subsection{定性结果}
 \label{subsec:qualitative}

@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--out_dir",   default="ablation_out")
     p.add_argument("--bert",      default="bert-base-uncased")
     p.add_argument("--n_eval",    type=int, default=1000)
-    p.add_argument("--batch_size",type=int, default=256)
+    p.add_argument("--batch_size",type=int, default=128)
     p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps", type=int, default=1000)
@@ -212,19 +212,27 @@ class NodeDiffusionTransformer(nn.Module):
     def _adj_mask(self, adj, mask):
         return torch.clamp((1 - adj) + (1 - mask).unsqueeze(1), 0, 1)
 
+    def encode_text(self, prompt_tokens, prompt_mask=None):
+        """预计算 BERT 文本特征，供 DDPM 采样复用（避免每步重复跑 BERT）。"""
+        ba = prompt_mask if prompt_mask is not None else (prompt_tokens != 0).long()
+        with torch.no_grad():
+            th = self.bert(input_ids=prompt_tokens, attention_mask=ba).last_hidden_state
+        tf = self.text_proj(th)
+        tm = (1 - ba.float()).unsqueeze(1)
+        return tf, tm
+
     def forward(self, x, timesteps, adj_matrix, node_mask,
-                prompt_tokens=None, prompt_mask=None, **kw):
+                prompt_tokens=None, prompt_mask=None,
+                text_feat=None, text_mask=None, **kw):
         B, _, N = x.shape
         x  = x.permute(0, 2, 1).float()
         te = self.time_embed(timestep_embedding(timesteps, self.model_channels)).unsqueeze(1)
         h  = self.input_emb(x) + te
         am = self._adj_mask(adj_matrix.float(), node_mask.float())
-        if prompt_tokens is not None:
-            ba = prompt_mask if prompt_mask is not None else (prompt_tokens != 0).long()
-            with torch.no_grad():
-                th = self.bert(input_ids=prompt_tokens, attention_mask=ba).last_hidden_state
-            tf = self.text_proj(th)
-            tm = (1 - ba.float()).unsqueeze(1)
+        if text_feat is not None:
+            tf, tm = text_feat, text_mask
+        elif prompt_tokens is not None:
+            tf, tm = self.encode_text(prompt_tokens, prompt_mask)
         else:
             tf = torch.zeros(B, 1, self.model_channels, device=h.device, dtype=h.dtype)
             tm = None
@@ -257,13 +265,22 @@ class GaussianDiffusion:
 
 @torch.no_grad()
 def ddpm_sample_batch(model, diff, cond_batch, device):
-    """批量 DDPM 采样，cond_batch 中每个 tensor 已在 device 上，shape [B, ...]"""
+    """批量 DDPM 采样，BERT 特征在循环外预计算一次，避免每步重复跑 BERT。"""
     diff._to(device)
     B = cond_batch["adj_matrix"].shape[0]
+
+    # 预计算 BERT 文本特征（只跑一次）
+    text_feat, text_mask = model.encode_text(
+        cond_batch["prompt_tokens"], cond_batch.get("prompt_mask")
+    )
+
     x = torch.randn(B, 2, 40, device=device)
     for t in reversed(range(diff.T)):
         tb  = torch.full((B,), t, device=device, dtype=torch.long)
-        eps = model(x, tb, **cond_batch).float()
+        eps = model(x, tb,
+                    adj_matrix=cond_batch["adj_matrix"],
+                    node_mask=cond_batch["node_mask"],
+                    text_feat=text_feat, text_mask=text_mask).float()
         ab  = diff.alphas_bar[t]; ap = diff.alphas_bar_prev[t]
         a   = diff.alphas[t];     b  = diff.betas[t]
         x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)

@@ -41,7 +41,7 @@ $\mathcal{E}$ 为边集合（相邻角点间的连接关系）。
     \includegraphics[width=\linewidth]{figures/dataset_fig.pdf}
     \caption{
         数据集样例。每条样本包含住宅平面图渲染（左）、
-        对应顶点图表示（中）及 VLM 自动生成的自然语言描述（右）。
+        对应顶点图表示（中）及 MiMo-V2.5 生成的自然语言描述（右）。
         顶点颜色表示组合类型，边表示几何连接关系。
     }
     \label{fig:dataset}
@@ -71,8 +71,8 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 
 \paragraph{自然语言标注}
 我们将顶点图渲染为彩色平面图图像，
-调用多个视觉语言模型（Qwen 系列、DeepSeek-V3、Kimi 等，共 40 余个）
-对每张图生成自然语言描述，并按模型质量优先级选取最佳结果。
+通过 API 调用小米大模型团队发布的视觉语言模型 MiMo-V2.5
+对每张图生成自然语言描述。
 标注要求直接陈述各房间的位置关系与连通关系，
 回避视觉指代词，使描述可独立于图像作为文本条件使用。
 
@@ -103,43 +103,35 @@ Combo 类型总数     & \multicolumn{3}{c}{32} \\
 \end{table}
 
 % -----------------------------------------------------------------------------
-\subsection{统一词表}
-\label{subsec:vocab}
+% -----------------------------------------------------------------------------
+\subsection{图拓扑生成}
+\label{subsec:llm_graph}
 
-为使文本 token 与图结构 token 共存于同一序列空间，
-图拓扑生成阶段（$\theta_1$）采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
-并在其后追加 84 个图结构专用 token，构成大小为 10,084 的统一词表，
+\subsubsection{词表设计}
+
+本阶段采用 BERT-base-uncased 的前 10,000 个 WordPiece token 作为文本词表，
+并追加 84 个图结构专用 token，构成大小为 10,084 的词表，
 具体如表~\ref{tab:vocab} 所示。
-图结构专用 token 仅用于图拓扑生成阶段。
-
-坐标扩散（$\theta_2$）与节点类型预测（$\theta_3$）阶段的文本条件化方式不同：
-两者均以完整的预训练 BERT-base-uncased 编码器对输入文本进行编码，
-所得上下文表示通过交叉注意力机制注入节点特征，
-而非直接使用词表嵌入。
 
 \begin{table}[h]
 \centering
-\caption{统一词表布局}
+\caption{图拓扑生成词表布局}
 \label{tab:vocab}
 \small
 \begin{tabular}{lll}
 \toprule
 ID 范围 & Token & 说明 \\
 \midrule
-0 -- 9999    & WordPiece token & 文本词表（BERT 前 10k），三阶段共用 \\
+0 -- 9999    & WordPiece token & 文本词表（BERT 前 10k） \\
 10000        & \texttt{PAD}    & 填充 \\
 10001        & \texttt{BOS\_G} & 图序列起始 \\
 10002        & \texttt{EOS\_G} & 图序列终止 \\
 10003        & \texttt{SEP}    & 生成树与补边分隔符 \\
-10004--10043 & $N_k$           & 节点数量（$N=1{\sim}40$），仅图拓扑阶段 \\
-10044--10083 & 节点 token       & 节点编号（$0{\sim}39$），仅图拓扑阶段 \\
+10004--10043 & $N_k$           & 节点数量（$N=1{\sim}40$） \\
+10044--10083 & 节点 token       & 节点编号（$0{\sim}39$） \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-% -----------------------------------------------------------------------------
-\subsection{图拓扑生成}
-\label{subsec:llm_graph}
 
 \subsubsection{图序列化格式}
 
@@ -161,7 +153,6 @@ ID 范围 & Token & 说明 \\
 补边为不属于生成树的额外边，每条边用两个 token 表示。
 这一"生成树 + 补边"格式结构规整（父节点序列长度固定为 $N-1$），
 且任意连通图均可唯一表示。
-为增强多样性，对每张图从不同起始节点执行 BFS（增强 ${\times}6$）。
 
 图~\ref{fig:seq_graph} 展示了自回归生成过程中图结构的逐步构建：
 从部分父节点序列对应的局部生成树，到完整生成树，再逐步添加补边，
@@ -203,6 +194,7 @@ ID 范围 & Token & 说明 \\
 采用 AdamW~\cite{loshchilov2019adamw}（$\beta_1{=}0.9$，$\beta_2{=}0.95$，
 lr $= 10^{-4}$，余弦退火至 $10^{-5}$），
 grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
+训练数据对每张图从不同起始节点执行 BFS，共 ${\times}12$ 倍数据增强。
 
 % -----------------------------------------------------------------------------
 \subsection{节点坐标扩散}
@@ -333,7 +325,7 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
 其中 $m_i$ 为节点有效掩码（padding 节点不计入 loss）。
 
 优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精度~\cite{micikevicius2018mixed}。
+grad clip $= 1.0$，batch $= 64$，FP16 混合精度~\cite{micikevicius2018mixed}。
 训练数据由原始图通过随机节点重排增强 ${\times}8$。
 
 \subsubsection{推理：DDPM 逆采样}
@@ -366,18 +358,17 @@ grad clip $= 1.0$，batch $= 64$，total steps $= 200\text{k}$，FP16 混合精�
 
 \textbf{NodeTypeClassifier} 与 NodeDiffusionTransformer 结构同构——
 均采用双流 EncoderLayer（邻接局部注意力 + 全局注意力），
-但超参数独立，权重完全不共享，训练亦完全分离。
-NodeTypeClassifier 的配置为 $d=384$，4 层，6 头，dropout $=0.4$；
-NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$；
-两者结构同构但超参数独立，权重完全不共享，训练亦完全分离。
+文本条件化方式亦完全相同：输入文本由冻结的 BERT-base-uncased 编码，
+经线性投影（$768 \to d$）后通过每层独立的交叉注意力注入节点特征。
+两者权重完全不共享，训练亦完全分离。
 两者的对比结构如图~\ref{fig:type_arch} 所示，关键差异如下：
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.95\textwidth]{figures/type_classifier_arch.pdf}
     \caption{NodeDiffusionTransformer 与 NodeTypeClassifier 结构对比。
-    两者均采用同构的双流编码器设计，但输入端（有无时间步嵌入）与输出头不同，
-    超参数与权重完全独立。}
+    两者均采用同构的双流编码器设计，文本条件化方式相同，
+    但输入端、超参数与输出头不同，权重完全独立。}
     \label{fig:type_arch}
 \end{figure}
 
@@ -388,6 +379,9 @@ NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$；
         \quad W_c \in \mathbb{R}^{d \times 2}
         \label{eq:type_node_init}
     \end{equation}
+
+    \item \textbf{超参数不同}：NodeTypeClassifier 为 $d=384$，4 层，6 头，dropout $=0.4$；
+    NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$。
 
     \item \textbf{类型预测头}：替换坐标头，对每个节点输出 33 维 logit
     （0 为 padding，1--32 为有效类型）：
@@ -413,6 +407,7 @@ NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$；
 
 优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
 grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精度~\cite{micikevicius2018mixed}。
+训练数据由原始图通过随机节点重排增强 ${\times}12$。
 
 \subsubsection{推理：直接分类}
 
