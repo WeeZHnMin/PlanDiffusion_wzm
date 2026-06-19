@@ -22,6 +22,7 @@ import torch
 
 sys.path.insert(0, '.')
 from node_diffusion_cross_att.model import NodeDiffusionTransformer
+from node_diffusion_cross_att.postprocess import snap_nodes_to_walls
 
 
 # ── DDPM schedule（cosine，与训练一致）────────────────────────────────────────
@@ -139,6 +140,8 @@ def parse_args():
     p.add_argument('--idx',  type=int, default=20, help='数据集样本索引')
     p.add_argument('--out',  default='paper_work/figures/diffusion_process.pdf')
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--snap_threshold', type=float, default=8.0,
+                   help='吸附阈值（像素），0=不做吸附')
     return p.parse_args()
 
 
@@ -182,6 +185,13 @@ def main():
     print('开始 DDPM 逆采样（1000步）...')
     snaps = ddpm_sample_with_snapshots(model, diff, cond, device, SAVE_AT)
     print('采样完成')
+
+    # 对 t=0 最终结果做吸附后处理
+    if args.snap_threshold > 0:
+        final_snap = snaps[0][0].permute(1, 0).cpu().numpy()  # [40, 2]
+        final_snap, adj_np, _ = snap_nodes_to_walls(
+            final_snap, adj_np, valid_mask, threshold=args.snap_threshold)
+        snaps[0] = torch.from_numpy(final_snap.T[np.newaxis])  # [1, 2, 40]
 
     DISPLAY  = 3.0
 
