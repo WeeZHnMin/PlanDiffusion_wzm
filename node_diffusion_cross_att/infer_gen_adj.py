@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument('--seed',  type=int, default=42)
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0 = 完整 DDPM 1000 步）')
-    p.add_argument('--batch_size', type=int, default=1,
+    p.add_argument('--batch_size', type=int, default=16,
                    help='批量推理大小（>1 时 GPU 并行，速度更快）')
     p.add_argument('--snap_threshold', type=float, default=8.0,
                    help='吸附阈值（像素），0=不做吸附')
