@@ -24,7 +24,8 @@ Architext~\cite{galanos2023architext} 在 250k 合成平面图上微调 GPT 系�
 实现了从自然语言描述到平面图的直接生成。
 Tell2Design~\cite{leng2023tell2design} 构建了语言引导平面图数据集并探索了多种基线方法。
 ChatHouseDiffusion~\cite{qin2025chathousediffusion} 将扩散模型与 prompt 引导相结合，
-支持生成与编辑，但仍缺乏对拓扑结构的显式约束。
+支持文本条件生成与局部交互编辑，并以房间边界轮廓作为辅助输入。
+该方法侧重像素级图像生成，与本文面向矢量图结构的端到端文本驱动生成思路互补。
 
 与上述工作不同，本文在文本和坐标之间引入显式图结构作为中间表示，
 同时具备语言可控性和拓扑保证。

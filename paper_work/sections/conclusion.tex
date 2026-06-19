@@ -23,7 +23,7 @@
 \paragraph{基于强化学习的文本指令对齐}
 当前节点坐标扩散模块以 MSE 噪声预测为唯一训练目标，
 缺乏对文本指令遵循程度的显式优化信号。
-未来可借鉴 DDPO（Denoising Diffusion Policy Optimization）框架，
+未来可借鉴 DDPO~\cite{black2024ddpo}（Denoising Diffusion Policy Optimization）框架，
 将去噪扩散的多步逆采样过程建模为序列决策问题，
 以图有效率、文本-布局一致性等可量化指标构造奖励函数，
 通过策略梯度直接优化最终生成质量，

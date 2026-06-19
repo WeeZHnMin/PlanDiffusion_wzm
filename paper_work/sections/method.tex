@@ -52,7 +52,7 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 但其描述仅为简单模板句（如 ``a house with two bedrooms and one bathroom''），
 不足以支撑文本条件生成的训练。
 为此，我们在 Architext\_v1 基础上构建了新的训练数据集，
-引入顶点图表示与 VLM 生成的自然语言描述，如图~\ref{fig:dataset} 所示。
+引入顶点图表示与自然语言描述，如图~\ref{fig:dataset} 所示。
 
 \paragraph{顶点图表示}
 我们将平面图表示为\textbf{顶点图}：
@@ -75,6 +75,8 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 对每张图生成自然语言描述。
 标注要求直接陈述各房间的位置关系与连通关系，
 回避视觉指代词，使描述可独立于图像作为文本条件使用。
+标注完成后，对生成结果进行了人工抽查，
+修正明显的房间关系错误与语义不一致之处，以保证标注质量。
 
 \paragraph{统计}
 最终数据集包含 \textbf{149,609} 条样本（原始 150,000 条中过滤掉文本超过 224 token 的 391 条），

@@ -21,6 +21,10 @@
     生成图与真实图的节点数分布之间的 KL 散度，
     衡量模型对平面图规模的建模能力。
 
+    \item \textbf{节点数准确率（Node-count Acc.）}：
+    生成节点数与真实节点数完全一致（精确）或误差在 $\pm k$ 以内的样本占比，
+    衡量模型对单条样本节点规模的预测精度。
+
     \item \textbf{坐标 RMSE（Coord-RMSE）}：
     给定真实图结构条件下，去噪预测坐标与真实坐标的均方根误差，
     衡量节点坐标扩散子模块的回归精度。
@@ -66,7 +70,7 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 子模块 & 模型 & GPU & Batch & Steps & 时长 \\
 \midrule
 图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
-节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & 250k        & —            \\
+节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & —            \\
 节点类型预测   & NodeTypeClassifier（15M）         & RTX 3060（6\,GB）  & 64  & 320k        & $\sim$45\,h  \\
 \bottomrule
 \end{tabular}
@@ -93,9 +97,12 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 \toprule
 子模块 & 指标 & 结果 \\
 \midrule
-\multirow{2}{*}{图拓扑生成（$\theta_1$）}
-    & Degree KL↓      & 0.0108 \\
-    & Node-count KL↓  & 0.0051 \\
+\multirow{5}{*}{图拓扑生成（$\theta_1$）}
+    & Degree KL↓               & 0.0108  \\
+    & Node-count KL↓           & 0.0051  \\
+    & 节点数准确率（精确）↑     & 22.70\% \\
+    & 节点数准确率（$\pm1$）↑  & 57.50\% \\
+    & 节点数准确率（$\pm2$）↑  & 76.60\% \\
 \midrule
 节点坐标扩散（$\theta_2$） & Coord-RMSE↓ & \todo{} \\
 \midrule
@@ -149,7 +156,7 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 三个变体除注意力结构外其余超参数完全一致。
 
 训练数据为原始 6k 平面图数据集经 8 倍坐标增强后所得约 48k 样本，
-三个变体均以 batch size 384 各独立训练 250k steps；
+三个变体均以 batch size 384 各独立训练 250k steps（仅用于结构对比，步数少于主模型）；
 定量评估采用从同一 6k 数据集中随机抽取的 1000 条样本，
 以 Coord-RMSE 衡量 DDIM~\cite{song2021ddim} 100 步逆采样后的坐标重建精度；
 定性可视化（图~\ref{fig:ablation_viz}）则采用完整 DDPM 1000 步逆采样以保证生成质量。
