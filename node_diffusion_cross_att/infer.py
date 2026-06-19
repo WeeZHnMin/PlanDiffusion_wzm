@@ -26,6 +26,7 @@ import torch.nn.functional as F
 # ── 复用 kaggle notebook 中的模型 / 扩散类定义 ────────────────────────────────
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
+from .postprocess import snap_nodes_to_walls
 
 
 # ── 参数 ──────────────────────────────────────────────────────────────────────
@@ -45,6 +46,8 @@ def build_parser():
     p.add_argument('--timesteps',     type=int,   default=1000)
     p.add_argument('--ddim_steps',    type=int,   default=0,
                    help='若 >0 则使用 DDIM 加速采样，否则使用完整 DDPM 1000步')
+    p.add_argument('--snap_threshold', type=float, default=8.0,
+                   help='将靠近墙的节点吸附到墙上的距离阈值（像素），0=不做吸附')
     return p
 
 
@@ -237,6 +240,11 @@ def main(argv=None):
         pred_xy = x0_coord[0].permute(1, 0).cpu().numpy()   # [40, 2]
         gt_xy   = coords_raw
         gt_t    = types_np
+
+        # 吸附后处理：将靠近墙的节点嵌入墙上
+        if args.snap_threshold > 0:
+            pred_xy, adj_np, _ = snap_nodes_to_walls(
+                pred_xy, adj_np, mask_np, threshold=args.snap_threshold)
 
         # 指标（只算坐标 RMSE）
         valid_mask = mask_np > 0.5
