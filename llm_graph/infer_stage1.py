@@ -310,7 +310,19 @@ def generate(
                     run_adj[first][sec] = run_adj[sec][first] = 1
                 generated.extend([next_id, sec_tok])
             else:
-                generated.append(next_id)
+                # 所有无环候选均被禁，放宽约束接受三角环
+                mask2_fallback = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
+                for j in range(N):
+                    if j != first and not run_adj[first][j]:
+                        mask2_fallback[NODE_START + j] = False
+                if not mask2_fallback.all():
+                    logits2[mask2_fallback] = NEG_INF
+                    sec_tok = int(torch.multinomial(torch.softmax(logits2, dim=-1), 1).item())
+                    sec = sec_tok - NODE_START
+                    if 0 <= sec < N:
+                        run_adj[first][sec] = run_adj[sec][first] = 1
+                    generated.extend([next_id, sec_tok])
+                # else: first 与所有节点均已相连，真的无候选，跳过不追加
             input_ids = torch.tensor([generated], dtype=torch.long, device=device)
 
     return generated
