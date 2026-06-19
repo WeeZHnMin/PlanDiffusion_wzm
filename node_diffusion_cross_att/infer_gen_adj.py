@@ -31,7 +31,7 @@ NODE_COLOR = "#4E8CC2"
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',  required=True,
+    p.add_argument('--ckpt',  default='checkpoints/node_diffusion_cross_att/latest.pt',
                    help='NodeDiffusionTransformer checkpoint 路径')
     p.add_argument('--bert',  default='models/bert-base-uncased')
     p.add_argument('--data',  default='data/processed/node_diffusion_cross_att/gen_adj_test.npz')
