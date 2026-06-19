@@ -17,7 +17,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch
 import torch
 
@@ -49,23 +48,7 @@ class GaussianDiffusion:
         return self
 
 
-# ── 节点类型着色（与 draw_diffusion_process_v2.py 保持一致）──────────────────
-
-COMBO_COLORS = {
-    1:  '#B394D3',   # bathroom
-    2:  '#7BBFEA',   # bedroom
-    3:  '#F5C26B',   # living_room
-    4:  '#74C476',   # kitchen
-    5:  '#BBBBBB',   # corridor
-    6:  '#FFC896',   # dining_room
-    7:  '#DCDCDC',   # other
-}
-
-def get_node_color(combo_id):
-    """用 combo_id 的第一个 base type 决定颜色（简化版）。"""
-    # combo_id 1-32，直接映射到几个主色
-    base = ((int(combo_id) - 1) % 7) + 1
-    return COMBO_COLORS.get(base, '#DDDDDD')
+NODE_COLOR = "#4E8CC2"
 
 
 # ── 逆扩散采样，保存中间帧 ────────────────────────────────────────────────────
@@ -124,7 +107,7 @@ def ddpm_sample_with_snapshots(model, diff, cond, device, save_at):
 
 # ── 绘图 ──────────────────────────────────────────────────────────────────────
 
-def draw_panel(ax, coords, combo_ids, adj, valid_mask, xlim, ylim):
+def draw_panel(ax, coords, adj, valid_mask, xlim, ylim):
     """coords: [40, 2], valid_mask: [40] bool"""
     valid = np.where(valid_mask)[0]
     pts   = coords[valid]
@@ -138,10 +121,9 @@ def draw_panel(ax, coords, combo_ids, adj, valid_mask, xlim, ylim):
                         color='#BBBBBB', lw=0.6, alpha=0.7,
                         solid_capstyle='round', zorder=1)
 
-    for i, ni in enumerate(valid):
-        fc = get_node_color(combo_ids[ni])
+    for i in range(len(valid)):
         ax.add_patch(plt.Circle((pts[i, 0], pts[i, 1]), 0.11,
-                                color=fc, ec='#555555', lw=0.5, zorder=3))
+                                color=NODE_COLOR, ec='#333333', lw=0.5, zorder=3))
 
     ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_aspect('equal'); ax.axis('off')
@@ -181,7 +163,6 @@ def main():
     adj_np   = data['adj_matrix'][idx].astype('float32')      # [40, 40]
     mask_np  = data['node_mask'][idx].astype('float32')        # [40]
     gt_np    = data['node_coords'][idx].astype('float32')      # [40, 2]
-    cids_np  = data['node_combo_ids'][idx].astype('int64')     # [40]
     ptok_np  = data['prompt_tokens'][idx].astype('int64')      # [T]
     pmsk_np  = data['prompt_mask'][idx].astype('float32')      # [T]
 
@@ -236,8 +217,7 @@ def main():
 
     PANEL_W  = 1.4
     ARROW_W  = 0.18
-    FIG_H    = 1.95
-    LEGEND_H = 0.32
+    FIG_H    = 1.7
     N        = len(TIMESTEPS)
     FIG_W    = PANEL_W * N + ARROW_W * (N - 1) + 0.1
 
@@ -248,8 +228,8 @@ def main():
     })
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
-    panel_bottom = LEGEND_H / FIG_H + 0.03
-    panel_height = 1.0 - panel_bottom - 0.03
+    panel_bottom = 0.03
+    panel_height = 1.0 - panel_bottom - 0.08
 
     axes = []
     for col in range(N):
@@ -282,7 +262,7 @@ def main():
             lw=0.5, edgecolor='#DDDDDD', facecolor='#FAFAFA',
             transform=ax.transData, zorder=0))
 
-        draw_panel(ax, coords, cids_np, adj_np, valid_mask,
+        draw_panel(ax, coords, adj_np, valid_mask,
                    xlim=(-DISPLAY, DISPLAY), ylim=(-DISPLAY, DISPLAY))
         ax.set_title(label, fontsize=8.5, pad=3,
                      fontfamily='serif', fontstyle='italic')
@@ -296,23 +276,6 @@ def main():
                 transform=fig.transFigure,
                 arrowstyle='->', color='#888888',
                 mutation_scale=10, lw=1.0))
-
-    # ── 图例（按 base type，不区分 combo）────────────────────────────────────
-    BASE_LABELS = {1:'Bathroom',2:'Bedroom',3:'Living',
-                   4:'Kitchen', 5:'Corridor',6:'Dining',7:'Other'}
-    present_bases = sorted({((int(cids_np[i])-1)%7)+1
-                             for i in np.where(valid_mask)[0]})
-    handles = [mpatches.Patch(facecolor=COMBO_COLORS[b], edgecolor='#555555',
-                               label=BASE_LABELS[b], linewidth=0.6)
-               for b in present_bases]
-    ax_leg = fig.add_axes([0.01, 0.0, 0.98, LEGEND_H / FIG_H])
-    ax_leg.axis('off')
-    ax_leg.legend(handles=handles, loc='center',
-                  ncol=len(handles), fontsize=6.5,
-                  frameon=True, framealpha=0.95, edgecolor='#CCCCCC',
-                  title='Node Type', title_fontsize=7.0,
-                  columnspacing=0.5, handlelength=0.9,
-                  handletextpad=0.35, borderpad=0.4)
 
     # ── 保存 ──────────────────────────────────────────────────────────────────
     out_pdf = args.out
