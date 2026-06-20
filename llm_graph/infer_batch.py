@@ -113,6 +113,8 @@ def main():
         if (i + 1) % 500 == 0 or i == N - 1:
             print(f'  [{i+1:5d}/{N}]  valid={n_valid}  valid_rate={n_valid/(i+1):.3f}')
 
+    import os
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     np.savez(
         args.out,
         adj_matrix    = adj_out,
