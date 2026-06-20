@@ -217,11 +217,11 @@ def main():
     TIMESTEPS  = [1000, 750, 500, 250, 0]
     LABELS     = ['$t=1000$', '$t=750$', '$t=500$', '$t=250$', '$t=0$']
 
-    PANEL_W  = 1.4
-    ARROW_W  = 0.18
-    FIG_H    = 1.7
+    PANEL_W  = 1.3
+    ARROW_W  = 0.08
+    FIG_H    = 1.45
     N        = len(TIMESTEPS)
-    FIG_W    = PANEL_W * N + ARROW_W * (N - 1) + 0.1
+    FIG_W    = PANEL_W * N + ARROW_W * (N - 1)
 
     plt.rcParams.update({
         'font.family': 'serif',
@@ -230,13 +230,13 @@ def main():
     })
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
-    panel_bottom = 0.03
-    panel_height = 1.0 - panel_bottom - 0.08
+    panel_bottom = 0.02
+    panel_height = 1.0 - panel_bottom - 0.10
 
     axes = []
     for col in range(N):
-        left  = col * (PANEL_W + ARROW_W) / FIG_W + 0.008
-        width = PANEL_W / FIG_W - 0.008
+        left  = col * (PANEL_W + ARROW_W) / FIG_W
+        width = PANEL_W / FIG_W
         ax    = fig.add_axes([left, panel_bottom, width, panel_height])
         axes.append(ax)
 
@@ -254,7 +254,7 @@ def main():
 
         draw_panel(ax, coords, adj_np, valid_mask,
                    xlim=(-DISPLAY, DISPLAY), ylim=(-DISPLAY, DISPLAY))
-        ax.set_title(label, fontsize=8.5, pad=3,
+        ax.set_title(label, fontsize=8, pad=2,
                      fontfamily='serif', fontstyle='italic')
 
         # 箭头
@@ -262,10 +262,10 @@ def main():
             xr  = ax.get_position().x1
             ymd = (ax.get_position().y0 + ax.get_position().y1) / 2
             fig.add_artist(FancyArrowPatch(
-                (xr + 0.002, ymd), (xr + 0.028, ymd),
+                (xr + 0.002, ymd), (xr + ARROW_W / FIG_W - 0.004, ymd),
                 transform=fig.transFigure,
                 arrowstyle='->', color='#888888',
-                mutation_scale=10, lw=1.0))
+                mutation_scale=9, lw=0.9))
 
     # ── 保存 ──────────────────────────────────────────────────────────────────
     out_pdf = args.out
