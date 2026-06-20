@@ -16,6 +16,7 @@ GT坐标：text_graph_tree_test_10k.npz 中的 node_coords（与 gen_adj 按索�
 """
 
 import argparse
+import os
 import numpy as np
 import torch
 
@@ -37,6 +38,8 @@ def parse_args():
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0=完整 DDPM 1000步）')
     p.add_argument('--seed',     type=int, default=42)
+    p.add_argument('--out',      default='outputs/eval_coord_rmse/results.npz',
+                   help='推理结果保存路径')
     return p.parse_args()
 
 
@@ -167,6 +170,19 @@ def main():
           f'(std={rmse_arr.std():.4f}, median={np.median(rmse_arr):.4f})')
     print(f'{"─"*48}')
     print(f'\n论文主表填入: {rmse_arr.mean():.2f}')
+
+    # 保存推理结果
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    np.savez(
+        args.out,
+        pred_coords  = all_preds,          # [N, 40, 2] 预测坐标
+        gt_coords    = gt_coords,           # [N, 40, 2] 真实坐标
+        gt_mask      = gt_mask,             # [N, 40]    有效节点掩码
+        adj_matrix   = adj_all,            # [N, 40, 40] 生成邻接矩阵
+        sample_idx   = np.array(chosen),   # [N]         原始数据集索引
+        rmse_per_sample = rmse_arr,        # [N]         每条样本 RMSE
+    )
+    print(f'结果已保存: {args.out}')
 
 
 if __name__ == '__main__':
