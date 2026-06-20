@@ -217,9 +217,9 @@ def main():
     TIMESTEPS  = [1000, 750, 500, 250, 0]
     LABELS     = ['$t=1000$', '$t=750$', '$t=500$', '$t=250$', '$t=0$']
 
-    PANEL_W  = 1.3
+    PANEL_W  = 1.7
     ARROW_W  = 0.08
-    FIG_H    = 1.45
+    FIG_H    = 2.0
     N        = len(TIMESTEPS)
     FIG_W    = PANEL_W * N + ARROW_W * (N - 1)
 
@@ -230,8 +230,8 @@ def main():
     })
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
-    panel_bottom = 0.02
-    panel_height = 1.0 - panel_bottom - 0.10
+    panel_bottom = 0.01
+    panel_height = 1.0 - panel_bottom - 0.07
 
     axes = []
     for col in range(N):
