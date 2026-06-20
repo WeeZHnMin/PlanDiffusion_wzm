@@ -1,23 +1,22 @@
 """
 节点坐标扩散模块（θ₂）Coord-RMSE 评估脚本。
 
-在测试集 GT 邻接矩阵条件下运行 DDPM/DDIM 逆采样，
-计算预测坐标与真实坐标的均方根误差，用于填写论文主表。
+条件：gen_adj_test.npz（θ₁ 生成的邻接矩阵 + BERT prompt）
+GT坐标：data/jsonl/test_graph_dataset_10k.jsonl（按行索引对齐）
 
 用法（项目根目录）：
     python -m node_diffusion_cross_att.eval_coord_rmse \
-        --ckpt  checkpoints/node_diffusion_cross_att/latest.pt \
-        --bert  models/bert-base-uncased \
-        --data  data/processed/node_diffusion_cross_att/type_dataset_test_10k.npz \
-        --n_eval 1000
+        --ckpt checkpoints/node_diffusion_cross_att/latest.pt \
+        --bert models/bert-base-uncased
 
-    # 全量测试集
+    # 指定评估条数（0=全量）
     python -m node_diffusion_cross_att.eval_coord_rmse \
-        --ckpt  checkpoints/node_diffusion_cross_att/latest.pt --n_eval 0
+        --ckpt checkpoints/node_diffusion_cross_att/latest.pt \
+        --n_eval 1000
 """
 
 import argparse
-import os
+import json
 import numpy as np
 import torch
 
@@ -29,9 +28,10 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',       default='checkpoints/node_diffusion_cross_att/latest.pt')
     p.add_argument('--bert',       default='models/bert-base-uncased')
-    p.add_argument('--data',       default='data/processed/node_diffusion_cross_att/type_dataset_test_10k.npz')
+    p.add_argument('--data',       default='data/processed/node_diffusion_cross_att/gen_adj_test.npz')
+    p.add_argument('--jsonl',      default='data/jsonl/test_graph_dataset_10k.jsonl')
     p.add_argument('--n_eval',     type=int, default=0,
-                   help='评估样本数（0=全部）')
+                   help='评估样本数（0=全量）')
     p.add_argument('--batch_size', type=int, default=16)
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0=完整 DDPM 1000步）')
@@ -41,16 +41,13 @@ def parse_args():
 
 @torch.no_grad()
 def sample_batch(model, diffusion, cond, device, ddim_steps):
-    """返回预测坐标 [B, 40, 2]（numpy）。"""
-    diff = diffusion
+    """返回预测坐标 numpy [B, 40, 2]。"""
     adj  = cond['adj_matrix'].to(device)
     mask = cond['node_mask'].to(device)
     ptok = cond['prompt_tokens'].to(device)
     pmsk = cond['prompt_mask'].to(device).long()
+    B    = adj.shape[0]
 
-    B = adj.shape[0]
-
-    # BERT 预计算（只跑一次）
     text_hidden = model.bert(input_ids=ptok, attention_mask=pmsk).last_hidden_state
     text_feat   = model.text_proj(text_hidden)
     text_mask   = (1 - pmsk.float()).unsqueeze(1)
@@ -69,26 +66,26 @@ def sample_batch(model, diffusion, cond, device, ddim_steps):
     x = torch.randn(B, 2, 40, device=device)
 
     if ddim_steps > 0:
-        step_seq = np.linspace(diff.T - 1, 0, ddim_steps, dtype=int).tolist()
+        step_seq = np.linspace(diffusion.T - 1, 0, ddim_steps, dtype=int).tolist()
         for i, t in enumerate(step_seq):
             eps = fwd(x, t)
-            ab  = diff.alphas_bar[t]
+            ab  = diffusion.alphas_bar[t]
             x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
             if i + 1 < len(step_seq):
-                ab_prev = diff.alphas_bar[step_seq[i + 1]]
+                ab_prev = diffusion.alphas_bar[step_seq[i + 1]]
                 x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
             else:
                 x = x0
     else:
-        for t in reversed(range(diff.T)):
+        for t in reversed(range(diffusion.T)):
             eps = fwd(x, t)
-            ab  = diff.alphas_bar[t]
-            ap  = diff.alphas_bar_prev[t]
-            a   = diff.alphas[t]
-            b   = diff.betas[t]
+            ab  = diffusion.alphas_bar[t]
+            ap  = diffusion.alphas_bar_prev[t]
+            a   = diffusion.alphas[t]
+            b   = diffusion.betas[t]
             x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
             mu  = (ap.sqrt() * b / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
-            x   = mu + diff.posterior_variance[t].sqrt() * torch.randn_like(x) if t > 0 else mu
+            x   = mu + diffusion.posterior_variance[t].sqrt() * torch.randn_like(x) if t > 0 else mu
 
     return x.permute(0, 2, 1).cpu().numpy()  # [B, 40, 2]
 
@@ -110,24 +107,35 @@ def main():
 
     diffusion = GaussianDiffusion(timesteps=1000)
 
-    # 加载数据
-    data  = np.load(args.data, allow_pickle=True)
-    total = len(data['node_coords'])
-    n_eval = total if args.n_eval == 0 else min(args.n_eval, total)
-    rng   = np.random.default_rng(args.seed)
-    idxs  = sorted(rng.choice(total, size=n_eval, replace=False).tolist())
-    print(f'数据集: {total} 条  评估: {n_eval} 条')
+    # 加载 gen_adj_test.npz（θ₁ 输出，作为 θ₂ 的条件）
+    data      = np.load(args.data, allow_pickle=True)
+    valid_idx = np.where(data['valid'])[0]
+    total     = len(valid_idx)
+    n_eval    = total if args.n_eval == 0 else min(args.n_eval, total)
+    rng       = np.random.default_rng(args.seed)
+    chosen    = sorted(rng.choice(valid_idx, size=n_eval, replace=False).tolist())
+    print(f'gen_adj_test 有效样本: {total}  评估: {n_eval} 条')
+
+    # 加载 GT 坐标（按行索引从 jsonl 读取）
+    print(f'读取 GT 坐标: {args.jsonl} ...')
+    gt_coords_all = {}      # {global_idx: np.array [40, 2]}
+    gt_mask_all   = {}      # {global_idx: np.array [40] bool}
+    with open(args.jsonl, encoding='utf-8') as f:
+        for line_i, line in enumerate(f):
+            if line_i in set(chosen):
+                d = json.loads(line)
+                gt_coords_all[line_i] = np.array(d['node_coords'], dtype='float32')  # [40, 2]
+                gt_mask_all[line_i]   = np.array(d['node_mask'],   dtype='float32') > 0.5
 
     mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
     print(f'采样模式: {mode}')
 
-    gt_coords  = data['node_coords'][idxs].astype('float32')   # [N, 40, 2]
-    adj_all    = data['adj_matrix'][idxs].astype('float32')
-    mask_all   = data['node_mask'][idxs].astype('float32')
-    ptok_all   = data['prompt_tokens'][idxs].astype('int64')
-    pmsk_all   = data['prompt_mask'][idxs].astype('float32')
+    adj_all  = data['adj_matrix' ][chosen].astype('float32')
+    mask_all = data['node_mask'  ][chosen].astype('float32')
+    ptok_all = data['prompt_tokens'][chosen].astype('int64')
+    pmsk_all = data['prompt_mask'  ][chosen].astype('float32')
 
-    BS = args.batch_size
+    BS        = args.batch_size
     n_batches = (n_eval + BS - 1) // BS
     all_preds = []
 
@@ -146,19 +154,22 @@ def main():
 
     all_preds = np.concatenate(all_preds, axis=0)  # [N, 40, 2]
 
-    # 计算 Coord-RMSE（仅有效节点）
+    # 计算 Coord-RMSE（仅有效节点，以 GT mask 为准）
     rmse_list = []
-    for i in range(n_eval):
-        valid = mask_all[i] > 0.5
-        err   = all_preds[i][valid] - gt_coords[i][valid]
+    for local_i, global_i in enumerate(chosen):
+        gt_mask = gt_mask_all[global_i]
+        gt_xy   = gt_coords_all[global_i]
+        pred_xy = all_preds[local_i]
+        err     = pred_xy[gt_mask] - gt_xy[gt_mask]
         rmse_list.append(float(np.sqrt(np.mean(err ** 2))))
 
     rmse_arr = np.array(rmse_list)
-    print(f'\n{"─"*45}')
-    print(f'评估模式  : {mode}')
+    print(f'\n{"─"*48}')
+    print(f'采样模式  : {mode}')
     print(f'样本数    : {n_eval}')
-    print(f'Coord-RMSE: {rmse_arr.mean():.4f}  (std={rmse_arr.std():.4f}, median={np.median(rmse_arr):.4f})')
-    print(f'{"─"*45}')
+    print(f'Coord-RMSE: {rmse_arr.mean():.4f}  '
+          f'(std={rmse_arr.std():.4f}, median={np.median(rmse_arr):.4f})')
+    print(f'{"─"*48}')
     print(f'\n论文主表填入: {rmse_arr.mean():.2f}')
 
 
