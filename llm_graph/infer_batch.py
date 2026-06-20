@@ -36,7 +36,7 @@ MAX_BERT_LEN = 224
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/20260603_045254/best.pt')
+    p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/20260614_155601/latest.pt')
     p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
     p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json')
     p.add_argument('--bert',        default='models/bert-base-uncased')
