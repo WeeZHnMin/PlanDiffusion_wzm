@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument("--n_viz",     type=int, default=5)
     p.add_argument("--seed",      type=int, default=42)
     p.add_argument("--timesteps",  type=int, default=1000)
-    p.add_argument("--ddim_steps", type=int, default=100,
+    p.add_argument("--ddim_steps", type=int, default=0,
                    help="DDIM 采样步数（0 = 使用完整 DDPM 1000步）")
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
