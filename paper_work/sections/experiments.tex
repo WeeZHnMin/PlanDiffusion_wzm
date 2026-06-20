@@ -77,7 +77,7 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 \end{table}
 
 推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
-坐标扩散（DDPM 1000步逆采样）$\to$ 类型分类（单次前向）$\to$ 渲染输出。
+坐标扩散（DDPM 1000 步逆采样）$\to$ 类型分类（单次前向）$\to$ 渲染输出。
 \todo{补充：端到端推理耗时。}
 
 \subsection{主实验结果}
@@ -158,14 +158,14 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 训练数据为原始 6k 平面图数据集经 8 倍坐标增强后所得约 48k 样本，
 三个变体均以 batch size 384 各独立训练 250k steps（仅用于结构对比，步数少于主模型）；
 定量评估采用从同一 6k 数据集中随机抽取的 1000 条样本，
-以 Coord-RMSE 衡量 DDIM~\cite{song2021ddim} 100 步逆采样后的坐标重建精度；
-定性可视化（图~\ref{fig:ablation_viz}）则采用完整 DDPM 1000 步逆采样以保证生成质量。
-由于三变体在定量评估中均使用相同的 DDIM~\cite{song2021ddim} 100 步配置，
+以 Coord-RMSE 衡量完整 DDPM 1000 步逆采样后的坐标重建精度；
+定性可视化（图~\ref{fig:ablation_viz}）同样采用完整 DDPM 1000 步逆采样以保证生成质量。
+由于三变体在定量评估中均使用相同的 DDPM 1000 步配置，
 各变体之间的相对比较可有效反映注意力结构本身的影响。
 
 \begin{table}[h]
 \centering
-\caption{注意力结构消融：各变体独立训练后的坐标扩散精度对比（DDIM 100步）}
+\caption{注意力结构消融：各变体独立训练后的坐标扩散精度对比（DDPM 1000步）}
 \label{tab:ablation_attn}
 \small
 \begin{tabular}{lcc}
