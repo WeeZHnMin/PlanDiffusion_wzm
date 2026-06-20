@@ -229,10 +229,8 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     \centering
     \includegraphics[width=\linewidth]{figures/diffusion_process.pdf}
     \caption{
-        节点图的前向扩散过程（$t=1000 \to t=0$，从左上至右下蛇形排列）。
-        扩散面板中节点以灰色圆表示；最右图（Node Types）还原 $t=0$ 坐标后
-        按组合类型着色，展示最终类型预测结果。
-        箭头标注各阶段操作名称。
+        节点坐标的逆扩散过程（$t=1000 \to t=0$，从左至右依次排列）。
+        $t=1000$ 为纯高斯噪声，随去噪步骤推进，节点逐步收敛至最终平面图布局（$t=0$）。
     }
     \label{fig:diffusion}
 \end{figure}
