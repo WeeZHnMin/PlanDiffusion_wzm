@@ -160,6 +160,8 @@ def main():
     tokens_list    = []
     lengths_list   = []
     text_lens_list = []
+    coords_list    = []
+    mask_list      = []
     n_graphs  = 0
     n_skipped = 0
     truncated = 0
@@ -191,6 +193,10 @@ def main():
                 adj[i][i] = 0
             tl       = len(text_ids) + 1   # +1 for BOS_G
 
+            # 原始坐标 [40, 2]
+            orig_coords = np.array(rec["node_coords"], dtype=np.float32)  # [40, 2]
+            orig_mask   = np.array(rec["node_mask"],   dtype=np.int32)    # [40]
+
             # 增强：每次从不同节点出发BFS
             starts = [0] + rng.sample(range(1, n), min(args.augment - 1, n - 1))
 
@@ -208,9 +214,19 @@ def main():
                 padded  = np.full(MAX_SEQ_LEN, PAD_ID, dtype=np.int32)
                 padded[:seq_len] = seq
 
+                # BFS 重编号后的坐标：visit_order[new_i] = orig_i
+                visit_order = sorted(new_id.keys(), key=lambda o: new_id[o])
+                new_coords = np.zeros((MAX_NODES, 2), dtype=np.float32)
+                new_mask   = np.zeros(MAX_NODES,      dtype=np.int32)
+                for new_i, orig_i in enumerate(visit_order):
+                    new_coords[new_i] = orig_coords[orig_i]
+                    new_mask[new_i]   = orig_mask[orig_i]
+
                 tokens_list.append(padded)
                 lengths_list.append(seq_len)
                 text_lens_list.append(tl)
+                coords_list.append(new_coords)
+                mask_list.append(new_mask)
 
             if (line_no + 1) % 10000 == 0:
                 elapsed = time.perf_counter() - t0
@@ -222,9 +238,11 @@ def main():
 
     np.savez_compressed(
         out_path,
-        tokens    = np.stack(tokens_list,  axis=0),   # (N, MAX_SEQ_LEN)
-        lengths   = np.array(lengths_list, dtype=np.int32),
-        text_lens = np.array(text_lens_list, dtype=np.int32),
+        tokens      = np.stack(tokens_list,  axis=0),   # (N, MAX_SEQ_LEN)
+        lengths     = np.array(lengths_list, dtype=np.int32),
+        text_lens   = np.array(text_lens_list, dtype=np.int32),
+        node_coords = np.stack(coords_list, axis=0),    # (N, 40, 2)
+        node_mask   = np.stack(mask_list,   axis=0),    # (N, 40)
     )
 
     elapsed = time.perf_counter() - t0

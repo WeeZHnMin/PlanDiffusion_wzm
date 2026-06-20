@@ -2,7 +2,7 @@
 节点坐标扩散模块（θ₂）Coord-RMSE 评估脚本。
 
 条件：gen_adj_test.npz（θ₁ 生成的邻接矩阵 + BERT prompt）
-GT坐标：data/jsonl/test_graph_dataset_10k.jsonl（按行索引对齐）
+GT坐标：text_graph_tree_test_10k.npz 中的 node_coords（与 gen_adj 按索引对齐）
 
 用法（项目根目录）：
     python -m node_diffusion_cross_att.eval_coord_rmse \
@@ -16,7 +16,6 @@ GT坐标：data/jsonl/test_graph_dataset_10k.jsonl（按行索引对齐）
 """
 
 import argparse
-import json
 import numpy as np
 import torch
 
@@ -26,16 +25,18 @@ from .diffusion import GaussianDiffusion
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',       default='checkpoints/node_diffusion_cross_att/latest.pt')
-    p.add_argument('--bert',       default='models/bert-base-uncased')
-    p.add_argument('--data',       default='data/processed/node_diffusion_cross_att/gen_adj_test.npz')
-    p.add_argument('--jsonl',      default='data/jsonl/test_graph_dataset_10k.jsonl')
-    p.add_argument('--n_eval',     type=int, default=0,
-                   help='评估样本数（0=全量）')
+    p.add_argument('--ckpt',     default='checkpoints/node_diffusion_cross_att/latest.pt')
+    p.add_argument('--bert',     default='models/bert-base-uncased')
+    p.add_argument('--gen_adj',  default='data/processed/node_diffusion_cross_att/gen_adj_test.npz',
+                   help='θ₁ 输出：生成的邻接矩阵 + BERT prompt')
+    p.add_argument('--gt_npz',   default='data/processed/graph_tree/text_graph_tree_test_10k.npz',
+                   help='含 node_coords 的测试集 npz（与 gen_adj 按索引对齐）')
+    p.add_argument('--n_eval',   type=int, default=0,
+                   help='评估样本数（0=全量 valid 样本）')
     p.add_argument('--batch_size', type=int, default=16)
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0=完整 DDPM 1000步）')
-    p.add_argument('--seed',       type=int, default=42)
+    p.add_argument('--seed',     type=int, default=42)
     return p.parse_args()
 
 
@@ -107,33 +108,30 @@ def main():
 
     diffusion = GaussianDiffusion(timesteps=1000)
 
-    # 加载 gen_adj_test.npz（θ₁ 输出，作为 θ₂ 的条件）
-    data      = np.load(args.data, allow_pickle=True)
-    valid_idx = np.where(data['valid'])[0]
-    total     = len(valid_idx)
-    n_eval    = total if args.n_eval == 0 else min(args.n_eval, total)
+    # 加载 gen_adj_test.npz（θ₁ 输出，作为 θ₂ 条件）
+    gen  = np.load(args.gen_adj, allow_pickle=True)
+    # 加载 GT 坐标（与 gen_adj 按索引对齐）
+    gt   = np.load(args.gt_npz,  allow_pickle=True)
+
+    assert 'node_coords' in gt.files, \
+        f"{args.gt_npz} 中没有 node_coords，请用修改后的 build_text_graph_tree.py 重新生成"
+
+    total     = len(gen['valid'])
+    valid_idx = np.where(gen['valid'])[0]
+    n_eval    = len(valid_idx) if args.n_eval == 0 else min(args.n_eval, len(valid_idx))
     rng       = np.random.default_rng(args.seed)
     chosen    = sorted(rng.choice(valid_idx, size=n_eval, replace=False).tolist())
-    print(f'gen_adj_test 有效样本: {total}  评估: {n_eval} 条')
-
-    # 加载 GT 坐标（按行索引从 jsonl 读取）
-    print(f'读取 GT 坐标: {args.jsonl} ...')
-    gt_coords_all = {}      # {global_idx: np.array [40, 2]}
-    gt_mask_all   = {}      # {global_idx: np.array [40] bool}
-    with open(args.jsonl, encoding='utf-8') as f:
-        for line_i, line in enumerate(f):
-            if line_i in set(chosen):
-                d = json.loads(line)
-                gt_coords_all[line_i] = np.array(d['node_coords'], dtype='float32')  # [40, 2]
-                gt_mask_all[line_i]   = np.array(d['node_mask'],   dtype='float32') > 0.5
+    print(f'gen_adj_test: 共 {total} 条，有效 {len(valid_idx)} 条，评估 {n_eval} 条')
 
     mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
     print(f'采样模式: {mode}')
 
-    adj_all  = data['adj_matrix' ][chosen].astype('float32')
-    mask_all = data['node_mask'  ][chosen].astype('float32')
-    ptok_all = data['prompt_tokens'][chosen].astype('int64')
-    pmsk_all = data['prompt_mask'  ][chosen].astype('float32')
+    adj_all  = gen['adj_matrix'  ][chosen].astype('float32')
+    mask_all = gen['node_mask'   ][chosen].astype('float32')
+    ptok_all = gen['prompt_tokens'][chosen].astype('int64')
+    pmsk_all = gen['prompt_mask' ][chosen].astype('float32')
+    gt_coords = gt['node_coords' ][chosen].astype('float32')  # [N, 40, 2]
+    gt_mask   = gt['node_mask'   ][chosen].astype('float32')  # [N, 40]
 
     BS        = args.batch_size
     n_batches = (n_eval + BS - 1) // BS
@@ -156,11 +154,9 @@ def main():
 
     # 计算 Coord-RMSE（仅有效节点，以 GT mask 为准）
     rmse_list = []
-    for local_i, global_i in enumerate(chosen):
-        gt_mask = gt_mask_all[global_i]
-        gt_xy   = gt_coords_all[global_i]
-        pred_xy = all_preds[local_i]
-        err     = pred_xy[gt_mask] - gt_xy[gt_mask]
+    for i in range(n_eval):
+        valid = gt_mask[i] > 0.5
+        err   = all_preds[i][valid] - gt_coords[i][valid]
         rmse_list.append(float(np.sqrt(np.mean(err ** 2))))
 
     rmse_arr = np.array(rmse_list)
