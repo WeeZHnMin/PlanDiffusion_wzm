@@ -247,10 +247,10 @@ def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
                 ax.plot([pos[i, 0], pos[j, 0]], [pos[i, 1], pos[j, 1]],
                         color='#AAAAAA', lw=0.9, alpha=0.7, zorder=1)
     for i in range(n):
-        ax.add_patch(plt.Circle((pos[i, 0], pos[i, 1]), 0.07,
+        ax.add_patch(plt.Circle((pos[i, 0], pos[i, 1]), 0.11,
                                 color='#4E8CC2', ec='#333333', lw=0.6, zorder=3))
         ax.text(pos[i, 0], pos[i, 1], str(i),
-                ha='center', va='center', fontsize=7,
+                ha='center', va='center', fontsize=9,
                 color='white', fontweight='bold', zorder=4)
     ax.set_xlim(-1.1, 1.1); ax.set_ylim(-1.1, 1.1)
     ax.set_aspect('equal')
@@ -566,7 +566,7 @@ def main():
                   r'$\theta_3$: Type Prediction',
                   'Rendered Floor Plan']
     for j, title in enumerate(col_titles):
-        axes[0][j].set_title(title, fontsize=10, fontweight='bold', pad=4)
+        axes[0][j].set_title(title, fontsize=13, fontweight='bold', pad=5)
 
     # 行标签
     for row_i, rec in enumerate(records):
