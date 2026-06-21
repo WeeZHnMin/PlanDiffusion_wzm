@@ -53,6 +53,8 @@ def parse_args():
     p.add_argument('--combo_vocab', default='data/processed/type_combo_vocab.json')
     p.add_argument('--runs', type=int, default=3,
                    help='GPU 模式下重复推理次数（CPU 模式固定为 1）')
+    p.add_argument('--cpu', action='store_true',
+                   help='强制使用 CPU 推理（忽略 CUDA）')
     return p.parse_args()
 
 
@@ -155,8 +157,11 @@ def run_once(model1, model2, diffusion, model3, id_to_combo,
 
 def main():
     args   = parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    runs   = args.runs if device.type == 'cuda' else 1
+    if args.cpu:
+        device = torch.device('cpu')
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    runs = args.runs if device.type == 'cuda' else 1
 
     print('=' * 60)
     print_device(device)
