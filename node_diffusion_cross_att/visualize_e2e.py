@@ -55,8 +55,9 @@ from llm_graph.infer_stage1 import (
     load_dataset,
     get_prefix_and_gt,
     parse_sequence,
+    generate,          # 单条推理，无 RNG 跨样本污染
 )
-from llm_graph.infer_batch import generate_batch, decode_bpe_text, MAX_BERT_LEN
+from llm_graph.infer_batch import decode_bpe_text, MAX_BERT_LEN
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
 from .type_model import NodeTypeClassifier
@@ -368,22 +369,14 @@ def main():
     print('\n[θ₁] 加载模型...')
     model1 = load_llm(args.ckpt1, device)
 
-    prefixes = [get_prefix_and_gt(i, all_tokens, all_lengths, all_textlens)[0]
-                for i in indices]
-    print(f'[θ₁] 批量自回归生成（batch={len(prefixes)}）...')
-    gen_seqs = generate_batch(model1, prefixes, device, max_new_tokens=200)
-
-    # 卸载 θ₁
-    del model1
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-    print('[θ₁] 模型已卸载')
-
-    # 解析 + BERT 重编码
+    # 逐条推理，避免批量 multinomial 的跨样本 RNG 污染
     records = []
-    for idx, prefix, gen_seq in zip(indices, prefixes, gen_seqs):
-        parsed = parse_sequence(gen_seq)
-        print(f'  idx={idx}  n_nodes={parsed["n_nodes"]}  valid={parsed["valid"]}')
+    for idx in indices:
+        prefix, _ = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
+        print(f'  [θ₁] idx={idx} 推理中...', end='', flush=True)
+        gen_seq = generate(model1, prefix, device, max_new_tokens=200)
+        parsed  = parse_sequence(gen_seq)
+        print(f'  n_nodes={parsed["n_nodes"]}  valid={parsed["valid"]}')
         if not parsed['valid']:
             continue
 
@@ -403,6 +396,12 @@ def main():
         records.append(dict(idx=idx, text=text, n_nodes=N,
                             adj_np=adj_np, mask_np=mask_np,
                             ptok_np=ptok_np, pmsk_np=pmsk_np))
+
+    # 卸载 θ₁
+    del model1
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+    print('[θ₁] 模型已卸载')
 
     if not records:
         print('所有样本均无效，退出。')
