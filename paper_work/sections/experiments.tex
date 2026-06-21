@@ -201,6 +201,16 @@ AdjAttn only 布局较为规整但整体偏移较大；
 \subsection{定性结果}
 \label{subsec:qualitative}
 
+图~\ref{fig:qualitative} 展示了五条文本条件下的端到端生成结果。
+第3、5行生成的平面图房间轮廓方正，主要房间类型齐全，
+布局与输入描述基本对应，说明三阶段流水线具备从自然语言直接生成合理平面图结构的能力。
+第1行因 $\theta_1$ 对复杂描述估计了较多节点数（23 个），
+导致渲染平面图被分割为细碎区域，视觉质量下降。
+此外，由于 $\theta_3$ 以真实坐标为训练条件，
+推理时输入 $\theta_2$ 预测坐标存在分布漂移，
+部分样例的房间类型空间分布与文本描述不完全吻合，
+这是三阶段级联误差的主要来源，留待后续联合训练方案改进。
+
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\linewidth]{figures/e2e_result.pdf}
