@@ -25,6 +25,8 @@ import textwrap
 from pathlib import Path
 from typing import Dict, List
 
+from shapely.geometry import Polygon as ShapelyPolygon
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -283,8 +285,12 @@ def draw_col5_render(ax, coords: np.ndarray, adj_np: np.ndarray,
                                 facecolor=ROOM_COLORS.get(room_type, '#EAEDED'),
                                 edgecolor='#555555', linewidth=0.8,
                                 alpha=0.88, zorder=1))
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
+        try:
+            rp = ShapelyPolygon(pts).representative_point()
+            cx, cy = rp.x, rp.y
+        except Exception:
+            cx = sum(p[0] for p in pts) / len(pts)
+            cy = sum(p[1] for p in pts) / len(pts)
         ax.text(cx, cy, ROOM_LABELS.get(room_type, room_type),
                 ha='center', va='center', fontsize=10,
                 color='#111111', zorder=3)
