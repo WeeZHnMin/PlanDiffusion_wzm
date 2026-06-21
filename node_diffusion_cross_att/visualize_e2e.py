@@ -175,11 +175,11 @@ def _ax_style(ax):
 
 def draw_col1_text(ax, text: str):
     ax.axis('off')
-    ax.text(0.5, 0.5, textwrap.fill(text, width=38),
-            ha='center', va='center', fontsize=6,
+    ax.text(0.5, 0.5, textwrap.fill(text, width=48),
+            ha='center', va='center', fontsize=8.5,
             transform=ax.transAxes, multialignment='left',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='#F5F5F5',
-                      edgecolor='#CCCCCC', linewidth=0.6))
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5F5F5',
+                      edgecolor='#CCCCCC', linewidth=0.7))
 
 
 def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
@@ -450,10 +450,10 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     print(f'\n绘制 {B} × 5 图...')
-    COL_W = [2.2, 1.9, 1.9, 1.9, 2.1]
+    COL_W = [3.4, 1.9, 1.9, 1.9, 2.1]
     fig, axes = plt.subplots(
         B, 5,
-        figsize=(sum(COL_W) + 0.1, B * 2.1 + 0.45),
+        figsize=(sum(COL_W) + 0.1, B * 2.3 + 0.45),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
     )
