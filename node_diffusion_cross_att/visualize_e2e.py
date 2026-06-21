@@ -193,10 +193,10 @@ def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
                 ax.plot([pos[i, 0], pos[j, 0]], [pos[i, 1], pos[j, 1]],
                         color='#AAAAAA', lw=0.9, alpha=0.7, zorder=1)
     for i in range(n):
-        ax.add_patch(plt.Circle((pos[i, 0], pos[i, 1]), 0.04,
-                                color='#4E8CC2', ec='#333333', lw=0.5, zorder=3))
+        ax.add_patch(plt.Circle((pos[i, 0], pos[i, 1]), 0.07,
+                                color='#4E8CC2', ec='#333333', lw=0.6, zorder=3))
         ax.text(pos[i, 0], pos[i, 1], str(i),
-                ha='center', va='center', fontsize=4,
+                ha='center', va='center', fontsize=7,
                 color='white', fontweight='bold', zorder=4)
     ax.set_xlim(-1.1, 1.1); ax.set_ylim(-1.1, 1.1)
     ax.set_aspect('equal')
@@ -230,11 +230,11 @@ def _draw_graph(ax, coords: np.ndarray, adj_np: np.ndarray,
 
 
 def draw_col3_coords(ax, coords, adj_np, mask_np, type_ids):
-    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.12)
+    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.16)
 
 
 def draw_col4_types(ax, coords, adj_np, mask_np, type_ids):
-    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.16)
+    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.20)
 
 
 def draw_col5_render(ax, coords: np.ndarray, adj_np: np.ndarray,
@@ -286,7 +286,7 @@ def draw_col5_render(ax, coords: np.ndarray, adj_np: np.ndarray,
         cx = sum(p[0] for p in pts) / len(pts)
         cy = sum(p[1] for p in pts) / len(pts)
         ax.text(cx, cy, ROOM_LABELS.get(room_type, room_type),
-                ha='center', va='center', fontsize=5.5,
+                ha='center', va='center', fontsize=10,
                 color='#111111', zorder=3)
 
     for i in range(n):
@@ -312,8 +312,10 @@ def parse_args():
     p.add_argument('--vocab', default='llm_graph/vocab/wp_tokenizer.json')
     p.add_argument('--bert',  default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='data/processed/type_combo_vocab.json')
-    p.add_argument('--n',     type=int, default=5)
-    p.add_argument('--seed',  type=int, default=42)
+    p.add_argument('--n',       type=int,   default=5)
+    p.add_argument('--indices', type=int,   nargs='+', default=None,
+                   help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
+    p.add_argument('--seed',    type=int,   default=42)
     p.add_argument('--out',   default='outputs/visualize_e2e/result.png')
     return p.parse_args()
 
@@ -335,9 +337,13 @@ def main():
 
     # ── 取样本索引 ────────────────────────────────────────────────────────────
     all_tokens, all_lengths, all_textlens = load_dataset(args.data)
-    rng     = np.random.default_rng(args.seed)
-    indices = rng.choice(len(all_tokens), size=args.n, replace=False).tolist()
-    print(f'选取索引: {indices}')
+    if args.indices is not None:
+        indices = args.indices
+        print(f'手动指定索引: {indices}')
+    else:
+        rng     = np.random.default_rng(args.seed)
+        indices = rng.choice(len(all_tokens), size=args.n, replace=False).tolist()
+        print(f'随机索引: {indices}')
 
     # ════════════════════════════════════════════════════════════════════════
     # 阶段 1  θ₁：加载 → 批量推理 → 卸载
