@@ -72,9 +72,10 @@ from llm_graph.infer_batch import decode_bpe_text, MAX_BERT_LEN
 
 # ── 内置自定义文本（风格与训练集一致）────────────────────────────────────────
 CUSTOM_PROMPTS = [
-    "The living room is at the center, adjacent to the kitchen on its left "
-    "and a bedroom on its right. A bathroom is situated below the kitchen, "
-    "and the corridor connects the living room to all other rooms.",
+    "The corridor is central, connecting the living room on the left, the "
+    "kitchen on the right, and a bedroom above. A bathroom is situated "
+    "below the corridor, adjacent to the living room on its left and the "
+    "kitchen on its right.",
 
     "The living room is on the left, adjacent to the corridor on its right "
     "and the kitchen above it. The corridor runs vertically on the right side, "
