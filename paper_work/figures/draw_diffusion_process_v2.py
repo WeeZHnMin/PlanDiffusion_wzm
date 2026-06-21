@@ -356,62 +356,101 @@ def main():
         'mathtext.fontset': 'cm',
     })
 
-    N_diff   = len(TIMESTEPS)   # 6
-    N_extra  = 2                # type + render
-    N_total  = N_diff + N_extra # 8
+    # ── 蛇形 2×4 布局 ─────────────────────────────────────────────────────────
+    # Row 0 (左→右): t=1000, t=800, t=600, t=400
+    # Row 1 (右→左): t=200,  t=0,   θ₃,   Rendered
+    #                col 3    col 2  col 1  col 0
+    PANEL_W  = 1.8
+    PANEL_H  = 1.8
+    GAP_X    = 0.15   # 水平间隔（留给箭头）
+    GAP_Y    = 0.45   # 垂直间隔（留给竖向箭头）
+    PAD_T    = 0.18   # 顶部留给标题
+    PAD_B    = 0.05   # 底部边距
 
-    DIFF_W   = 1.4   # 扩散帧宽度
-    EXTRA_W  = 1.8   # 类型/渲染帧（稍宽，细节更多）
-    ARROW_W  = 0.08
-    FIG_H    = 1.9
-    FIG_W    = DIFF_W * N_diff + EXTRA_W * N_extra + ARROW_W * (N_total - 1)
+    N_COLS   = 4
+    FIG_W    = PANEL_W * N_COLS + GAP_X * (N_COLS - 1)
+    FIG_H    = PANEL_H * 2 + GAP_Y + PAD_T + PAD_B
 
-    LABELS_DIFF  = ['$t=1000$', '$t=800$', '$t=600$', '$t=400$', '$t=200$', '$t=0$']
-    LABELS_EXTRA = [r'$\theta_3$: Type', 'Rendered']
+    DISPLAY  = 3.0
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
-    panel_bottom = 0.03
-    panel_height = 1.0 - panel_bottom - 0.08
 
-    axes = []
-    x_cursor = 0.0
-    for col in range(N_total):
-        w = DIFF_W if col < N_diff else EXTRA_W
-        left  = x_cursor / FIG_W
-        width = w / FIG_W
-        ax    = fig.add_axes([left, panel_bottom, width, panel_height])
-        axes.append(ax)
-        x_cursor += w + ARROW_W
+    def make_ax(row, col):
+        left   = (col * (PANEL_W + GAP_X)) / FIG_W
+        width  = PANEL_W / FIG_W
+        if row == 0:
+            bottom = (PAD_B + PANEL_H + GAP_Y) / FIG_H
+        else:
+            bottom = PAD_B / FIG_H
+        height = PANEL_H / FIG_H
+        return fig.add_axes([left, bottom, width, height])
 
-    DISPLAY = 3.0
+    # 创建 2×4 axes 网格
+    axs = [[make_ax(r, c) for c in range(N_COLS)] for r in range(2)]
 
-    # 6 帧扩散面板
-    for col, (t_val, label) in enumerate(zip(TIMESTEPS, LABELS_DIFF)):
-        ax     = axes[col]
-        coords = to_display(snaps[t_val], self_norm=(t_val == 1000))
+    def style_ax(ax):
         ax.set_facecolor('#FAFAFA')
         for sp in ax.spines.values():
             sp.set_edgecolor('#DDDDDD'); sp.set_linewidth(0.5)
+
+    # Row 0: t=1000, t=800, t=600, t=400
+    row0_data = [
+        (1000, '$t=1000$', True),
+        (800,  '$t=800$',  False),
+        (600,  '$t=600$',  False),
+        (400,  '$t=400$',  False),
+    ]
+    for col, (t_val, label, self_norm) in enumerate(row0_data):
+        ax = axs[0][col]
+        style_ax(ax)
+        coords = to_display(snaps[t_val], self_norm=self_norm)
         draw_diffusion_panel(ax, coords, adj_np, valid_mask, display=DISPLAY)
         ax.set_title(label, fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
 
-    # θ₃ 类型预测面板
-    ax_type = axes[N_diff]
-    ax_type.set_facecolor('#FAFAFA')
-    for sp in ax_type.spines.values():
-        sp.set_edgecolor('#DDDDDD'); sp.set_linewidth(0.5)
-    coords_t0_disp = to_display(snaps[0])
-    draw_type_panel(ax_type, coords_t0_disp, adj_np, valid_mask, type_ids, display=DISPLAY)
-    ax_type.set_title(LABELS_EXTRA[0], fontsize=8, pad=2, fontfamily='serif')
+    # Row 1 (右→左): col3=t=200, col2=t=0, col1=θ₃, col0=Rendered
+    ax = axs[1][3]; style_ax(ax)
+    draw_diffusion_panel(ax, to_display(snaps[200]), adj_np, valid_mask, display=DISPLAY)
+    ax.set_title('$t=200$', fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
 
-    # 渲染面板（用原始坐标，不做 display 归一化）
-    ax_render = axes[N_diff + 1]
-    draw_render_panel(ax_render, final_coords_raw, adj_np, valid_mask, type_ids, id_to_combo)
-    ax_render.set_title(LABELS_EXTRA[1], fontsize=8, pad=2, fontfamily='serif')
+    ax = axs[1][2]; style_ax(ax)
+    draw_diffusion_panel(ax, to_display(snaps[0]), adj_np, valid_mask, display=DISPLAY)
+    ax.set_title('$t=0$', fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
 
-    # 箭头
-    for col in range(N_total - 1):
-        add_arrow(fig, axes[col], axes[col + 1])
+    ax = axs[1][1]; style_ax(ax)
+    draw_type_panel(ax, to_display(snaps[0]), adj_np, valid_mask, type_ids, display=DISPLAY)
+    ax.set_title(r'$\theta_3$: Type', fontsize=8, pad=2, fontfamily='serif')
+
+    ax = axs[1][0]
+    draw_render_panel(ax, final_coords_raw, adj_np, valid_mask, type_ids, id_to_combo)
+    ax.set_title('Rendered', fontsize=8, pad=2, fontfamily='serif')
+
+    # ── 箭头 ──────────────────────────────────────────────────────────────────
+    def arrow(x0, y0, x1, y1):
+        fig.add_artist(FancyArrowPatch(
+            (x0, y0), (x1, y1),
+            transform=fig.transFigure,
+            arrowstyle='->', color='#888888',
+            mutation_scale=9, lw=0.9))
+
+    # Row 0: 左→右水平箭头
+    for col in range(N_COLS - 1):
+        xr = axs[0][col].get_position().x1
+        xl = axs[0][col + 1].get_position().x0
+        ym = (axs[0][col].get_position().y0 + axs[0][col].get_position().y1) / 2
+        arrow(xr + 0.005, ym, xl - 0.005, ym)
+
+    # 竖向箭头：row0 col3 → row1 col3
+    xm  = (axs[0][3].get_position().x0 + axs[0][3].get_position().x1) / 2
+    yb0 = axs[0][3].get_position().y0
+    yt1 = axs[1][3].get_position().y1
+    arrow(xm, yb0 - 0.01, xm, yt1 + 0.01)
+
+    # Row 1: 右→左水平箭头（col3→col2→col1→col0）
+    for col in range(N_COLS - 1, 0, -1):
+        xl = axs[1][col].get_position().x0
+        xr = axs[1][col - 1].get_position().x1
+        ym = (axs[1][col].get_position().y0 + axs[1][col].get_position().y1) / 2
+        arrow(xl - 0.005, ym, xr + 0.005, ym)
 
     # ── 保存 ──────────────────────────────────────────────────────────────────
     out_pdf = args.out
