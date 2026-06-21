@@ -54,8 +54,9 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
         PlanDiffusion 整体流程。
         左：图拓扑生成阶段以文本描述为条件，通过 LLaMA 自回归推理生成图结构序列，
         解析得到顶点图；
-        右：节点坐标扩散阶段以顶点图和文本为条件，
-        通过 DDPM 逆扩散过程从高斯噪声（$t=1000$）逐步恢复节点坐标与类型（$t=0$）。
+        右：完整三阶段生成过程——$\theta_2$ 以顶点图和文本为条件，
+        通过 DDPM 逆扩散从高斯噪声（$t=1000$）逐步恢复节点坐标（$t=0$）；
+        随后 $\theta_3$ 对节点进行类型预测，最终通过半边遍历与投票渲染输出彩色平面图。
     }
     \label{fig:overview}
 \end{figure}
