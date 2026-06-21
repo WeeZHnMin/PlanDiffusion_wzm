@@ -121,7 +121,8 @@ def spring_layout(adj: np.ndarray, n: int, iters: int = 200,
 def sample_coords_batch(model2, diffusion,
                         adj_batch: np.ndarray, mask_batch: np.ndarray,
                         ptok_batch: np.ndarray, pmsk_batch: np.ndarray,
-                        device) -> np.ndarray:
+                        device,
+                        sample_indices: List[int] = None) -> np.ndarray:
     """
     DDPM 1000步批量逆采样。
     输入均为 numpy，shape [B, ...]；返回 pred_coords [B, 40, 2]。
@@ -152,7 +153,17 @@ def sample_coords_batch(model2, diffusion,
         return model2.coord_head(h).permute(0, 2, 1).float() # [B, 2, 40]
 
     diffusion._to(device)
-    x = torch.randn(B, 2, 40, device=device)
+    # 每条样本用自身索引独立 seed，与全局 RNG 状态解耦，
+    # 保证同一样本无论与哪些样本同批次结果都一致。
+    if sample_indices is not None:
+        x_slices = []
+        for idx in sample_indices:
+            g = torch.Generator(device=device)
+            g.manual_seed(int(idx) + 123456)
+            x_slices.append(torch.randn(1, 2, 40, device=device, generator=g))
+        x = torch.cat(x_slices, dim=0)
+    else:
+        x = torch.randn(B, 2, 40, device=device)
     for t in reversed(range(diffusion.T)):
         eps = fwd(x, t)
         ab  = diffusion.alphas_bar[t]
@@ -420,7 +431,8 @@ def main():
     with torch.no_grad():
         pred_coords_batch = sample_coords_batch(
             model2, diffusion,
-            adj_batch, mask_batch, ptok_batch, pmsk_batch, device)   # [B, 40, 2]
+            adj_batch, mask_batch, ptok_batch, pmsk_batch, device,
+            sample_indices=[r['idx'] for r in records])   # [B, 40, 2]
 
     del model2, diffusion
     if device.type == 'cuda':
