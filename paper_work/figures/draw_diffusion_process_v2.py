@@ -365,7 +365,7 @@ def main():
     GAP_X    = 0.15   # 水平间隔（留给箭头）
     GAP_Y    = 0.45   # 垂直间隔（留给竖向箭头）
     PAD_T    = 0.18   # 顶部留给标题
-    PAD_B    = 0.05   # 底部边距
+    PAD_B    = 0.22   # 底部留给第二行标题
 
     N_COLS   = 4
     FIG_W    = PANEL_W * N_COLS + GAP_X * (N_COLS - 1)
@@ -407,22 +407,29 @@ def main():
         draw_diffusion_panel(ax, coords, adj_np, valid_mask, display=DISPLAY)
         ax.set_title(label, fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
 
-    # Row 1 (右→左): col3=t=200, col2=t=0, col1=θ₃, col0=Rendered
+    def below_title(ax, label, italic=False):
+        ax.text(0.5, -0.06, label,
+                ha='center', va='top', fontsize=8,
+                fontfamily='serif',
+                fontstyle='italic' if italic else 'normal',
+                transform=ax.transAxes)
+
+    # Row 1 (右→左): col3=t=200, col2=t=0, col1=Type Prediction, col0=Rendered
     ax = axs[1][3]; style_ax(ax)
     draw_diffusion_panel(ax, to_display(snaps[200]), adj_np, valid_mask, display=DISPLAY)
-    ax.set_title('$t=200$', fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
+    below_title(ax, '$t=200$', italic=True)
 
     ax = axs[1][2]; style_ax(ax)
     draw_diffusion_panel(ax, to_display(snaps[0]), adj_np, valid_mask, display=DISPLAY)
-    ax.set_title('$t=0$', fontsize=8, pad=2, fontfamily='serif', fontstyle='italic')
+    below_title(ax, '$t=0$', italic=True)
 
     ax = axs[1][1]; style_ax(ax)
     draw_type_panel(ax, to_display(snaps[0]), adj_np, valid_mask, type_ids, display=DISPLAY)
-    ax.set_title(r'$\theta_3$: Type', fontsize=8, pad=2, fontfamily='serif')
+    below_title(ax, 'Type Prediction')
 
     ax = axs[1][0]
     draw_render_panel(ax, final_coords_raw, adj_np, valid_mask, type_ids, id_to_combo)
-    ax.set_title('Rendered', fontsize=8, pad=2, fontfamily='serif')
+    below_title(ax, 'Rendered Floor Plan')
 
     # ── 箭头 ──────────────────────────────────────────────────────────────────
     def arrow(x0, y0, x1, y1):
