@@ -483,11 +483,6 @@ def main():
     for row_i, rec in enumerate(records):
         axes[row_i][0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)
 
-    fig.suptitle(
-        r'PlanDiffusion End-to-End Results'
-        r' ($\theta_1 \!\to\! \theta_2 \!\to\! \theta_3 \!\to\!$ Render)',
-        fontsize=8,
-    )
     fig.get_layout_engine().set(hspace=0.03, wspace=0.03,
                                 h_pad=0.02, w_pad=0.02)
 
