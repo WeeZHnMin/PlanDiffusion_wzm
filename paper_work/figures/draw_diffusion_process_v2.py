@@ -88,12 +88,11 @@ N_panels  = len(TIMESTEPS)
 
 PANEL_W  = 1.4
 ARROW_W  = 0.18
-FIG_H    = 1.95
+FIG_H    = 1.65
 FIG_W    = PANEL_W * N_panels + ARROW_W * (N_panels - 1) + 0.1
-LEGEND_H = 0.32
 
 fig = plt.figure(figsize=(FIG_W, FIG_H))
-panel_bottom = LEGEND_H / FIG_H + 0.03
+panel_bottom = 0.03
 panel_height = 1.0 - panel_bottom - 0.03
 axes = []
 for col in range(N_panels):
@@ -156,22 +155,6 @@ for col, (t_idx, label) in enumerate(zip(TIMESTEPS, LABELS)):
             )
         )
 
-# ── Shared legend ─────────────────────────────────────────────────────────────
-present = sorted({cids[ni] for ni in valid})
-handles = [
-    mpatches.Patch(facecolor=combo_fc(cid), edgecolor=combo_ec(cid),
-                   label=combo_label(cid), linewidth=0.8)
-    for cid in present
-]
-ax_leg = fig.add_axes([0.01, 0.0, 0.98, LEGEND_H / FIG_H])
-ax_leg.axis('off')
-ax_leg.legend(handles=handles,
-              loc='center', ncol=len(present),
-              fontsize=6.5, frameon=True,
-              framealpha=0.95, edgecolor='#CCCCCC',
-              title='Node Type', title_fontsize=7.0,
-              columnspacing=0.5, handlelength=0.9, handletextpad=0.35,
-              borderpad=0.4)
 
 plt.savefig('paper_work/figures/diffusion_process.pdf',
             bbox_inches='tight', dpi=200)
