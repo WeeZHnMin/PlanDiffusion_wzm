@@ -407,14 +407,8 @@ def main():
         print('所有样本均无效，退出。')
         return
 
-    B          = len(records)
-    adj_batch  = np.stack([r['adj_np']  for r in records])   # [B, 40, 40]
-    mask_batch = np.stack([r['mask_np'] for r in records])   # [B, 40]
-    ptok_batch = np.stack([r['ptok_np'] for r in records])   # [B, T]
-    pmsk_batch = np.stack([r['pmsk_np'] for r in records])   # [B, T]
-
     # ════════════════════════════════════════════════════════════════════════
-    # 阶段 2  θ₂：加载 → 批量 DDPM 采样 → 卸载
+    # 阶段 2  θ₂：加载 → 逐条 DDPM 采样 → 卸载
     # ════════════════════════════════════════════════════════════════════════
     print(f'\n[θ₂] 加载模型...')
     model2 = NodeDiffusionTransformer(bert_name=args.bert).to(device)
@@ -426,12 +420,15 @@ def main():
     print(f'  step={ckpt2.get("step","?")}')
     del ckpt2
 
-    print(f'[θ₂] 批量 DDPM 1000步（batch={B}）...')
-    with torch.no_grad():
-        pred_coords_batch = sample_coords_batch(
-            model2, diffusion,
-            adj_batch, mask_batch, ptok_batch, pmsk_batch, device,
-            sample_indices=[r['idx'] for r in records])   # [B, 40, 2]
+    for rec in records:
+        print(f'  [θ₂] idx={rec["idx"]} DDPM 1000步...', flush=True)
+        with torch.no_grad():
+            rec['pred_coords'] = sample_coords_batch(
+                model2, diffusion,
+                rec['adj_np' ][None], rec['mask_np'][None],
+                rec['ptok_np'][None], rec['pmsk_np'][None],
+                device, sample_indices=[rec['idx']],
+            )[0]   # [40, 2]
 
     del model2, diffusion
     if device.type == 'cuda':
@@ -439,7 +436,7 @@ def main():
     print('[θ₂] 模型已卸载')
 
     # ════════════════════════════════════════════════════════════════════════
-    # 阶段 3  θ₃：加载 → 批量类型预测 → 卸载
+    # 阶段 3  θ₃：加载 → 逐条类型预测 → 卸载
     # ════════════════════════════════════════════════════════════════════════
     print(f'\n[θ₃] 加载模型...')
     model3 = NodeTypeClassifier(bert_name=args.bert).to(device)
@@ -450,26 +447,22 @@ def main():
     print(f'  step={ckpt3.get("step","?")}')
     del ckpt3
 
-    print(f'[θ₃] 批量类型预测（batch={B}）...')
-    with torch.no_grad():
-        x_in  = torch.from_numpy(pred_coords_batch.transpose(0, 2, 1)).to(device)
-        adj_t = torch.from_numpy(adj_batch ).to(device)
-        msk_t = torch.from_numpy(mask_batch).to(device)
-        ptk_t = torch.from_numpy(ptok_batch).to(device)
-        pmk_t = torch.from_numpy(pmsk_batch).long().to(device)
-        logits       = model3(x_in, adj_matrix=adj_t, node_mask=msk_t,
-                              prompt_tokens=ptk_t, prompt_mask=pmk_t)
-        type_ids_all = logits.argmax(dim=-1).cpu().numpy()   # [B, 40]
+    for rec in records:
+        with torch.no_grad():
+            x_in  = torch.from_numpy(rec['pred_coords'].T[None]).to(device)
+            adj_t = torch.from_numpy(rec['adj_np' ][None]).to(device)
+            msk_t = torch.from_numpy(rec['mask_np'][None]).to(device)
+            ptk_t = torch.from_numpy(rec['ptok_np'][None]).to(device)
+            pmk_t = torch.from_numpy(rec['pmsk_np'][None]).long().to(device)
+            logits = model3(x_in, adj_matrix=adj_t, node_mask=msk_t,
+                            prompt_tokens=ptk_t, prompt_mask=pmk_t)
+            rec['type_ids'] = logits[0].argmax(dim=-1).cpu().numpy()
+        print(f'  [θ₃] idx={rec["idx"]} 完成')
 
-    del model3, x_in, adj_t, msk_t, ptk_t, pmk_t, logits
+    del model3
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     print('[θ₃] 模型已卸载')
-
-    # 写回 records
-    for k, rec in enumerate(records):
-        rec['pred_coords'] = pred_coords_batch[k]
-        rec['type_ids']    = type_ids_all[k]
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     print(f'\n绘制 {B} × 5 图...')
