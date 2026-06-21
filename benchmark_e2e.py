@@ -138,7 +138,7 @@ def run_once(model1, model2, diffusion, model3, id_to_combo,
     t3 = time.perf_counter()
 
     raw = pred_coords[:N]
-    nbrs = _build_sorted_neighbors(adj_np[:N, :N], raw)
+    nbrs = _build_sorted_neighbors(adj_np[:N, :N], raw, N)
     faces = find_faces(raw, adj_np[:N, :N], nbrs)
     for f in faces:
         vote_room_type(f, type_ids, id_to_combo)
