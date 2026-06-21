@@ -87,6 +87,10 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 测试集共 10,000 条样本。
 由于现有方法与本文在输入模态、数据集及图表示方式上均不一致，
 此处仅报告本文方法的完整指标。
+其中 Coord-RMSE 以 $\theta_1$ 生成的邻接矩阵（而非真实邻接矩阵）作为 $\theta_2$ 的条件输入，
+反映真实推理链路下的坐标扩散精度；
+类型准确率（Type Acc.\ 与 Face Type Acc.）则以真实坐标和真实图结构为条件，
+单独评估 $\theta_3$ 的分类能力。
 
 \begin{table}[h]
 \centering
@@ -104,7 +108,7 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
     & 节点数准确率（$\pm1$）↑  & 57.39\% \\
     & 节点数准确率（$\pm2$）↑  & 76.39\% \\
 \midrule
-节点坐标扩散（$\theta_2$） & Coord-RMSE↓ & \todo{} \\
+节点坐标扩散（$\theta_2$） & Coord-RMSE↓ & 65.62 \\
 \midrule
 \multirow{2}{*}{节点类型预测（$\theta_3$）}
     & Node Type Acc.↑ & 98.71\% \\

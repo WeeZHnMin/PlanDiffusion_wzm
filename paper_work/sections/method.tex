@@ -79,7 +79,7 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 修正明显的房间关系错误与语义不一致之处，以保证标注质量。
 
 \paragraph{统计}
-最终数据集包含 \textbf{149,609} 条样本（原始 150,000 条中过滤掉文本超过 224 token 的 391 条），
+最终数据集包含 \textbf{149,950} 条样本（原始 150,000 条中过滤掉以 WordPiece 分词后文本超过 224 token 的 50 条），
 每条样本含邻接矩阵（$40{\times}40$）、节点坐标（$40{\times}2$）、
 组合类型 ID（$40$）及 WordPiece 文本描述。
 数据集关键统计如表~\ref{tab:dataset_stats} 所示。
@@ -93,12 +93,11 @@ Architext\_v1~\cite{galanos2023architext} 虽提供大规模合成平面图，
 \toprule
 统计项 & 最小 & 均值 & 最大 \\
 \midrule
-样本总数           & \multicolumn{3}{c}{149,609} \\
+样本总数           & \multicolumn{3}{c}{149,950} \\
 节点数             & 9    & 22.4 & 40  \\
 边数               & 12   & 28.6 & 50  \\
-文本长度（token）  & 33   & 81.8 & 149 \\
-单类型节点占比     & \multicolumn{3}{c}{41.1\%} \\
-多类型节点占比     & \multicolumn{3}{c}{58.9\%} \\
+单类型节点占比     & \multicolumn{3}{c}{41.2\%} \\
+多类型节点占比     & \multicolumn{3}{c}{58.8\%} \\
 Combo 类型总数     & \multicolumn{3}{c}{32} \\
 \bottomrule
 \end{tabular}
@@ -164,7 +163,7 @@ ID 范围 & Token & 说明 \\
     \centering
     \input{figures/seq_graph_tikz_body.tex}
     \caption{
-        图序列化的自回归生成过程（真实数据，$N=10$）。
+        图序列化的自回归生成过程（$N=10$）。
         蓝色实线为 BFS 生成树边，红色虚线为补边。
         从左至右依次为：
         （1）生成部分父节点 token 后的局部生成树；
@@ -286,7 +285,7 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     \begin{equation}
         M_{ij}^{\mathrm{adj}} =
         \begin{cases}
-            0       & \text{若 } \mathbf{A}_{ij} = 1 \\
+            0       & \text{若 } \mathbf{A}_{ij} = 1 \text{ 或 } i = j \\
             -\infty & \text{其他}
         \end{cases}
         \label{eq:adj_mask}
@@ -325,7 +324,7 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
 其中 $m_i$ 为节点有效掩码（padding 节点不计入 loss）。
 
 优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，batch $= 64$，FP16 混合精度~\cite{micikevicius2018mixed}。
+grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 训练数据由原始图通过随机节点重排增强 ${\times}8$。
 
 \subsubsection{推理：DDPM 逆采样}
@@ -406,7 +405,7 @@ grad clip $= 1.0$，batch $= 64$，FP16 混合精度~\cite{micikevicius2018mixed
 \end{equation}
 
 优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，batch $= 64$，total steps $= 500\text{k}$，FP16 混合精度~\cite{micikevicius2018mixed}。
+grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 训练数据由原始图通过随机节点重排增强 ${\times}12$。
 
 \subsubsection{推理：直接分类}
