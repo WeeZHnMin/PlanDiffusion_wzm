@@ -203,14 +203,12 @@ AdjAttn only 布局较为规整但整体偏移较大；
 
 \begin{figure}[htbp]
     \centering
-    \todo{插入端到端生成结果图：每行为一个文本条件，
-    展示生成的顶点图（含边和节点类型着色）以及 render.py 输出的彩色平面图。}
+    \includegraphics[width=\linewidth]{figures/e2e_result.pdf}
     \caption{
-        PlanDiffusion 端到端生成结果。
-        每组从左至右依次为：输入文本描述、生成顶点图（节点按组合类型着色）、
+        PlanDiffusion 端到端生成结果（5 条自定义文本条件）。
+        每行从左至右依次为：输入文本描述、$\theta_1$ 生成邻接图（spring layout）、
+        $\theta_2$ 预测坐标图（节点统一蓝色）、$\theta_3$ 类型预测（节点按类型着色）、
         渲染平面图（房间按类型填色，标注房间名）。
     }
     \label{fig:qualitative}
 \end{figure}
-
-\todo{填入定性结果图后删除本行。}
