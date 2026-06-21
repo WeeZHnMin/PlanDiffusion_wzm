@@ -76,9 +76,10 @@ CUSTOM_PROMPTS = [
     "and a bedroom on its right. A bathroom is situated below the kitchen, "
     "and the corridor connects the living room to all other rooms.",
 
-    "The corridor runs vertically through the center, with the living room "
-    "on the left and the kitchen on the right. A bedroom is located above "
-    "the kitchen, and a bathroom is positioned below the living room.",
+    "The kitchen is at the top left, adjacent to the corridor on its right. "
+    "The corridor connects the kitchen above, the living room below, and a "
+    "bedroom to its right. The bathroom is situated to the right of the "
+    "living room, below the bedroom.",
 
     "The bedroom is at the top left, adjacent to the kitchen on its right "
     "and the living room below it. The kitchen is at the top right, above "
