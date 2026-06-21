@@ -137,11 +137,14 @@ def run_once(model1, model2, diffusion, model3, id_to_combo,
     # ── render（CPU） ──────────────────────────────────────────────────────────
     t3 = time.perf_counter()
 
-    raw = pred_coords[:N]
-    nbrs = _build_sorted_neighbors(adj_np[:N, :N], raw, N)
-    faces = find_faces(raw, adj_np[:N, :N], nbrs)
+    raw_coords = [(float(pred_coords[i, 0]), float(pred_coords[i, 1])) for i in range(N)]
+    adj_list   = [[int(adj_np[i, j]) for j in range(N)] for i in range(N)]
+    combo_ids  = [int(type_ids[i]) for i in range(N)]
+    node_types = [id_to_combo.get(cid, ['other']) for cid in combo_ids]
+    nbrs  = _build_sorted_neighbors(raw_coords, adj_list, N)
+    faces = find_faces(raw_coords, adj_list)
     for f in faces:
-        vote_room_type(f, type_ids, id_to_combo)
+        vote_room_type(f, node_types, nbrs)
 
     t4_time = time.perf_counter() - t3
 
