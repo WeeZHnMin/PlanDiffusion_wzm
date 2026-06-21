@@ -175,11 +175,11 @@ def _ax_style(ax):
 
 def draw_col1_text(ax, text: str):
     ax.axis('off')
-    ax.text(0.5, 0.5, textwrap.fill(text, width=48),
-            ha='center', va='center', fontsize=8.5,
+    ax.text(0.5, 0.5, textwrap.fill(text, width=44),
+            ha='center', va='center', fontsize=11,
             transform=ax.transAxes, multialignment='left',
-            bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5F5F5',
-                      edgecolor='#CCCCCC', linewidth=0.7))
+            bbox=dict(boxstyle='round,pad=0.6', facecolor='#F5F5F5',
+                      edgecolor='#CCCCCC', linewidth=0.8))
 
 
 def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
@@ -450,10 +450,10 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     print(f'\n绘制 {B} × 5 图...')
-    COL_W = [3.4, 1.9, 1.9, 1.9, 2.1]
+    COL_W = [4.2, 2.6, 2.6, 2.6, 2.8]
     fig, axes = plt.subplots(
         B, 5,
-        figsize=(sum(COL_W) + 0.1, B * 2.3 + 0.45),
+        figsize=(sum(COL_W) + 0.2, B * 3.2 + 0.5),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
     )
@@ -487,9 +487,12 @@ def main():
                                 h_pad=0.02, w_pad=0.02)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    fig.savefig(args.out, dpi=160, bbox_inches='tight')
+    fig.savefig(args.out, dpi=200, bbox_inches='tight')
+    pdf_out = os.path.splitext(args.out)[0] + '.pdf'
+    fig.savefig(pdf_out, bbox_inches='tight')
     plt.close(fig)
-    print(f'\n已保存: {args.out}')
+    print(f'已保存: {args.out}')
+    print(f'已保存: {pdf_out}')
 
 
 if __name__ == '__main__':
