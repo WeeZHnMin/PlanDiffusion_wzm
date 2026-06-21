@@ -258,8 +258,8 @@ def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
 
 def _draw_graph(ax, coords: np.ndarray, adj_np: np.ndarray,
                 mask_np: np.ndarray, type_ids: np.ndarray,
-                r: float = 0.12):
-    """通用图绘制：节点按类型着色，节点半径 r。"""
+                r: float = 0.12, fixed_color: str = None):
+    """通用图绘制：节点按类型着色（或 fixed_color 统一色），节点半径 r。"""
     _ax_style(ax)
     valid = np.where(mask_np > 0.5)[0]
     if len(valid) == 0:
@@ -276,15 +276,16 @@ def _draw_graph(ax, coords: np.ndarray, adj_np: np.ndarray,
                 ax.plot([d[ii, 0], d[jj, 0]], [d[ii, 1], d[jj, 1]],
                         color='#AAAAAA', lw=0.8, alpha=0.7, zorder=1)
     for i, vi in enumerate(valid):
+        color = fixed_color if fixed_color else type_color(int(type_ids[vi]))
         ax.add_patch(plt.Circle((d[i, 0], d[i, 1]), r,
-                                color=type_color(int(type_ids[vi])),
+                                color=color,
                                 ec='#444444', lw=0.5, zorder=3))
     ax.set_xlim(-3.0, 3.0); ax.set_ylim(-3.0, 3.0)
     ax.set_aspect('equal')
 
 
 def draw_col3_coords(ax, coords, adj_np, mask_np, type_ids):
-    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.16)
+    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.16, fixed_color='#4E8CC2')
 
 
 def draw_col4_types(ax, coords, adj_np, mask_np, type_ids):
