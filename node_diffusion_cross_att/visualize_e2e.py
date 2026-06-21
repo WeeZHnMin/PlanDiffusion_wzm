@@ -89,10 +89,10 @@ CUSTOM_PROMPTS = [
     "kitchen at the top right, and a bedroom at the bottom right, with a "
     "bathroom situated between the two bedrooms.",
 
-    "The corridor is central, with the living room above it and the kitchen "
-    "to its left. Three bedrooms are arranged along the right side of the "
-    "corridor, and a bathroom is located in the top right corner adjacent "
-    "to the first bedroom.",
+    "The kitchen is at the top center, flanked by a bedroom on its left and "
+    "a bathroom on its right. The living room is at the bottom center, "
+    "connected to the kitchen via the corridor above it. A second bedroom "
+    "is to the left of the living room, adjacent to the first bedroom.",
 ]
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
