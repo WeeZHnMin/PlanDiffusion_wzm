@@ -175,8 +175,8 @@ def _ax_style(ax):
 
 def draw_col1_text(ax, text: str):
     ax.axis('off')
-    ax.text(0.5, 0.5, textwrap.fill(text, width=44),
-            ha='center', va='center', fontsize=11,
+    ax.text(0.5, 0.5, textwrap.fill(text, width=36),
+            ha='center', va='center', fontsize=14,
             transform=ax.transAxes, multialignment='left',
             bbox=dict(boxstyle='round,pad=0.6', facecolor='#F5F5F5',
                       edgecolor='#CCCCCC', linewidth=0.8))
@@ -451,9 +451,10 @@ def main():
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     print(f'\n绘制 {B} × 5 图...')
     COL_W = [4.2, 2.6, 2.6, 2.6, 2.8]
+    ROW_H = 2.7   # ≈ graph column width，让 equal-aspect 图刚好填满格子
     fig, axes = plt.subplots(
         B, 5,
-        figsize=(sum(COL_W) + 0.2, B * 3.2 + 0.5),
+        figsize=(sum(COL_W) + 0.2, B * ROW_H + 0.55),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
     )
@@ -477,7 +478,7 @@ def main():
                   r'$\theta_3$: Type Prediction',
                   'Rendered Floor Plan']
     for j, title in enumerate(col_titles):
-        axes[0][j].set_title(title, fontsize=7, fontweight='bold', pad=3)
+        axes[0][j].set_title(title, fontsize=10, fontweight='bold', pad=4)
 
     # 行标签
     for row_i, rec in enumerate(records):
