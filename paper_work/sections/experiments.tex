@@ -70,7 +70,7 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 子模块 & 模型 & GPU & Batch & Steps & 时长 \\
 \midrule
 图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
-节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & —            \\
+节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & $\sim$201\,h  \\
 节点类型预测   & NodeTypeClassifier（15M）         & RTX 3060（6\,GB）  & 64  & 320k        & $\sim$45\,h  \\
 \bottomrule
 \end{tabular}
@@ -78,7 +78,24 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 
 推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
 坐标扩散（DDPM 1000 步逆采样）$\to$ 类型分类（单次前向）$\to$ 渲染输出。
-\todo{补充：端到端推理耗时。}
+单条样本端到端推理耗时如表~\ref{tab:latency} 所示。
+DDPM 逆采样（$\theta_2$）为主要瓶颈，占总耗时约 95\%；
+$\theta_3$ 分类与渲染阶段耗时可忽略不计。
+
+\begin{table}[h]
+\centering
+\caption{端到端推理各阶段耗时（单条样本，$n_{\text{nodes}}=23$）}
+\label{tab:latency}
+\small
+\begin{tabular}{lcccc|c}
+\toprule
+设备 & $\theta_1$（自回归） & $\theta_2$（DDPM） & $\theta_3$（分类） & 渲染 & 合计 \\
+\midrule
+RTX 3060 Laptop GPU   & 0.60\,s & 13.43\,s & 0.02\,s & $<$0.01\,s & 14.05\,s \\
+Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{主实验结果}
 \label{subsec:main_results}
