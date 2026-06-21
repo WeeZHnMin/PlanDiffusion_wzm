@@ -10,12 +10,21 @@
   Col5  渲染平面图
 
 用法（项目根目录）：
+    # 从测试集随机取样
     python -m node_diffusion_cross_att.visualize_e2e \\
         --ckpt1  checkpoints/llm_graph/stage2/20260614_155601/latest.pt \\
         --ckpt2  checkpoints/node_diffusion_cross_att/latest.pt \\
         --ckpt3  checkpoints/node_type/20260616_223156/model_latest.pt \\
         --n      5 --seed 42 \\
         --out    outputs/visualize_e2e/result.png
+
+    # 使用内置 5 条简洁自定义文本（无需测试集数据）
+    python -m node_diffusion_cross_att.visualize_e2e \\
+        --ckpt1  checkpoints/llm_graph/stage2/20260614_155601/latest.pt \\
+        --ckpt2  checkpoints/node_diffusion_cross_att/latest.pt \\
+        --ckpt3  checkpoints/node_type/20260616_223156/model_latest.pt \\
+        --custom \\
+        --out    outputs/visualize_e2e/result_custom.png
 """
 
 import argparse
@@ -56,8 +65,35 @@ from llm_graph.infer_stage1 import (
     get_prefix_and_gt,
     parse_sequence,
     generate,          # 单条推理，无 RNG 跨样本污染
+    encode_text,
+    BOS_ID,
 )
 from llm_graph.infer_batch import decode_bpe_text, MAX_BERT_LEN
+
+# ── 内置自定义文本（风格与训练集一致）────────────────────────────────────────
+CUSTOM_PROMPTS = [
+    "The living room is at the center, adjacent to the kitchen on its left "
+    "and a bedroom on its right. A bathroom is situated below the kitchen, "
+    "and the corridor connects the living room to all other rooms.",
+
+    "The corridor runs vertically through the center, with the living room "
+    "on the left and the kitchen on the right. A bedroom is located above "
+    "the kitchen, and a bathroom is positioned below the living room.",
+
+    "The kitchen is at the top left, adjacent to the living room below it "
+    "and the corridor on its right. The corridor connects the kitchen, "
+    "living room, a bedroom at the bottom right, and a bathroom at the top right.",
+
+    "The living room is on the left, adjacent to the corridor on its right "
+    "and a bedroom below it. The corridor connects the living room, the "
+    "kitchen at the top right, and a bedroom at the bottom right, with a "
+    "bathroom situated between the two bedrooms.",
+
+    "The corridor is central, with the living room above it and the kitchen "
+    "to its left. Three bedrooms are arranged along the right side of the "
+    "corridor, and a bathroom is located in the top right corner adjacent "
+    "to the first bedroom.",
+]
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
 from .type_model import NodeTypeClassifier
@@ -333,6 +369,8 @@ def parse_args():
     p.add_argument('--n',       type=int,   default=5)
     p.add_argument('--indices', type=int,   nargs='+', default=None,
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
+    p.add_argument('--custom',  action='store_true',
+                   help='使用内置 CUSTOM_PROMPTS 5条自定义文本，无需加载测试集数据')
     p.add_argument('--seed',    type=int,   default=42)
     p.add_argument('--out',   default='outputs/visualize_e2e/result.png')
     return p.parse_args()
@@ -353,15 +391,29 @@ def main():
     bpe_tok  = Tokenizer.from_file(args.vocab)
     bert_tok = BertTokenizer.from_pretrained(args.bert)
 
-    # ── 取样本索引 ────────────────────────────────────────────────────────────
-    all_tokens, all_lengths, all_textlens = load_dataset(args.data)
-    if args.indices is not None:
-        indices = args.indices
-        print(f'手动指定索引: {indices}')
+    # ── 决定文本来源 ──────────────────────────────────────────────────────────
+    if args.custom:
+        print(f'使用内置自定义文本（{len(CUSTOM_PROMPTS)} 条）')
+        # 每条记录: prefix 由 encode_text + BOS_ID 构造，seed_id 用位置序号
+        input_list = [
+            dict(seed_id=i, text=txt,
+                 prefix=encode_text(txt, args.vocab) + [BOS_ID])
+            for i, txt in enumerate(CUSTOM_PROMPTS)
+        ]
     else:
-        rng     = np.random.default_rng(args.seed)
-        indices = rng.choice(len(all_tokens), size=args.n, replace=False).tolist()
-        print(f'随机索引: {indices}')
+        all_tokens, all_lengths, all_textlens = load_dataset(args.data)
+        if args.indices is not None:
+            indices = args.indices
+            print(f'手动指定索引: {indices}')
+        else:
+            rng     = np.random.default_rng(args.seed)
+            indices = rng.choice(len(all_tokens), size=args.n, replace=False).tolist()
+            print(f'随机索引: {indices}')
+        input_list = []
+        for idx in indices:
+            prefix, _ = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
+            text = decode_bpe_text(prefix[:-1], bpe_tok)
+            input_list.append(dict(seed_id=idx, text=text, prefix=prefix))
 
     # ════════════════════════════════════════════════════════════════════════
     # 阶段 1  θ₁：加载 → 批量推理 → 卸载
@@ -371,16 +423,18 @@ def main():
 
     # 逐条推理，避免批量 multinomial 的跨样本 RNG 污染
     records = []
-    for idx in indices:
-        prefix, _ = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
-        print(f'  [θ₁] idx={idx} 推理中...', end='', flush=True)
+    for item in input_list:
+        seed_id = item['seed_id']
+        prefix  = item['prefix']
+        text    = item['text']
+        print(f'  [θ₁] seed_id={seed_id} 推理中...', end='', flush=True)
 
-        # 按样本 idx 设定独立种子，跑完恢复原 RNG 状态
+        # 按 seed_id 设定独立种子，跑完恢复原 RNG 状态
         cpu_state  = torch.get_rng_state()
         cuda_state = torch.cuda.get_rng_state(device) if device.type == 'cuda' else None
-        torch.manual_seed(int(idx) + 777777)
+        torch.manual_seed(int(seed_id) + 777777)
         if device.type == 'cuda':
-            torch.cuda.manual_seed(int(idx) + 777777)
+            torch.cuda.manual_seed(int(seed_id) + 777777)
 
         gen_seq = generate(model1, prefix, device, max_new_tokens=200)
 
@@ -399,14 +453,13 @@ def main():
         mask_np        = np.zeros(40, dtype=np.float32)
         mask_np[:N]    = 1.0
 
-        text    = decode_bpe_text(prefix[:-1], bpe_tok)
         enc     = bert_tok(text, max_length=MAX_BERT_LEN,
                            padding='max_length', truncation=True)
         ptok_np = np.array(enc['input_ids'],      dtype=np.int64)
         pmsk_np = np.array(enc['attention_mask'], dtype=np.float32)
         print(f'    文本: {text[:70]}...' if len(text) > 70 else f'    文本: {text}')
 
-        records.append(dict(idx=idx, text=text, n_nodes=N,
+        records.append(dict(idx=seed_id, text=text, n_nodes=N,
                             adj_np=adj_np, mask_np=mask_np,
                             ptok_np=ptok_np, pmsk_np=pmsk_np))
 
@@ -512,7 +565,8 @@ def main():
 
     # 行标签
     for row_i, rec in enumerate(records):
-        axes[row_i][0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)
+        label = f"#{row_i+1}" if args.custom else f"#{rec['idx']}"
+        axes[row_i][0].set_ylabel(label, fontsize=6, labelpad=2)
 
     fig.get_layout_engine().set(hspace=0.03, wspace=0.03,
                                 h_pad=0.02, w_pad=0.02)
