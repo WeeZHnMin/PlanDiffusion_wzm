@@ -333,7 +333,7 @@ def main():
     model3.eval()
     print(f'  step={ckpt3.get("step", "?")}')
 
-    final_coords_t0 = snaps[0][0].cpu()   # [1, 2, 40]
+    final_coords_t0 = snaps[0].cpu()   # [1, 2, 40]
     with torch.no_grad():
         x_in  = final_coords_t0.to(device)                              # [1, 2, 40]
         adj_t = torch.from_numpy(adj_np ).unsqueeze(0).to(device)
