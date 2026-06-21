@@ -184,7 +184,6 @@ def draw_col1_text(ax, text: str):
 
 def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
     _ax_style(ax)
-    ax.set_title(f'$N={n}$', fontsize=6, pad=1)
     if n == 0:
         return
     pos = spring_layout(adj_np[:n, :n], n, seed=seed)
@@ -205,10 +204,9 @@ def draw_col2_adj(ax, adj_np: np.ndarray, n: int, seed: int = 0):
 
 def _draw_graph(ax, coords: np.ndarray, adj_np: np.ndarray,
                 mask_np: np.ndarray, type_ids: np.ndarray,
-                r: float = 0.12, title: str = ''):
+                r: float = 0.12):
     """通用图绘制：节点按类型着色，节点半径 r。"""
     _ax_style(ax)
-    ax.set_title(title, fontsize=6, pad=1)
     valid = np.where(mask_np > 0.5)[0]
     if len(valid) == 0:
         return
@@ -232,13 +230,11 @@ def _draw_graph(ax, coords: np.ndarray, adj_np: np.ndarray,
 
 
 def draw_col3_coords(ax, coords, adj_np, mask_np, type_ids):
-    _draw_graph(ax, coords, adj_np, mask_np, type_ids,
-                r=0.12, title=f'$N={int((mask_np>0.5).sum())}$')
+    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.12)
 
 
 def draw_col4_types(ax, coords, adj_np, mask_np, type_ids):
-    _draw_graph(ax, coords, adj_np, mask_np, type_ids,
-                r=0.16, title=f'$N={int((mask_np>0.5).sum())}$')
+    _draw_graph(ax, coords, adj_np, mask_np, type_ids, r=0.16)
 
 
 def draw_col5_render(ax, coords: np.ndarray, adj_np: np.ndarray,
@@ -247,7 +243,6 @@ def draw_col5_render(ax, coords: np.ndarray, adj_np: np.ndarray,
     ax.set_xticks([]); ax.set_yticks([])
     for sp in ax.spines.values():
         sp.set_edgecolor('#DDDDDD'); sp.set_linewidth(0.5)
-    ax.set_title('', fontsize=6, pad=1)
 
     n = int((mask_np > 0.5).sum())
     if n < 3:
@@ -455,22 +450,17 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     print(f'\n绘制 {B} × 5 图...')
-    COL_W = [2.2, 1.8, 1.8, 1.8, 2.0]
+    COL_W = [2.2, 1.9, 1.9, 1.9, 2.1]
     fig, axes = plt.subplots(
         B, 5,
-        figsize=(sum(COL_W) + 0.2, B * 2.4 + 0.3),
-        gridspec_kw={'width_ratios': COL_W,
-                     'hspace': 0.08, 'wspace': 0.06},
+        figsize=(sum(COL_W) + 0.1, B * 2.1 + 0.45),
+        gridspec_kw={'width_ratios': COL_W},
+        constrained_layout=True,
     )
     if B == 1:
         axes = [axes]
 
-    col_titles = ['Text Description', r'$\theta_1$: Adjacency Graph',
-                  r'$\theta_2$: Coordinate Graph',
-                  r'$\theta_3$: Type Prediction', 'Rendered Floor Plan']
-    for j, title in enumerate(col_titles):
-        axes[0][j].set_title(title, fontsize=7, fontweight='bold', pad=3)
-
+    # 先画内容
     for row_i, rec in enumerate(records):
         axs = axes[row_i]
         draw_col1_text  (axs[0], rec['text'])
@@ -479,11 +469,27 @@ def main():
         draw_col4_types (axs[3], rec['pred_coords'], rec['adj_np'], rec['mask_np'], rec['type_ids'])
         draw_col5_render(axs[4], rec['pred_coords'], rec['adj_np'], rec['mask_np'],
                          rec['type_ids'], id_to_combo)
-        axs[0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)
 
-    fig.suptitle(r'PlanDiffusion End-to-End Results ($\theta_1 \!\to\! \theta_2 \!\to\! \theta_3 \!\to\!$ Render)',
-                 fontsize=8, y=1.002)
-    fig.tight_layout(pad=0.3, h_pad=0.15, w_pad=0.15)
+    # 列标题在 draw 之后设（避免被 draw 内的 set_title 覆盖）
+    col_titles = ['Text Description',
+                  r'$\theta_1$: Adjacency Graph',
+                  r'$\theta_2$: Coordinate Graph',
+                  r'$\theta_3$: Type Prediction',
+                  'Rendered Floor Plan']
+    for j, title in enumerate(col_titles):
+        axes[0][j].set_title(title, fontsize=7, fontweight='bold', pad=3)
+
+    # 行标签
+    for row_i, rec in enumerate(records):
+        axes[row_i][0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)
+
+    fig.suptitle(
+        r'PlanDiffusion End-to-End Results'
+        r' ($\theta_1 \!\to\! \theta_2 \!\to\! \theta_3 \!\to\!$ Render)',
+        fontsize=8,
+    )
+    fig.get_layout_engine().set(hspace=0.03, wspace=0.03,
+                                h_pad=0.02, w_pad=0.02)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     fig.savefig(args.out, dpi=160, bbox_inches='tight')
