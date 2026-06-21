@@ -374,7 +374,20 @@ def main():
     for idx in indices:
         prefix, _ = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
         print(f'  [θ₁] idx={idx} 推理中...', end='', flush=True)
+
+        # 按样本 idx 设定独立种子，跑完恢复原 RNG 状态
+        cpu_state  = torch.get_rng_state()
+        cuda_state = torch.cuda.get_rng_state(device) if device.type == 'cuda' else None
+        torch.manual_seed(int(idx) + 777777)
+        if device.type == 'cuda':
+            torch.cuda.manual_seed(int(idx) + 777777)
+
         gen_seq = generate(model1, prefix, device, max_new_tokens=200)
+
+        torch.set_rng_state(cpu_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state(cuda_state, device)
+
         parsed  = parse_sequence(gen_seq)
         print(f'  n_nodes={parsed["n_nodes"]}  valid={parsed["valid"]}')
         if not parsed['valid']:
