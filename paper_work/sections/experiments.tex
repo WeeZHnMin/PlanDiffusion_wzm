@@ -91,6 +91,10 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 反映真实推理链路下的坐标扩散精度；
 类型准确率（Type Acc.\ 与 Face Type Acc.）则以真实坐标和真实图结构为条件，
 单独评估 $\theta_3$ 的分类能力。
+注意，\S\ref{subsec:ablation} 消融实验中的 Coord-RMSE（表~\ref{tab:ablation_attn}）
+使用真实邻接矩阵和 6k 子集数据，与本表不可直接比较：
+主结果使用 $\theta_1$ 推理链路引入的误差邻接矩阵，测试集亦为独立的 10k 样本，
+因此主结果 RMSE（65.62）高于消融中的完整模型（61.58）属正常现象。
 
 \begin{table}[h]
 \centering
@@ -101,7 +105,8 @@ PlanDiffusion（本文）                             & 文本   & $\checkmark$ 
 \toprule
 子模块 & 指标 & 结果 \\
 \midrule
-\multirow{5}{*}{图拓扑生成（$\theta_1$）}
+\multirow{6}{*}{图拓扑生成（$\theta_1$）}
+    & GVR↑                     & 100.0\% \\
     & Degree KL↓               & 0.0122  \\
     & Node-count KL↓           & 0.0057  \\
     & 节点数准确率（精确）↑     & 22.59\% \\

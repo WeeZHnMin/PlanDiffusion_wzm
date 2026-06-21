@@ -212,8 +212,7 @@ grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
     \beta_t = 1 - \frac{\bar{\alpha}_t}{\bar{\alpha}_{t-1}}
     \label{eq:cosine_schedule}
 \end{equation}
-令 $\alpha_t = 1 - \beta_t$，$\bar{\alpha}_t = \prod_{s=1}^{t} \alpha_s$，
-前向过程为：
+令 $\alpha_t = 1 - \beta_t$，前向过程为：
 \begin{equation}
     \mathbf{x}_t = \sqrt{\bar{\alpha}_t}\,\mathbf{x}_0
                   + \sqrt{1-\bar{\alpha}_t}\,\boldsymbol{\epsilon},
@@ -228,8 +227,11 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     \centering
     \includegraphics[width=\linewidth]{figures/diffusion_process.pdf}
     \caption{
-        节点坐标的逆扩散过程（$t=1000 \to t=0$，从左至右依次排列）。
-        $t=1000$ 为纯高斯噪声，随去噪步骤推进，节点逐步收敛至最终平面图布局（$t=0$）。
+        节点坐标的逆扩散过程及后续预测。
+        图示采用蛇形排列：第一行从左至右为 $t=1000\to t=400$（纯高斯噪声逐步收敛），
+        第二行从右至左为 $t=200\to t=0$（坐标最终恢复至平面图布局），
+        随后依次为 $\theta_3$ 类型预测（节点按预测房间类型着色）
+        与渲染平面图（房间多边形按类型填色）。
     }
     \label{fig:diffusion}
 \end{figure}
@@ -295,9 +297,21 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     \item \textbf{全局注意力 $\mathrm{GlobalAttn}$}：
     对节点序列 $\mathbf{H}_{\mathrm{node}}$ 做无掩码的全局自注意力，
     使每个节点能感知全局布局信息。
-    文本语义则由每层独立的交叉注意力（$\mathrm{CrossAttn}$，$Q=\mathbf{H}_\mathrm{node}$，$K{=}V=\mathbf{H}_\mathrm{text}$）接入，
-    文本特征由冻结的 BERT-base-uncased 编码后经线性投影（$768\to d$）得到。
 \end{itemize}
+
+\noindent
+\textbf{文本条件注入（$\mathrm{CrossAttn}$）}：
+除上述两条自注意力流外，每层还包含一个独立的交叉注意力模块，
+以节点隐向量为 $Q$、文本特征为 $K{=}V$，
+将文本语义注入节点表示：
+\begin{equation}
+    \mathbf{h}_i^{(\ell)} \leftarrow \mathbf{h}_i^{(\ell)}
+    + \mathrm{Dropout}\!\left(\mathrm{CrossAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)},\, \mathbf{H}_{\mathrm{text}})\right)_{\!i}
+    \label{eq:cross_attn}
+\end{equation}
+文本特征 $\mathbf{H}_{\mathrm{text}}$ 由冻结的 BERT-base-uncased 编码后经线性投影（$768\to d$）得到，
+在推理全程保持不变。CrossAttn 在双流自注意力之后、FFN 之前执行，
+使最终节点表示同时融合局部几何约束、全局布局信息与文本语义。
 
 共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$，约 15M 参数。
 
@@ -472,7 +486,7 @@ $\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数；
 \REQUIRE 文本描述 $\mathcal{T}$
 \ENSURE 房间多边形列表 $\mathcal{F}$，各面房间类型 $\{r_k\}$
 \STATE \textbf{// Step 1: 图拓扑生成}
-\STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$，屏蔽 $N < 9$ 的候选 token \COMMENT{C5：$N \geq 9$}
+\STATE 以 $\mathcal{T}$ 为前缀，采样节点数 $N \sim p_{\theta_1}(\cdot \mid \mathcal{T},\texttt{BOS\_G})$，屏蔽 $N < 9$ 的候选 token \COMMENT{最小节点数约束}
 \FOR{$k = 1,\, 2,\, \ldots,\, N-1$}
     \STATE 屏蔽编号 $\geq k$ 的节点 token 及 \texttt{SEP}
     \STATE 采样父节点 $p_k \sim p_{\theta_1}(\cdot \mid s_{<\mathrm{cur}})$ \COMMENT{C1：$p_k < k$；C2：SEP 时机}
