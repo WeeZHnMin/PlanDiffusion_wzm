@@ -29,6 +29,7 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
+    parser.add_argument("--gpu", type=int, default=None, help="指定使用的 GPU 编号，例如 --gpu 1")
     parser.add_argument("--data_path", default=defaults.get("data_path", "data/processed/node_diffusion/graph_dataset.npz"))
     parser.add_argument("--save_dir", default=defaults.get("save_dir", "checkpoints/node_diffusion"))
     parser.add_argument("--resume", default="", help="path to checkpoint .pt")
@@ -56,6 +57,8 @@ def move_cond(cond, device):
 
 def main(argv=None, defaults=None):
     args = build_parser(defaults).parse_args(argv)
+    if args.gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
 
