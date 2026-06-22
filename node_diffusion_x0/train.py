@@ -127,7 +127,7 @@ def main(argv=None, defaults=None):
         scaler.step(opt)
         scaler.update()
 
-        running_loss      += loss
+        running_loss      += loss.item()
         running_coord     += coord_loss
         running_type_loss += type_loss
         running_rmse      += coord_rmse
