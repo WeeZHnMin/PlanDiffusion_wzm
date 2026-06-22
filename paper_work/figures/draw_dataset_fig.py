@@ -205,7 +205,7 @@ GAP_ROW    = 0.01
 GAP_COL    = 0.005
 
 # row 0: short (少文字), row 1: medium, row 2: tall (多文字)
-ROW_H_RATIOS = [0.7, 1.1, 1.3]
+ROW_H_RATIOS = [1.0, 1.0, 1.0]
 avail_h      = 1 - T - B - GAP_ROW * (N_ROWS - 1)
 row_h_fracs  = [r / sum(ROW_H_RATIOS) * avail_h for r in ROW_H_RATIOS]
 
