@@ -41,6 +41,7 @@ def build_parser(defaults=None):
     p.add_argument('--dropout',         type=float, default=defaults.get('dropout',         0.4))
     p.add_argument('--bert',            default=defaults.get('bert', 'models/bert-base-uncased'))
     p.add_argument('--unfreeze_layers', type=int,   default=defaults.get('unfreeze_layers', 0))
+    p.add_argument('--gpu',             type=int,   default=None)
     return p
 
 
@@ -63,6 +64,8 @@ def inf_loader(loader):
 
 def main(argv=None, defaults=None):
     args = build_parser(defaults).parse_args(argv)
+    if args.gpu is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'device: {device}')
 
@@ -115,6 +118,10 @@ def main(argv=None, defaults=None):
         x, cond = next(data)
         x    = x.to(device)
         cond = move_cond(cond, device)
+
+        # 模拟 θ₂ 推理误差（coord_rmse ≈ 4px），提升 θ₃ 对不完美坐标的鲁棒性
+        noise_scale = torch.empty(1).uniform_(2.0, 6.0).item()
+        x = x + torch.randn_like(x) * noise_scale
 
         targets   = cond['node_types']      # [B, N]  1-32, 0=padding
         node_mask = cond['node_mask']       # [B, N]
