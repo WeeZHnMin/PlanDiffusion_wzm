@@ -370,7 +370,7 @@ def parse_args():
     p.add_argument('--data',  default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
     p.add_argument('--vocab', default='llm_graph/vocab/wp_tokenizer.json')
     p.add_argument('--bert',  default='models/bert-base-uncased')
-    p.add_argument('--combo_vocab', default='data/processed/type_combo_vocab.json')
+    p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',       type=int,   default=5)
     p.add_argument('--indices', type=int,   nargs='+', default=None,
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')

@@ -1,5 +1,5 @@
 """
-将 final_graph_dataset_v2.jsonl 转换为 DiGress 训练用的 NPZ 文件。
+将 final_graph_dataset_v2.jsonl 转换为训练用的 NPZ 文件。
 
 输入：
   data/jsonl/final_graph_dataset_v2.jsonl
@@ -22,8 +22,8 @@
   DiGress 模型本身有置换等变性，augment=3 足够。
 
 用法：
-  python -m data.scripts.build_v2.build_graph_npz
-  python -m data.scripts.build_v2.build_graph_npz --augment 5
+  python -m data.scripts.build_v3.build_graph_npz
+  python -m data.scripts.build_v3.build_graph_npz --augment 5
 """
 
 from __future__ import annotations

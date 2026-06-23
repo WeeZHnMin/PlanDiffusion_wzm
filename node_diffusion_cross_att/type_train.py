@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -69,12 +68,11 @@ def main(argv=None, defaults=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'device: {device}')
 
-    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_dir = Path(args.save_dir) / run_id
+    save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = save_dir / 'log.jsonl'
-    log_file = open(log_path, 'w', encoding='utf-8', buffering=1)
+    log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
     print(f'日志: {log_path}')
 
     model = NodeTypeClassifier(
