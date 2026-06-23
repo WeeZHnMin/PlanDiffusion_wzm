@@ -191,6 +191,30 @@ def extract_node_type_combos(rooms, vertices, tol=0.5):
     return combos
 
 
+def is_connected(adj_matrix, n_nodes):
+    if n_nodes <= 1:
+        return True
+    visited = [False] * n_nodes
+    queue = [0]
+    visited[0] = True
+    while queue:
+        v = queue.pop()
+        for u in range(n_nodes):
+            if u != v and adj_matrix[v][u] == 1 and not visited[u]:
+                visited[u] = True
+                queue.append(u)
+    return all(visited[:n_nodes])
+
+
+def has_low_degree_node(adj_matrix, n_nodes):
+    """任意有效节点度数 < 2 则返回 True（不含自环）。"""
+    for i in range(n_nodes):
+        degree = sum(adj_matrix[i][j] for j in range(n_nodes) if j != i)
+        if degree < 2:
+            return True
+    return False
+
+
 def center_node_coords(vertices):
     coords = [list(v) for v in vertices]
     if not coords:
@@ -380,10 +404,12 @@ def main():
     # 加载固定 combo vocab（旧 vocab，32种，ID 与旧数据完全一致）
     combo_to_id = load_combo_vocab(Path(args.combo_vocab))
 
-    n_workers     = os.cpu_count() or 4
-    total_written = 0
-    missing_cap   = 0
-    missing_src   = 0
+    n_workers        = os.cpu_count() or 4
+    total_written    = 0
+    missing_cap      = 0
+    missing_src      = 0
+    disconnected_cnt = 0
+    low_degree_cnt   = 0
 
     # ── 收集所有任务（保持顺序） ─────────────────────────────────────────────────
     tasks: list[tuple] = []   # (mapping_row, src_row, caption, seed, img_dir_rel)
@@ -454,6 +480,12 @@ def main():
             chunk = tasks[chunk_start: chunk_start + CHUNK]
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
                 for rec in pool.map(_build, chunk):
+                    if not is_connected(rec['adj_matrix'], rec['n_nodes']):
+                        disconnected_cnt += 1
+                        continue
+                    if has_low_degree_node(rec['adj_matrix'], rec['n_nodes']):
+                        low_degree_cnt += 1
+                        continue
                     out.write(_json_dumps(rec) + "\n")
                     total_written += 1
                     if args.max_records and total_written >= args.max_records:
@@ -468,7 +500,7 @@ def main():
     elapsed = time.perf_counter() - t0
     new_combos = len(combo_to_id) - 32
     print(f"\n完成  总写入：{total_written}  耗时：{elapsed:.1f}s  ({total_written/elapsed:.0f} 条/s)")
-    print(f"  缺描述：{missing_cap}  缺源数据：{missing_src}")
+    print(f"  缺描述：{missing_cap}  缺源数据：{missing_src}  断开图（已过滤）：{disconnected_cnt}  度<2（已过滤）：{low_degree_cnt}")
     print(f"  combo vocab：旧 32 种 + 新增 {new_combos} 种 = {len(combo_to_id)} 种")
 
     # 保存扩展后的 vocab

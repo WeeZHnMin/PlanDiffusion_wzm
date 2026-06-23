@@ -98,9 +98,18 @@ class TypeDataset(Dataset):
         return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
 
 
-def load_node_data(npz_path, batch_size, shuffle=True):
-    dataset = NodeDataset(npz_path)
-    loader  = DataLoader(dataset, batch_size=batch_size,
-                         shuffle=shuffle, num_workers=2, drop_last=True)
+def load_node_data(npz_path_or_dataset, batch_size, shuffle=True, sampler=None):
+    if isinstance(npz_path_or_dataset, NodeDataset):
+        dataset = npz_path_or_dataset
+    else:
+        dataset = NodeDataset(npz_path_or_dataset)
+    if sampler is not None:
+        shuffle = False
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                        sampler=sampler, num_workers=2, drop_last=True)
+    epoch = 0
     while True:
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         yield from loader
+        epoch += 1

@@ -6,13 +6,15 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from torch.optim import AdamW
 
-from .dataset import load_node_data
+from .dataset import load_node_data, NodeDataset
 from .diffusion import GaussianDiffusion
 from .model import NodeDiffusionTransformer
 
@@ -26,7 +28,7 @@ def build_parser(defaults=None):
     parser.add_argument("--batch_size", type=int, default=defaults.get("batch_size", 64))
     parser.add_argument("--lr", type=float, default=defaults.get("lr", 1e-4))
     parser.add_argument("--weight_decay", type=float, default=defaults.get("weight_decay", 1e-4))
-    parser.add_argument("--total_steps", type=int, default=defaults.get("total_steps", 200000))
+    parser.add_argument("--total_steps", type=int, default=defaults.get("total_steps", 2500000))
     parser.add_argument("--log_interval", type=int, default=defaults.get("log_interval", 100))
     parser.add_argument("--save_interval", type=int, default=defaults.get("save_interval", 10000))
     parser.add_argument("--model_channels", type=int, default=defaults.get("model_channels", 384))
@@ -47,16 +49,33 @@ def move_cond(cond, device):
 
 def main(argv=None, defaults=None):
     args = build_parser(defaults).parse_args(argv)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device: {device}")
 
-    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_dir = Path(args.save_dir) / run_id
-    save_dir.mkdir(parents=True, exist_ok=True)
+    # ── DDP 初始化（torchrun 会自动设置 LOCAL_RANK / RANK / WORLD_SIZE）────────
+    local_rank = int(os.environ.get('LOCAL_RANK', -1))
+    use_ddp    = local_rank >= 0
+    if use_ddp:
+        dist.init_process_group(backend='nccl')
+        rank       = dist.get_rank()
+        world_size = dist.get_world_size()
+        device     = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(device)
+    else:
+        rank       = 0
+        world_size = 1
+        device     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    is_master = (rank == 0)
+    if is_master:
+        print(f"device: {device}  world_size: {world_size}  ddp: {use_ddp}")
+
+    save_dir = Path(args.save_dir)
+    if is_master:
+        save_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = save_dir / 'log.jsonl'
-    log_file = open(log_path, 'w', encoding='utf-8', buffering=1)
-    print(f'日志: {log_path}')
+    log_file = open(log_path, 'a', encoding='utf-8', buffering=1) if is_master else None
+    if is_master:
+        print(f'日志: {log_path}')
 
     model = NodeDiffusionTransformer(
         model_channels=args.model_channels,
@@ -67,7 +86,6 @@ def main(argv=None, defaults=None):
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
-    # BERT 已冻结，只优化可训练参数
     opt = AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=args.lr, weight_decay=args.weight_decay,
@@ -80,21 +98,33 @@ def main(argv=None, defaults=None):
     if args.resume:
         ckpt   = torch.load(args.resume, map_location=device)
         raw_sd = ckpt["model"]
-        # 兼容 Kaggle DataParallel checkpoint（去掉 module. 前缀）
         if any(k.startswith('module.') for k in raw_sd):
             raw_sd = {k[7:]: v for k, v in raw_sd.items()}
         missing, unexpected = model.load_state_dict(raw_sd, strict=False)
-        if missing:
-            print(f"  missing keys (new params): {missing}")
-        if unexpected:
-            print(f"  unexpected keys (dropped): {unexpected}")
+        if is_master:
+            if missing:
+                print(f"  missing keys: {missing}")
+            if unexpected:
+                print(f"  unexpected keys: {unexpected}")
         opt.load_state_dict(ckpt["opt"])
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
         start_step = ckpt["step"] + 1
-        print(f"resumed from step {start_step}")
+        if is_master:
+            print(f"resumed from step {start_step}")
 
-    data = load_node_data(args.data_path, args.batch_size, shuffle=True)
+    # ── DDP 包装 ──────────────────────────────────────────────────────────────
+    if use_ddp:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
+    # ── DataLoader（DDP 用 DistributedSampler，Dataset 只建一次） ─────────────
+    dataset = NodeDataset(args.data_path)
+    if use_ddp:
+        sampler = DistributedSampler(dataset, num_replicas=world_size,
+                                     rank=rank, shuffle=True, drop_last=True)
+        data = load_node_data(dataset, args.batch_size, sampler=sampler)
+    else:
+        data = load_node_data(dataset, args.batch_size, shuffle=True)
 
     model.train()
     running_loss = running_rmse = 0.0
@@ -120,7 +150,7 @@ def main(argv=None, defaults=None):
         running_loss += loss.item()
         running_rmse += coord_rmse
 
-        if step % args.log_interval == 0 and step > 0:
+        if is_master and step % args.log_interval == 0 and step > 0:
             n        = args.log_interval
             avg_loss = running_loss / n
             avg_rmse = running_rmse / n
@@ -135,21 +165,27 @@ def main(argv=None, defaults=None):
                 'elapsed': round(elapsed, 1),
             }) + '\n')
 
-        if step > 0 and step % args.save_interval == 0:
-            ckpt_path = save_dir / f"model_{step:07d}.pt"
+        if is_master and step > 0 and step % args.save_interval == 0:
+            ckpt_path = save_dir / "latest.pt"
+            raw_model = model.module if use_ddp else model
             torch.save({
-                "model": model.state_dict(), "opt": opt.state_dict(),
+                "model": raw_model.state_dict(), "opt": opt.state_dict(),
                 "scaler": scaler.state_dict(), "step": step,
             }, ckpt_path)
             print(f"  saved -> {ckpt_path}")
 
-    ckpt_path = save_dir / f"model_{args.total_steps:07d}.pt"
-    torch.save({
-        "model": model.state_dict(), "opt": opt.state_dict(),
-        "scaler": scaler.state_dict(), "step": args.total_steps,
-    }, ckpt_path)
-    log_file.close()
-    print(f"training done. saved -> {ckpt_path}")
+    if is_master:
+        ckpt_path = save_dir / "latest.pt"
+        raw_model = model.module if use_ddp else model
+        torch.save({
+            "model": raw_model.state_dict(), "opt": opt.state_dict(),
+            "scaler": scaler.state_dict(), "step": args.total_steps,
+        }, ckpt_path)
+        log_file.close()
+        print(f"training done. saved -> {ckpt_path}")
+
+    if use_ddp:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

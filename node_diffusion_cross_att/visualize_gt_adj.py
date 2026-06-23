@@ -81,7 +81,7 @@ def parse_args():
     p.add_argument('--ckpt3', default='checkpoints/node_type/20260616_223156/model_latest.pt')
     p.add_argument('--data',  default='data/jsonl/test_graph_dataset_10k.jsonl')
     p.add_argument('--bert',  default='models/bert-base-uncased')
-    p.add_argument('--combo_vocab', default='data/processed/type_combo_vocab.json')
+    p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',       type=int, default=5)
     p.add_argument('--indices', type=int, nargs='+', default=None,
                    help='手动指定测试集行号，例如 --indices 0 42 100 200 500')
