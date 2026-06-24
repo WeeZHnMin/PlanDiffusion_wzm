@@ -49,6 +49,7 @@ from .render import load_vocab, find_faces, vote_room_type, ROOM_COLORS, ROOM_LA
 from .visualize_e2e import (
     sample_coords_batch,
     CUSTOM_PROMPTS,
+    draw_col4_types,
 )
 
 MAX_BERT_LEN = 224
@@ -274,38 +275,53 @@ def main():
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
-    # ── 绘图：每条样本单独保存一张图（1行 × K列，每列一次 roll 的渲染图）─────
+    # ── 绘图：每条样本单独保存一张图（2行 × K列）────────────────────────────
+    #   Row 0：渲染平面图
+    #   Row 1：节点坐标 + 类型着色图
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     COL_W = [2.5] * K
     FIG_W = sum(COL_W) + 0.3
-    FIG_H = 3.2   # 单行高度（留足标题+文字空间）
+    ROW_H = 2.8
+    FIG_H = ROW_H * 2 + 0.4
 
     for rec in records:
         n   = rec['n_nodes']
         adj = rec['adj_np']
 
         fig, axes = plt.subplots(
-            1, K,
+            2, K,
             figsize=(FIG_W, FIG_H),
             gridspec_kw={'width_ratios': COL_W},
             constrained_layout=True,
         )
         if K == 1:
-            axes = [axes]
+            axes = [[axes[0]], [axes[1]]]
 
         for k, roll in enumerate(rec['rolls']):
-            ax = axes[k]
-            node_types = [id_to_combo.get(int(roll['combo_ids'][i]), ['other'])
+            coords_k   = roll['coords']          # [40, 2]
+            combo_ids_k = roll['combo_ids']      # [40]
+            node_types = [id_to_combo.get(int(combo_ids_k[i]), ['other'])
                           for i in range(n)]
+
+            # Row 0：渲染平面图
+            ax_render = axes[0][k]
             try:
-                render_to_ax(ax, roll['coords'][:n], adj[:n, :n], n, node_types)
+                render_to_ax(ax_render, coords_k[:n], adj[:n, :n], n, node_types)
             except Exception as e:
-                ax.axis('off')
-                ax.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
-                        fontsize=5, transform=ax.transAxes)
-            ax.set_title(f'Roll {k + 1}', fontsize=7, pad=3)
+                ax_render.axis('off')
+                ax_render.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
+                               fontsize=5, transform=ax_render.transAxes)
+            ax_render.set_title(f'Roll {k + 1}', fontsize=7, pad=3)
+
+            # Row 1：节点坐标 + 类型着色
+            ax_coord = axes[1][k]
+            draw_col4_types(ax_coord, coords_k, adj, rec['mask_np'], combo_ids_k)
+
+        # 行标签
+        axes[0][0].set_ylabel('Rendered', fontsize=6, labelpad=3)
+        axes[1][0].set_ylabel('Coords+Type', fontsize=6, labelpad=3)
 
         # 文本描述作为整张图的大标题
         wrapped = textwrap.fill(rec['text'], width=100)
