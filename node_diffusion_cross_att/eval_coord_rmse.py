@@ -1,8 +1,8 @@
 """
 节点坐标扩散模块（θ₂）Coord-RMSE 评估脚本。
 
-条件：gen_adj_test.npz（θ₁ 生成的邻接矩阵 + BERT prompt）
-GT坐标：text_graph_tree_test_10k.npz 中的 node_coords（与 gen_adj 按索引对齐）
+条件：JSONL 测试集中的 GT 邻接矩阵 + BERT prompt
+GT坐标：JSONL 中的 node_coords
 
 用法（项目根目录）：
     python -m node_diffusion_cross_att.eval_coord_rmse \
@@ -16,28 +16,32 @@ GT坐标：text_graph_tree_test_10k.npz 中的 node_coords（与 gen_adj 按索�
 """
 
 import argparse
+import json
 import os
 import numpy as np
+
 import torch
+from transformers import BertTokenizer
 
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
+
+MAX_BERT_LEN = 224
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',     default='checkpoints/node_diffusion_cross_att/latest.pt')
     p.add_argument('--bert',     default='models/bert-base-uncased')
-    p.add_argument('--gen_adj',  default='data/processed/node_diffusion_cross_att/gen_adj_test.npz',
-                   help='θ₁ 输出：生成的邻接矩阵 + BERT prompt')
-    p.add_argument('--gt_npz',   default='data/processed/graph_tree/text_graph_tree_test_10k.npz',
-                   help='含 node_coords 的测试集 npz（与 gen_adj 按索引对齐）')
+    p.add_argument('--data',     default='data/jsonl/test_graph_dataset_10k.jsonl',
+                   help='测试集 JSONL 路径')
     p.add_argument('--n_eval',   type=int, default=0,
-                   help='评估样本数（0=全量 valid 样本）')
+                   help='评估样本数（0=全量）')
     p.add_argument('--batch_size', type=int, default=16)
     p.add_argument('--ddim_steps', type=int, default=0,
                    help='DDIM 步数（0=完整 DDPM 1000步）')
     p.add_argument('--seed',     type=int, default=42)
+    p.add_argument('--gpu',      type=int, default=None)
     p.add_argument('--out',      default='outputs/eval_coord_rmse/results.npz',
                    help='推理结果保存路径')
     return p.parse_args()
@@ -98,6 +102,8 @@ def main():
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    if args.gpu is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'device: {device}')
 
@@ -111,30 +117,44 @@ def main():
 
     diffusion = GaussianDiffusion(timesteps=1000)
 
-    # 加载 gen_adj_test.npz（θ₁ 输出，作为 θ₂ 条件）
-    gen  = np.load(args.gen_adj, allow_pickle=True)
-    # 加载 GT 坐标（与 gen_adj 按索引对齐）
-    gt   = np.load(args.gt_npz,  allow_pickle=True)
+    # 从 JSONL 读取所有样本
+    print(f'读取 JSONL: {args.data}')
+    tokenizer = BertTokenizer.from_pretrained(args.bert)
+    rows = []
+    with open(args.data, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
 
-    assert 'node_coords' in gt.files, \
-        f"{args.gt_npz} 中没有 node_coords，请用修改后的 build_text_graph_tree.py 重新生成"
+    total  = len(rows)
+    n_eval = total if args.n_eval == 0 else min(args.n_eval, total)
+    rng    = np.random.default_rng(args.seed)
+    chosen = sorted(rng.choice(total, size=n_eval, replace=False).tolist())
+    print(f'JSONL 共 {total} 条，评估 {n_eval} 条')
 
-    total     = len(gen['valid'])
-    valid_idx = np.where(gen['valid'])[0]
-    n_eval    = len(valid_idx) if args.n_eval == 0 else min(args.n_eval, len(valid_idx))
-    rng       = np.random.default_rng(args.seed)
-    chosen    = sorted(rng.choice(valid_idx, size=n_eval, replace=False).tolist())
-    print(f'gen_adj_test: 共 {total} 条，有效 {len(valid_idx)} 条，评估 {n_eval} 条')
+    MAX_N = 40
+    adj_all   = np.zeros((n_eval, MAX_N, MAX_N), dtype=np.float32)
+    mask_all  = np.zeros((n_eval, MAX_N),        dtype=np.float32)
+    ptok_all  = np.zeros((n_eval, MAX_BERT_LEN), dtype=np.int64)
+    pmsk_all  = np.zeros((n_eval, MAX_BERT_LEN), dtype=np.float32)
+    gt_coords = np.zeros((n_eval, MAX_N, 2),     dtype=np.float32)
+    gt_mask   = np.zeros((n_eval, MAX_N),        dtype=np.float32)
+
+    for out_i, src_i in enumerate(chosen):
+        r  = rows[src_i]
+        nc = int(r['n_nodes'])
+        adj_all[out_i, :nc, :nc] = np.array(r['adj_matrix'], dtype=np.float32)
+        mask_all[out_i, :nc]     = 1.0
+        gt_coords[out_i, :nc]    = np.array(r['node_coords'], dtype=np.float32)
+        gt_mask[out_i, :nc]      = 1.0
+        enc = tokenizer(r['prompt'], max_length=MAX_BERT_LEN,
+                        padding='max_length', truncation=True)
+        ptok_all[out_i] = enc['input_ids']
+        pmsk_all[out_i] = enc['attention_mask']
 
     mode = f'DDIM-{args.ddim_steps}' if args.ddim_steps > 0 else 'DDPM-1000'
     print(f'采样模式: {mode}')
-
-    adj_all  = gen['adj_matrix'  ][chosen].astype('float32')
-    mask_all = gen['node_mask'   ][chosen].astype('float32')
-    ptok_all = gen['prompt_tokens'][chosen].astype('int64')
-    pmsk_all = gen['prompt_mask' ][chosen].astype('float32')
-    gt_coords = gt['node_coords' ][chosen].astype('float32')  # [N, 40, 2]
-    gt_mask   = gt['node_mask'   ][chosen].astype('float32')  # [N, 40]
 
     BS        = args.batch_size
     n_batches = (n_eval + BS - 1) // BS

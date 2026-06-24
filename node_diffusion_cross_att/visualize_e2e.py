@@ -1,6 +1,6 @@
 """
-端到端推理可视化：从测试集随机取 N 条文本，从头走完 θ₁→θ₂→θ₃→render 全流程。
-θ₂/θ₃ 批量并行推理（batch_size = N）。
+端到端推理可视化：从测试集随机取 N 条文本，从头走完 θ₁→θ₂→snap→θ₃→render 全流程。
+θ₂/θ₃ 逐条单样本推理，θ₂ 后可选节点-墙体吸附（--snap）。
 
 输出 N 行 × 5 列图：
   Col1  输入文本描述
@@ -109,6 +109,7 @@ from .render import (
     ROOM_COLORS,
     ROOM_LABELS,
 )
+from .visualize_gacha import snap_nodes_to_walls
 
 # ── 颜色表 ────────────────────────────────────────────────────────────────────
 
@@ -372,7 +373,9 @@ def parse_args():
     p.add_argument('--bert',  default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',       type=int,   default=5)
-    p.add_argument('--batch',   type=int,   default=16, help='θ₂/θ₃ 推理批次大小')
+    p.add_argument('--snap',    action='store_true', help='θ₂→θ₃ 之间做节点-墙体吸附')
+    p.add_argument('--snap_thresh', type=float, default=0.05,
+                   help='吸附阈值（相对包围盒对角线，默认 0.05）')
     p.add_argument('--indices', type=int,   nargs='+', default=None,
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
     p.add_argument('--custom',  action='store_true',
@@ -492,29 +495,31 @@ def main():
     print(f'  step={ckpt2.get("step","?")}')
     del ckpt2
 
-    bs = args.batch
-    N  = len(records)
-    for start in range(0, N, bs):
-        chunk = records[start:start + bs]
-        adj_b  = np.stack([r['adj_np' ] for r in chunk])
-        mask_b = np.stack([r['mask_np'] for r in chunk])
-        ptok_b = np.stack([r['ptok_np'] for r in chunk])
-        pmsk_b = np.stack([r['pmsk_np'] for r in chunk])
-        seeds  = [r['idx'] for r in chunk]
-        with torch.no_grad():
-            coords_out = sample_coords_batch(
-                model2, diffusion,
-                adj_b, mask_b, ptok_b, pmsk_b,
-                device, sample_indices=seeds,
-            )  # [C, 40, 2]
-        for i, rec in enumerate(chunk):
-            rec['pred_coords'] = coords_out[i]
-        print(f'  [θ₂] {min(start + bs, N)}/{N}', flush=True)
+    for rec in records:
+        coords_out = sample_coords_batch(
+            model2, diffusion,
+            rec['adj_np'][None], rec['mask_np'][None],
+            rec['ptok_np'][None], rec['pmsk_np'][None],
+            device, sample_indices=[rec['idx']],
+        )  # [1, 40, 2]
+        rec['pred_coords'] = coords_out[0]
+        print(f'  [θ₂] idx={rec["idx"]} done', flush=True)
 
     del model2, diffusion
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     print('[θ₂] 模型已卸载')
+
+    # ════════════════════════════════════════════════════════════════════════
+    # 阶段 2.5  snap：节点-墙体吸附（可选）
+    # ════════════════════════════════════════════════════════════════════════
+    if args.snap:
+        print(f'\n[snap] 节点-墙体吸附（thresh_ratio={args.snap_thresh}）...')
+        for rec in records:
+            c, a = snap_nodes_to_walls(
+                rec['pred_coords'], rec['adj_np'], rec['n_nodes'], args.snap_thresh)
+            rec['pred_coords'] = c
+            rec['snapped_adj'] = a   # 吸附后的邻接图，用于 θ₃ 和渲染
 
     # ════════════════════════════════════════════════════════════════════════
     # 阶段 3  θ₃：加载 → 逐条类型预测 → 卸载
@@ -528,25 +533,19 @@ def main():
     print(f'  step={ckpt3.get("step","?")}')
     del ckpt3
 
-    for start in range(0, N, bs):
-        chunk    = records[start:start + bs]
-        coords_b = np.stack([r['pred_coords'] for r in chunk])   # [C, 40, 2]
-        adj_b    = np.stack([r['adj_np' ]     for r in chunk])
-        mask_b   = np.stack([r['mask_np']     for r in chunk])
-        ptok_b   = np.stack([r['ptok_np']     for r in chunk])
-        pmsk_b   = np.stack([r['pmsk_np']     for r in chunk])
+    for rec in records:
+        adj_for_t3 = rec.get('snapped_adj', rec['adj_np'])
+        coords_t   = torch.from_numpy(rec['pred_coords'].T[None]).float().to(device)  # [1,2,40]
         with torch.no_grad():
             logits = model3(
-                torch.from_numpy(coords_b.transpose(0, 2, 1)).to(device),
-                adj_matrix    = torch.from_numpy(adj_b).to(device),
-                node_mask     = torch.from_numpy(mask_b).to(device),
-                prompt_tokens = torch.from_numpy(ptok_b).to(device),
-                prompt_mask   = torch.from_numpy(pmsk_b).long().to(device),
-            )  # [C, 40, n_combos]
-        preds = logits.argmax(dim=-1).cpu().numpy()
-        for i, rec in enumerate(chunk):
-            rec['type_ids'] = preds[i]
-        print(f'  [θ₃] {min(start + bs, N)}/{N}', flush=True)
+                coords_t,
+                adj_matrix    = torch.from_numpy(adj_for_t3[None]).to(device),
+                node_mask     = torch.from_numpy(rec['mask_np'][None]).to(device),
+                prompt_tokens = torch.from_numpy(rec['ptok_np'][None]).to(device),
+                prompt_mask   = torch.from_numpy(rec['pmsk_np'][None]).long().to(device),
+            )  # [1, 40, n_combos]
+        rec['type_ids'] = logits.argmax(dim=-1).cpu().numpy()[0]
+        print(f'  [θ₃] idx={rec["idx"]} done', flush=True)
 
     del model3
     if device.type == 'cuda':
@@ -569,12 +568,13 @@ def main():
 
     # 先画内容
     for row_i, rec in enumerate(records):
-        axs = axes[row_i]
+        axs     = axes[row_i]
+        adj_vis = rec.get('snapped_adj', rec['adj_np'])  # col3/4/5 用吸附后邻接图
         draw_col1_text  (axs[0], rec['text'])
         draw_col2_adj   (axs[1], rec['adj_np'],      rec['n_nodes'], seed=args.seed)
-        draw_col3_coords(axs[2], rec['pred_coords'], rec['adj_np'], rec['mask_np'], rec['type_ids'])
-        draw_col4_types (axs[3], rec['pred_coords'], rec['adj_np'], rec['mask_np'], rec['type_ids'])
-        draw_col5_render(axs[4], rec['pred_coords'], rec['adj_np'], rec['mask_np'],
+        draw_col3_coords(axs[2], rec['pred_coords'], adj_vis, rec['mask_np'], rec['type_ids'])
+        draw_col4_types (axs[3], rec['pred_coords'], adj_vis, rec['mask_np'], rec['type_ids'])
+        draw_col5_render(axs[4], rec['pred_coords'], adj_vis, rec['mask_np'],
                          rec['type_ids'], id_to_combo)
 
     # 列标题在 draw 之后设（避免被 draw 内的 set_title 覆盖）
