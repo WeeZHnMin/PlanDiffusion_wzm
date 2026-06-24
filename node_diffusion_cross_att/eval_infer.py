@@ -2,6 +2,8 @@
 θ₂ + θ₃ 推理脚本：对测试集运行推理，每条样本 K 种噪声初始化，结果保存为 NPZ。
 
 输出 NPZ 包含：
+    sample_indices : int32   [N]            对应 JSONL 文件的行号（用于下游对齐）
+    seeds          : int64   [N, K]         每个 roll 的噪声初始化种子（保证可复现）
     gt_coords      : float32 [N, 40, 2]     GT 节点坐标
     gt_combo_ids   : int32   [N, 40]        GT 房间类型组合 ID
     gt_adj         : float32 [N, 40, 40]    邻接矩阵
@@ -15,18 +17,23 @@
 
 Usage (from project root):
     python -m node_diffusion_cross_att.eval_infer \\
-        --ckpt2  checkpoints/node_diffusion/latest.pt \\
-        --ckpt3  checkpoints/node_type/20260623_010747/model_latest.pt \\
-        --data   data/jsonl/test_graph_dataset_10k.jsonl \\
-        --n      0 \\
-        --rolls  5 \\
-        --batch  16 \\
-        --gpu    0 \\
-        --out    outputs/eval/infer_all_5roll.npz
+        --ckpt2      checkpoints/node_diffusion/latest.pt \\
+        --ckpt3      checkpoints/node_type/20260623_010747/model_latest.pt \\
+        --data       data/jsonl/test_graph_dataset_10k.jsonl \\
+        --n          0 \\
+        --rolls      5 \\
+        --batch      16 \\
+        --gpu        0 \\
+        --out        outputs/eval/infer_all_5roll.npz \\
+        --render-out outputs/visualize_gacha \\
+        --workers    8
+    # 只保存 NPZ，不渲染：
+        --no-render
 """
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 
@@ -57,8 +64,14 @@ def parse_args():
                    help='推理批次大小（按样本数计，实际 GPU batch = batch × rolls）')
     p.add_argument('--seed',   type=int, default=42,
                    help='随机选样本用的 RNG 种子（rolls 的种子由 sample_idx 决定）')
-    p.add_argument('--gpu',    type=int, default=None)
-    p.add_argument('--out',    default='outputs/eval/infer_all_5roll.npz')
+    p.add_argument('--gpu',        type=int, default=None)
+    p.add_argument('--out',        default='outputs/eval/infer_all_5roll.npz')
+    p.add_argument('--render-out', default='outputs/visualize_gacha',
+                   help='渲染图输出目录（每条样本一张 1×K PNG）')
+    p.add_argument('--workers',    type=int, default=0,
+                   help='渲染进程数（0=CPU核心数）')
+    p.add_argument('--no-render',  action='store_true',
+                   help='跳过渲染步骤，只保存 NPZ')
     return p.parse_args()
 
 
@@ -189,8 +202,16 @@ def main():
 
     # ── 保存 NPZ ──────────────────────────────────────────────────────────────
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    sample_idx_arr = np.array([r['idx'] for r in records], dtype=np.int32)  # [N]
+    seeds_arr = np.array(
+        [[r['idx'] + k * 1_000_000 for k in range(K)] for r in records],
+        dtype=np.int64,
+    )  # [N, K]
+
     np.savez(
         args.out,
+        sample_indices = sample_idx_arr,   # [N]    → JSONL 行号
+        seeds          = seeds_arr,        # [N, K] → 每个 roll 的噪声种子
         gt_coords      = np.stack([r['coords_gt']   for r in records]),  # [N,40,2]
         gt_combo_ids   = np.stack([r['combo_gt']    for r in records]),  # [N,40]
         gt_adj         = np.stack([r['adj_np']      for r in records]),  # [N,40,40]
@@ -202,6 +223,31 @@ def main():
     )
     print(f'\nSaved {N} samples × {K} rolls → {args.out}')
 
+    # ── 渲染 PNG（可选）────────────────────────────────────────────────────────
+    if not args.no_render:
+        from .render_infer import _worker_init, _render_one
+        render_out = Path(args.render_out)
+        render_out.mkdir(parents=True, exist_ok=True)
+        n_workers = args.workers if args.workers > 0 else (os.cpu_count() or 4)
+        n_workers = min(n_workers, N)
+        indices = list(range(N))
+        print(f'\n[Render] {N} 条，K={K}，进程数={n_workers} → {render_out}')
+        total_ok = total_err = 0
+        with mp.Pool(
+            processes=n_workers,
+            initializer=_worker_init,
+            initargs=(args.combo_vocab, args.out, str(render_out), K),
+        ) as pool:
+            for j, (ok, err) in enumerate(
+                pool.imap_unordered(_render_one, indices, chunksize=4)
+            ):
+                total_ok  += ok
+                total_err += err
+                if (j + 1) % 200 == 0 or (j + 1) == N:
+                    print(f'  {j+1}/{N}  ok={total_ok} err={total_err}', flush=True)
+        print(f'[Render] 完成  ok={total_ok} err={total_err}')
+
 
 if __name__ == '__main__':
+    mp.freeze_support()
     main()

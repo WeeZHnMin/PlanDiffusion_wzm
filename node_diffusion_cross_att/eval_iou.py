@@ -36,9 +36,10 @@ from .render import load_vocab, find_faces, vote_room_type, ROOM_TYPE_ORDER
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--npz',   default='outputs/eval/infer_500.npz')
+    p.add_argument('--npz',   default='', help='NPZ 文件路径（与 --jsonl 二选一）')
+    p.add_argument('--jsonl', default='', help='best_roll.jsonl 路径（与 --npz 二选一）')
     p.add_argument('--vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
-    p.add_argument('--out',   default='outputs/eval/iou_500.json')
+    p.add_argument('--out',   default='outputs/eval/iou_result.json')
     return p.parse_args()
 
 
@@ -80,39 +81,87 @@ def extract_polygons(
     return polys
 
 
+def load_samples(args, id_to_combo):
+    """统一加载样本，返回 list of dict，每个 dict 包含 n, adj, gt_c, gt_types, pred_c, pred_types。"""
+    samples = []
+
+    if args.jsonl:
+        print(f'读取 JSONL: {args.jsonl}')
+        with open(args.jsonl, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                n   = int(row['n_nodes'])
+                adj = np.array(row['adj_matrix'], dtype=np.float32)   # [n, n]
+
+                gt_c = np.array(row['gt_coords'], dtype=np.float32)   # [n, 2]
+                gt_types = [id_to_combo.get(int(row['gt_combo_ids'][k]), ['other'])
+                            for k in range(n)]
+
+                pred_c = np.array(row['pred_coords'], dtype=np.float32)  # [n, 2]
+                pred_c -= pred_c.mean(axis=0)  # 质心归零
+                pred_types = [id_to_combo.get(int(row['pred_combo_ids'][k]), ['other'])
+                              for k in range(n)]
+
+                samples.append(dict(n=n, adj=adj,
+                                    gt_c=gt_c, gt_types=gt_types,
+                                    pred_c=pred_c, pred_types=pred_types))
+    else:
+        print(f'读取 NPZ: {args.npz}')
+        data = np.load(args.npz)
+        gt_coords      = data['gt_coords']
+        gt_combo_ids   = data['gt_combo_ids']
+        gt_adj         = data['gt_adj']
+        gt_n_nodes     = data['gt_n_nodes']
+        pred_coords    = data['pred_coords']
+        pred_combo_ids = data['pred_combo_ids']
+        K = int(data['rolls']) if 'rolls' in data else 1
+
+        for i in range(len(gt_n_nodes)):
+            n   = int(gt_n_nodes[i])
+            adj = gt_adj[i, :n, :n]
+
+            gt_c     = gt_coords[i, :n]
+            gt_types = [id_to_combo.get(int(gt_combo_ids[i, k]), ['other'])
+                        for k in range(n)]
+
+            # NPZ 模式：取第 0 个 roll
+            pc = pred_coords[i] if pred_coords.ndim == 3 else pred_coords[i, 0]
+            pred_c = pc[:n].copy()
+            pred_c -= pred_c.mean(axis=0)
+            pred_types = [id_to_combo.get(int(pred_combo_ids[i, 0, k] if pred_combo_ids.ndim == 3 else pred_combo_ids[i, k]), ['other'])
+                          for k in range(n)]
+
+            samples.append(dict(n=n, adj=adj,
+                                gt_c=gt_c, gt_types=gt_types,
+                                pred_c=pred_c, pred_types=pred_types))
+
+    print(f'共 {len(samples)} 条样本')
+    return samples
+
+
 def main():
     args = parse_args()
+    if not args.jsonl and not args.npz:
+        raise SystemExit('请指定 --jsonl 或 --npz')
     id_to_combo = load_vocab(Path(args.vocab))
 
-    data = np.load(args.npz)
-    gt_coords      = data['gt_coords']       # [N, 40, 2]
-    gt_combo_ids   = data['gt_combo_ids']    # [N, 40]
-    gt_adj         = data['gt_adj']          # [N, 40, 40]
-    gt_n_nodes     = data['gt_n_nodes']      # [N]
-    pred_coords    = data['pred_coords']     # [N, 40, 2]
-    pred_combo_ids = data['pred_combo_ids']  # [N, 40]
-
-    N = len(gt_n_nodes)
-    print(f'Loaded {N} samples from {args.npz}')
+    samples = load_samples(args, id_to_combo)
+    N = len(samples)
 
     sum_inter: Dict[str, float] = defaultdict(float)
     sum_union: Dict[str, float] = defaultdict(float)
     skipped = 0
 
-    for i in range(N):
-        n = int(gt_n_nodes[i])
-        adj = gt_adj[i, :n, :n]   # [n, n]
-
-        # GT：坐标已在原点附近，直接使用
-        gt_c  = gt_coords[i, :n]                                          # [n, 2]
-        gt_types = [id_to_combo.get(int(gt_combo_ids[i, k]), ['other'])
-                    for k in range(n)]
-
-        # Pred：将有效节点质心平移到原点
-        pred_c = pred_coords[i, :n].copy()                                # [n, 2]
-        pred_c -= pred_c.mean(axis=0)
-        pred_types = [id_to_combo.get(int(pred_combo_ids[i, k]), ['other'])
-                      for k in range(n)]
+    for i, s in enumerate(samples):
+        n          = s['n']
+        adj        = s['adj']
+        gt_c       = s['gt_c']
+        gt_types   = s['gt_types']
+        pred_c     = s['pred_c']
+        pred_types = s['pred_types']
 
         try:
             gt_polys   = extract_polygons(gt_c,   adj, gt_types)
@@ -137,7 +186,7 @@ def main():
                 sum_inter[rt] += gt_merged.intersection(pred_merged).area
                 sum_union[rt] += gt_merged.union(pred_merged).area
 
-        if (i + 1) % 50 == 0:
+        if (i + 1) % 500 == 0:
             print(f'  {i+1}/{N}', flush=True)
 
     print(f'Skipped {skipped}/{N} samples (polygon errors)')
@@ -161,13 +210,14 @@ def main():
             print(f'  {rt:12s}: {per_type_iou[rt]*100:.2f}%'
                   f'  (I={sum_inter.get(rt,0):.1f}, U={sum_union.get(rt,0):.1f})')
 
+    src = args.jsonl if args.jsonl else args.npz
     result = {
         'micro_iou':    micro_iou,
         'macro_iou':    macro_iou,
         'per_type_iou': per_type_iou,
         'n_samples':    N,
         'skipped':      skipped,
-        'npz':          args.npz,
+        'source':       src,
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, 'w', encoding='utf-8') as f:
