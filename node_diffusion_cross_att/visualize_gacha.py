@@ -46,18 +46,27 @@ from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
 from .type_model import NodeTypeClassifier
 from .render import load_vocab, find_faces, vote_room_type, ROOM_COLORS, ROOM_LABELS
-from .visualize_e2e import sample_coords_batch
+from .visualize_e2e import (
+    sample_coords_batch,
+    CUSTOM_PROMPTS,
+)
 
 MAX_BERT_LEN = 224
 
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument('--ckpt1',       default='checkpoints/llm_graph/stage2/20260614_155601/latest.pt',
+                   help='θ₁ checkpoint（--custom 模式必须）')
     p.add_argument('--ckpt2',       default='checkpoints/node_diffusion/latest.pt')
     p.add_argument('--ckpt3',       default='checkpoints/node_type/20260623_010747/model_latest.pt')
     p.add_argument('--data',        default='data/jsonl/test_graph_dataset_10k.jsonl')
+    p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json',
+                   help='BPE tokenizer（--custom 模式必须）')
     p.add_argument('--bert',        default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
+    p.add_argument('--custom',      action='store_true',
+                   help='使用内置 CUSTOM_PROMPTS，经 θ₁ 生成邻接图后抽卡')
     p.add_argument('--n',           type=int, default=3)
     p.add_argument('--indices',     type=int, nargs='+', default=None)
     p.add_argument('--rolls',       type=int, default=5)
@@ -126,34 +135,79 @@ def main():
     id_to_combo = load_vocab(Path(args.combo_vocab))
     bert_tok    = BertTokenizer.from_pretrained(args.bert)
 
-    # ── 读取测试集 ────────────────────────────────────────────────────────────
-    with open(args.data, encoding='utf-8') as f:
-        all_lines = f.readlines()
-    total = len(all_lines)
-
-    if args.indices is not None:
-        indices = args.indices
-    else:
-        rng     = np.random.default_rng(args.seed)
-        indices = rng.choice(total, size=args.n, replace=False).tolist()
-    print(f'选取索引: {indices}，每条跑 {args.rolls} 次不同噪声')
-
     records = []
-    for idx in indices:
-        d = json.loads(all_lines[idx])
-        n = int(d['n_nodes'])
-        enc = bert_tok(d['prompt'], max_length=MAX_BERT_LEN,
-                       padding='max_length', truncation=True)
-        records.append(dict(
-            idx     = idx,
-            n_nodes = n,
-            text    = d['prompt'],
-            adj_np  = np.array(d['adj_matrix'],    dtype=np.float32),
-            mask_np = np.array(d['node_mask'],     dtype=np.float32),
-            combo_gt= d['node_combo_ids'],
-            ptok_np = np.array(enc['input_ids'],   dtype=np.int64),
-            pmsk_np = np.array(enc['attention_mask'], dtype=np.float32),
-        ))
+
+    if args.custom:
+        # ── --custom：θ₁ 生成邻接图 ─────────────────────────────────────────
+        from tokenizers import Tokenizer
+        from llm_graph.infer_stage1 import (
+            load_model as load_llm, encode_text, parse_sequence, generate, BOS_ID,
+        )
+        print(f'\n[θ₁] 加载: {args.ckpt1}')
+        model1 = load_llm(args.ckpt1, device)
+        for i, txt in enumerate(CUSTOM_PROMPTS):
+            print(f'  [θ₁] custom#{i} 推理中...', end='', flush=True)
+            cpu_state  = torch.get_rng_state()
+            cuda_state = torch.cuda.get_rng_state(device) if device.type == 'cuda' else None
+            torch.manual_seed(i + 777777)
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(i + 777777)
+            prefix  = encode_text(txt, args.vocab) + [BOS_ID]
+            gen_seq = generate(model1, prefix, device, max_new_tokens=200)
+            torch.set_rng_state(cpu_state)
+            if cuda_state is not None:
+                torch.cuda.set_rng_state(cuda_state, device)
+            parsed = parse_sequence(gen_seq)
+            print(f'  n_nodes={parsed["n_nodes"]}  valid={parsed["valid"]}')
+            if not parsed['valid']:
+                continue
+            N      = parsed['n_nodes']
+            adj_np = np.zeros((40, 40), dtype=np.float32)
+            adj_np[:N, :N] = np.array(parsed['adj'], dtype=np.float32)
+            mask_np = np.zeros(40, dtype=np.float32)
+            mask_np[:N] = 1.0
+            enc = bert_tok(txt, max_length=MAX_BERT_LEN,
+                           padding='max_length', truncation=True)
+            records.append(dict(
+                idx     = i,
+                n_nodes = N,
+                text    = txt,
+                adj_np  = adj_np,
+                mask_np = mask_np,
+                combo_gt= [],
+                ptok_np = np.array(enc['input_ids'],      dtype=np.int64),
+                pmsk_np = np.array(enc['attention_mask'], dtype=np.float32),
+            ))
+        del model1
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        print(f'[θ₁] 完成，有效 {len(records)}/{len(CUSTOM_PROMPTS)} 条')
+    else:
+        # ── 读取测试集 ────────────────────────────────────────────────────────
+        with open(args.data, encoding='utf-8') as f:
+            all_lines = f.readlines()
+        total = len(all_lines)
+        if args.indices is not None:
+            indices = args.indices
+        else:
+            rng     = np.random.default_rng(args.seed)
+            indices = rng.choice(total, size=args.n, replace=False).tolist()
+        print(f'选取索引: {indices}，每条跑 {args.rolls} 次不同噪声')
+        for idx in indices:
+            d = json.loads(all_lines[idx])
+            n = int(d['n_nodes'])
+            enc = bert_tok(d['prompt'], max_length=MAX_BERT_LEN,
+                           padding='max_length', truncation=True)
+            records.append(dict(
+                idx     = idx,
+                n_nodes = n,
+                text    = d['prompt'],
+                adj_np  = np.array(d['adj_matrix'],       dtype=np.float32),
+                mask_np = np.array(d['node_mask'],        dtype=np.float32),
+                combo_gt= d['node_combo_ids'],
+                ptok_np = np.array(enc['input_ids'],      dtype=np.int64),
+                pmsk_np = np.array(enc['attention_mask'], dtype=np.float32),
+            ))
 
     # ── θ₂ 加载 ───────────────────────────────────────────────────────────────
     print(f'\n[θ₂] 加载: {args.ckpt2}')
