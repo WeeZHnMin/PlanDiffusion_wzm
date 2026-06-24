@@ -22,7 +22,7 @@ import json
 import os
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import matplotlib
 matplotlib.use('Agg')
@@ -46,7 +46,7 @@ from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
 from .type_model import NodeTypeClassifier
 from .render import load_vocab, find_faces, vote_room_type, ROOM_COLORS, ROOM_LABELS
-from .visualize_e2e import sample_coords_batch, draw_col3_coords
+from .visualize_e2e import sample_coords_batch
 
 MAX_BERT_LEN = 224
 
@@ -63,7 +63,7 @@ def parse_args():
     p.add_argument('--rolls',       type=int, default=5)
     p.add_argument('--seed',        type=int, default=42)
     p.add_argument('--gpu',         type=int, default=None)
-    p.add_argument('--out',         default='outputs/visualize_gacha/result.png')
+    p.add_argument('--out',         default='outputs/visualize_gacha')
     return p.parse_args()
 
 
@@ -166,20 +166,25 @@ def main():
     print(f'  step={ckpt2.get("step", "?")}')
     del ckpt2
 
-    # 每个 (样本, roll) 独立推理，种子 = idx + 123456 + roll * 1_000_000
-    for rec in records:
-        rec['rolls'] = []
-        for k in range(args.rolls):
-            fake_idx = rec['idx'] + k * 1_000_000   # 不同 roll 用不同种子
-            print(f'  [θ₂] idx={rec["idx"]} roll={k} ...', flush=True)
-            with torch.no_grad():
-                coords = sample_coords_batch(
-                    model2, diffusion,
-                    rec['adj_np'][None], rec['mask_np'][None],
-                    rec['ptok_np'][None], rec['pmsk_np'][None],
-                    device, sample_indices=[fake_idx],
-                )[0]   # [40, 2]
-            rec['rolls'].append({'coords': coords})
+    # ── θ₂ 批量推理：所有 (样本 × roll) 合并为一个大 batch ──────────────────
+    K = args.rolls
+    B = len(records)
+    all_adj  = np.stack([rec['adj_np']  for rec in records for _ in range(K)])  # [B*K,40,40]
+    all_mask = np.stack([rec['mask_np'] for rec in records for _ in range(K)])  # [B*K,40]
+    all_ptok = np.stack([rec['ptok_np'] for rec in records for _ in range(K)])  # [B*K,T]
+    all_pmsk = np.stack([rec['pmsk_np'] for rec in records for _ in range(K)])  # [B*K,T]
+    all_seeds = [rec['idx'] + k * 1_000_000 for rec in records for k in range(K)]
+
+    print(f'  [θ₂] 批量推理 {B}样本 × {K}rolls = {B*K} 条 ...', flush=True)
+    with torch.no_grad():
+        all_coords = sample_coords_batch(
+            model2, diffusion,
+            all_adj, all_mask, all_ptok, all_pmsk,
+            device, sample_indices=all_seeds,
+        )  # [B*K, 40, 2]
+
+    for i, rec in enumerate(records):
+        rec['rolls'] = [{'coords': all_coords[i * K + k]} for k in range(K)]
 
     del model2, diffusion
     if device.type == 'cuda':
@@ -195,101 +200,93 @@ def main():
     print(f'  step={ckpt3.get("step", "?")}')
     del ckpt3
 
-    for rec in records:
-        for roll in rec['rolls']:
-            with torch.no_grad():
-                logits = model3(
-                    torch.from_numpy(roll['coords'].T[None]).to(device),
-                    adj_matrix    = torch.from_numpy(rec['adj_np'][None]).to(device),
-                    node_mask     = torch.from_numpy(rec['mask_np'][None]).to(device),
-                    prompt_tokens = torch.from_numpy(rec['ptok_np'][None]).to(device),
-                    prompt_mask   = torch.from_numpy(rec['pmsk_np'][None]).long().to(device),
-                )
-                roll['combo_ids'] = logits[0].argmax(dim=-1).cpu().numpy()
+    # θ₃ 同样批量推理
+    coords_b = np.stack([rec['rolls'][k]['coords'] for rec in records for k in range(K)])  # [B*K,40,2]
+    with torch.no_grad():
+        logits_all = model3(
+            torch.from_numpy(coords_b.transpose(0, 2, 1)).to(device),       # [B*K,2,40]
+            adj_matrix    = torch.from_numpy(all_adj).to(device),
+            node_mask     = torch.from_numpy(all_mask).to(device),
+            prompt_tokens = torch.from_numpy(all_ptok).to(device),
+            prompt_mask   = torch.from_numpy(all_pmsk).long().to(device),
+        )  # [B*K, 40, n_combos]
+    combo_all = logits_all.argmax(dim=-1).cpu().numpy()  # [B*K, 40]
+
+    for i, rec in enumerate(records):
+        for k in range(K):
+            rec['rolls'][k]['combo_ids'] = combo_all[i * K + k]
 
     del model3
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
-    # ── 绘图 ──────────────────────────────────────────────────────────────────
-    # 布局：Col0=文本, 每个roll占两列=[坐标图, 房间渲染图]
-    B = len(records)
-    K = args.rolls
-    COL_W = [3.5] + [1.8, 2.2] * K
-    ROW_H  = 2.5
-    fig, axes = plt.subplots(
-        B, 1 + 2 * K,
-        figsize=(sum(COL_W) + 0.2, B * ROW_H + 0.6),
-        gridspec_kw={'width_ratios': COL_W},
-        constrained_layout=True,
-    )
-    if B == 1:
-        axes = [axes]
+    # ── 绘图：每条样本单独保存一张图（1行 × K列，每列一次 roll 的渲染图）─────
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    for row_i, rec in enumerate(records):
-        axs = axes[row_i]
+    COL_W = [2.5] * K
+    FIG_W = sum(COL_W) + 0.3
+    FIG_H = 3.2   # 单行高度（留足标题+文字空间）
+
+    for rec in records:
         n   = rec['n_nodes']
         adj = rec['adj_np']
 
-        # Col 0: 文字描述
-        axs[0].axis('off')
-        axs[0].text(0.5, 0.5, textwrap.fill(rec['text'], width=32),
-                    ha='center', va='center', fontsize=6,
-                    transform=axs[0].transAxes, multialignment='left',
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='#F5F5F5',
-                              edgecolor='#CCCCCC', linewidth=0.7))
+        fig, axes = plt.subplots(
+            1, K,
+            figsize=(FIG_W, FIG_H),
+            gridspec_kw={'width_ratios': COL_W},
+            constrained_layout=True,
+        )
+        if K == 1:
+            axes = [axes]
 
-        # Col 1,2 | 3,4 | ... : 每次 roll 的坐标图 + 房间渲染图
         for k, roll in enumerate(rec['rolls']):
-            ax_coord  = axs[1 + 2 * k]
-            ax_render = axs[2 + 2 * k]
+            ax = axes[k]
             node_types = [id_to_combo.get(int(roll['combo_ids'][i]), ['other'])
                           for i in range(n)]
-            # 坐标图：节点位置 + 边连接
             try:
-                draw_col3_coords(ax_coord, roll['coords'], adj, rec['mask_np'],
-                                 roll['combo_ids'])
+                render_to_ax(ax, roll['coords'][:n], adj[:n, :n], n, node_types)
             except Exception as e:
-                ax_coord.axis('off')
-                ax_coord.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
-                              fontsize=5, transform=ax_coord.transAxes)
-            # 房间渲染图
-            try:
-                render_to_ax(ax_render, roll['coords'][:n], adj[:n, :n], n, node_types)
-            except Exception as e:
-                ax_render.axis('off')
-                ax_render.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
-                               fontsize=5, transform=ax_render.transAxes)
+                ax.axis('off')
+                ax.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
+                        fontsize=5, transform=ax.transAxes)
+            ax.set_title(f'Roll {k + 1}', fontsize=7, pad=3)
 
-        axs[0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)
+        # 文本描述作为整张图的大标题
+        wrapped = textwrap.fill(rec['text'], width=100)
+        fig.suptitle(f"#{rec['idx']}  {wrapped}", fontsize=6,
+                     ha='left', x=0.01, y=1.01, va='bottom')
 
-    # 列标题
-    axes[0][0].set_title('Text Description', fontsize=9, fontweight='bold', pad=4)
-    for k in range(K):
-        axes[0][1 + 2 * k].set_title(f'Roll {k+1} Coords', fontsize=8, fontweight='bold', pad=4)
-        axes[0][2 + 2 * k].set_title(f'Roll {k+1} Render', fontsize=8, fontweight='bold', pad=4)
+        png_out = out_dir / f"{rec['idx']:06d}.png"
+        fig.savefig(png_out, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f'  saved: {png_out}')
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    fig.savefig(args.out, dpi=200, bbox_inches='tight')
-    pdf_out = os.path.splitext(args.out)[0] + '.pdf'
-    fig.savefig(pdf_out, bbox_inches='tight')
-    plt.close(fig)
-    print(f'\n已保存: {args.out}')
-    print(f'已保存: {pdf_out}')
+    print(f'\n已保存 {len(records)} 张图 → {out_dir}')
 
-    # 保存输入数据到 JSONL，方便检查邻接图是否有断开
-    jsonl_out = os.path.splitext(args.out)[0] + '_input.jsonl'
+    # 保存输入+推理结果到 JSONL，便于复现和分析
+    jsonl_out = out_dir / 'result_input.jsonl'
     with open(jsonl_out, 'w', encoding='utf-8') as jf:
         for rec in records:
-            jf.write(json.dumps({
-                'idx':        rec['idx'],
-                'n_nodes':    rec['n_nodes'],
-                'adj_matrix': rec['adj_np'].tolist(),
-                'node_mask':  rec['mask_np'].tolist(),
-                'combo_ids':  rec['combo_gt'],
-                'text':       rec['text'],
-            }, ensure_ascii=False) + '\n')
+            for k, roll in enumerate(rec['rolls']):
+                jf.write(json.dumps({
+                    'idx':            rec['idx'],
+                    'roll_k':         k,
+                    'seed':           rec['idx'] + k * 1_000_000,
+                    'noise_strategy': 'g = torch.Generator(); g.manual_seed(seed)',
+                    'n_nodes':        rec['n_nodes'],
+                    'text':           rec['text'],
+                    'adj_matrix':     rec['adj_np'].tolist(),
+                    'node_mask':      rec['mask_np'].tolist(),
+                    'gt_combo_ids':   rec['combo_gt'],
+                    'pred_coords':    roll['coords'][:rec['n_nodes']].tolist(),
+                    'pred_combo_ids': roll['combo_ids'][:rec['n_nodes']].tolist(),
+                }, ensure_ascii=False) + '\n')
     print(f'已保存: {jsonl_out}')
+
+
+
 
 
 if __name__ == '__main__':

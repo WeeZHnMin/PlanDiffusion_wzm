@@ -30,7 +30,7 @@ def build_parser(defaults=None):
     parser.add_argument("--weight_decay", type=float, default=defaults.get("weight_decay", 1e-4))
     parser.add_argument("--total_steps", type=int, default=defaults.get("total_steps", 2500000))
     parser.add_argument("--log_interval", type=int, default=defaults.get("log_interval", 100))
-    parser.add_argument("--save_interval", type=int, default=defaults.get("save_interval", 10000))
+    parser.add_argument("--save_interval", type=int, default=defaults.get("save_interval", 1000))
     parser.add_argument("--model_channels", type=int, default=defaults.get("model_channels", 384))
     parser.add_argument("--num_layers", type=int, default=defaults.get("num_layers", 6))
     parser.add_argument("--num_heads", type=int, default=defaults.get("num_heads", 6))
