@@ -30,7 +30,7 @@ import torch
 from transformers import BertTokenizer
 
 from .type_model import NodeTypeClassifier
-from .visualize_gacha import snap_nodes_to_walls
+from .visualize_e2e import snap_nodes_to_walls
 
 MAX_BERT_LEN = 224
 
