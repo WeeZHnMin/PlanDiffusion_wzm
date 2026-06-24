@@ -32,6 +32,13 @@
     \item \textbf{类型准确率（Type Acc.）}：
     给定真实坐标和图结构条件下，节点类型预测与真实类型的匹配率，
     衡量类型预测子模块的分类精度。
+
+    \item \textbf{端到端 IoU}：
+    三阶段完整推理后，以 Shapely 多边形面积计算预测房间布局与真实布局之间的交并比。
+    预测坐标经质心对齐后，按房间类型分组计算：
+    Micro-IoU 为面积加权平均，Macro-IoU 为各类型 IoU 的算术平均。
+    为降低噪声初始化随机性的影响，对每条样本运行 5 次独立推理，
+    由多模态大语言模型（MiMo）从渲染图像中选取最优结果（Oracle@5）进行评估。
 \end{itemize}
 
 \paragraph{相关方法对比}
@@ -108,6 +115,10 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 反映真实推理链路下的坐标扩散精度；
 类型准确率（Type Acc.\ 与 Face Type Acc.）则以真实坐标和真实图结构为条件，
 单独评估 $\theta_3$ 的分类能力。
+端到端布局 IoU（Oracle@5）在 9,895 条测试样本上达到 Micro-IoU 21.51\%、Macro-IoU 20.14\%，
+与同类文本驱动方法 HouseTune~\cite{hu2023housetune}（Micro 21.84\%、Macro 17.75\%，RPLAN 数据集）处于相近水平；
+由于两者使用不同数据集与不同评估协议（像素级 vs.\ 多边形面积），此处仅作参考性对比。
+
 注意，\S\ref{subsec:ablation} 消融实验中的 Coord-RMSE（表~\ref{tab:ablation_attn}）
 使用真实邻接矩阵和 6k 子集数据，与本表不可直接比较：
 主结果使用 $\theta_1$ 推理链路引入的误差邻接矩阵，测试集亦为独立的 10k 样本，
@@ -135,6 +146,10 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 \multirow{2}{*}{节点类型预测（$\theta_3$）}
     & Node Type Acc.↑ & 98.71\% \\
     & Face Type Acc.↑ & 99.06\% \\
+\midrule
+\multirow{2}{*}{端到端布局（Oracle@5）}
+    & Micro-IoU↑ & 21.51\% \\
+    & Macro-IoU↑ & 20.14\% \\
 \bottomrule
 \end{tabular}
 \end{table}
