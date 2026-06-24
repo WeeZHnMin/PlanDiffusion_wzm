@@ -36,9 +36,9 @@
     \item \textbf{端到端 IoU}：
     三阶段完整推理后，以 Shapely 多边形面积计算预测房间布局与真实布局之间的交并比。
     预测坐标经质心对齐后，按房间类型分组计算：
-    Micro-IoU 为面积加权平均，Macro-IoU 为各类型 IoU 的算术平均。
+    Micro-IoU 为面积加权全局交并比，Macro-IoU 为各房间类型 IoU 的算术平均。
     为降低噪声初始化随机性的影响，对每条样本运行 5 次独立推理，
-    由多模态大语言模型（MiMo）从渲染图像中选取最优结果（Oracle@5）进行评估。
+    取 5 次结果的平均 IoU 作为最终报告值。
 \end{itemize}
 
 \paragraph{相关方法对比}
@@ -115,7 +115,8 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 反映真实推理链路下的坐标扩散精度；
 类型准确率（Type Acc.\ 与 Face Type Acc.）则以真实坐标和真实图结构为条件，
 单独评估 $\theta_3$ 的分类能力。
-端到端布局 IoU（Oracle@5）在 9,895 条测试样本上达到 Micro-IoU 21.51\%、Macro-IoU 20.14\%，
+端到端布局 IoU 在 9,895 条测试样本、5 次独立推理取平均后，
+经坐标后处理（\S\ref{subsec:snap_ablation}）达到 Micro-IoU 22.46\%、Macro-IoU 21.27\%，
 与同类文本驱动方法 HouseTune~\cite{hu2023housetune}（Micro 21.84\%、Macro 17.75\%，RPLAN 数据集）处于相近水平；
 由于两者使用不同数据集与不同评估协议（像素级 vs.\ 多边形面积），此处仅作参考性对比。
 
@@ -147,9 +148,9 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
     & Node Type Acc.↑ & 98.80\% \\
     & Face Type Acc.↑ & 99.17\% \\
 \midrule
-\multirow{2}{*}{端到端布局（Oracle@5）}
-    & Micro-IoU↑ & 21.51\% \\
-    & Macro-IoU↑ & 20.14\% \\
+\multirow{2}{*}{端到端布局（5-roll 平均，含后处理）}
+    & Micro-IoU↑ & 22.46\% \\
+    & Macro-IoU↑ & 21.27\% \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -234,6 +235,40 @@ AdjAttn only 布局较为规整但整体偏移较大；
     }
     \label{fig:ablation_viz}
 \end{figure}
+
+\subsubsection{坐标后处理消融（节点-墙体吸附）}
+\label{subsec:snap_ablation}
+
+$\theta_2$ 预测的节点坐标有时与相邻墙体（图中相连两节点所构成的线段）存在微小偏差，
+导致多边形提取时拓扑不一致，进而影响 IoU 计算。
+为此，我们在 $\theta_2$ 和 $\theta_3$ 之间引入一个几何后处理步骤：
+若节点 $i$ 到某条边 $(j, k)$ 的垂直距离小于阈值 $\tau$，
+则将节点 $i$ 投影到该边上，并同步更新邻接图——
+删除直连边 $j$-$k$，添加 $i$-$j$ 和 $i$-$k$ 两条新边，
+使节点 $i$ 正式插入墙体。
+修正后的坐标与邻接图再送入 $\theta_3$ 进行类型预测。
+
+表~\ref{tab:ablation_snap} 报告了是否启用该后处理对端到端 IoU 的影响（$\tau = 0.05 \times d_{\text{bbox}}$，
+$d_{\text{bbox}}$ 为有效节点包围盒对角线长度）。
+
+\begin{table}[h]
+\centering
+\caption{节点-墙体吸附后处理消融（9,895 条测试样本，5-roll 平均）}
+\label{tab:ablation_snap}
+\small
+\begin{tabular}{lcc}
+\toprule
+方法 & Micro-IoU↑ & Macro-IoU↑ \\
+\midrule
+w/o 后处理 & 21.18\% & 19.81\% \\
+w/\ 后处理（$\tau=0.05$） & \textbf{22.46\%} & \textbf{21.27\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+后处理带来 Micro-IoU $+1.28\%$、Macro-IoU $+1.46\%$ 的提升，
+且 5 次 roll 之间的方差极小（$<0.2\%$），表明该步骤能有效修正几何偏差、
+提升预测布局与真实布局的面积重叠度。
 
 \subsection{定性结果}
 \label{subsec:qualitative}
