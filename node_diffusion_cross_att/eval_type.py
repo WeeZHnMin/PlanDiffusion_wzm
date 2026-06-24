@@ -8,11 +8,11 @@ NodeTypeClassifier 评估脚本（θ₃）
 
 用法：
   python -m node_diffusion_cross_att.eval_type \
-      --ckpt checkpoints/node_type/XXXXXX/model_latest.pt
+      --ckpt checkpoints/node_type/XXXXXX/model_latest.pt \
+      --data data/jsonl/test_graph_dataset_10k.jsonl
 
 可选：
   --n_eval 1000        只评估1000条
-  --vocab data/processed/type_combo_vocab.json
 """
 
 import argparse
@@ -26,9 +26,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
+from transformers import BertTokenizer
 
-from .dataset import TypeDataset
 from .type_model import NodeTypeClassifier
 
 
@@ -193,16 +193,63 @@ def face_acc_for_sample(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+MAX_BERT_LEN = 224
+
+
+class JsonlTypeDataset(Dataset):
+    """从 JSONL 读取测试集，格式与 TypeDataset 输出一致。"""
+
+    def __init__(self, jsonl_path: str, bert_name: str):
+        tok = BertTokenizer.from_pretrained(bert_name)
+        self.coords     = []
+        self.adj        = []
+        self.mask       = []
+        self.node_types = []
+        self.ptok       = []
+        self.pmsk       = []
+
+        with open(jsonl_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                self.coords.append(np.array(d['node_coords'],    dtype=np.float32))   # [40,2]
+                self.adj.append(   np.array(d['adj_matrix'],     dtype=np.float32))   # [40,40]
+                self.mask.append(  np.array(d['node_mask'],      dtype=np.float32))   # [40]
+                self.node_types.append(np.array(d['node_combo_ids'], dtype=np.int64)) # [40]
+                enc = tok(d['prompt'], max_length=MAX_BERT_LEN,
+                          padding='max_length', truncation=True)
+                self.ptok.append(np.array(enc['input_ids'],      dtype=np.int64))
+                self.pmsk.append(np.array(enc['attention_mask'], dtype=np.float32))
+
+        print(f'JsonlTypeDataset: {len(self.coords)} 条  ← {jsonl_path}')
+
+    def __len__(self):
+        return len(self.coords)
+
+    def __getitem__(self, idx):
+        x = self.coords[idx].T.copy()   # [2, 40]
+        cond = {
+            'adj_matrix':    self.adj[idx],
+            'node_mask':     self.mask[idx],
+            'node_types':    self.node_types[idx],
+            'prompt_tokens': self.ptok[idx],
+            'prompt_mask':   self.pmsk[idx],
+        }
+        return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt",       required=True)
-    p.add_argument("--data_path",  default="data/processed/node_diffusion_cross_att/type_dataset_test_10k.npz")
-    p.add_argument("--vocab",      default="data/processed/type_combo_vocab.json")
+    p.add_argument("--data",       default="data/jsonl/test_graph_dataset_10k.jsonl")
+    p.add_argument("--vocab",      default="node_diffusion_cross_att/type_combo_vocab_old.json")
     p.add_argument("--bert",       default="models/bert-base-uncased")
     p.add_argument("--n_eval",     type=int, default=0, help="0=全部")
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--seed",       type=int, default=42)
-    p.add_argument("--out",        default="type_eval_results.json")
+    p.add_argument("--out",        default="outputs/eval/type_eval_results.json")
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=4)
     p.add_argument("--num_heads",      type=int, default=6)
@@ -236,15 +283,14 @@ def main():
     id_to_combo = load_vocab(args.vocab)
 
     # ── 数据集 ────────────────────────────────────────────────────────────────
-    npz = np.load(args.data_path, allow_pickle=True)
-    all_coords    = npz["node_coords"].astype(np.float32)   # [M, 40, 2]
-    all_adj       = npz["adj_matrix"].astype(np.uint8)      # [M, 40, 40]
-    all_node_mask = npz["node_mask"].astype(np.uint8)       # [M, 40]
-    all_gt_types  = npz["node_combo_ids"].astype(np.int64)  # [M, 40]
-
-    dataset = TypeDataset(args.data_path)
+    dataset = JsonlTypeDataset(args.data, args.bert)
     total = len(dataset)
     print(f"数据集: {total} 条")
+
+    all_coords    = np.stack(dataset.coords)     # [M, 40, 2]
+    all_adj       = np.stack(dataset.adj)        # [M, 40, 40]
+    all_node_mask = np.stack(dataset.mask)       # [M, 40]
+    all_gt_types  = np.stack(dataset.node_types) # [M, 40]
 
     indices = list(range(total))
     if args.n_eval > 0 and args.n_eval < total:
