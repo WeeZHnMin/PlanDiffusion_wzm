@@ -21,6 +21,8 @@
 
 import argparse
 import os
+from functools import partial
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import numpy as np
@@ -45,8 +47,23 @@ def parse_args():
                    help='吸附阈值，相对包围盒对角线比例（默认 0.05）')
     p.add_argument('--batch',       type=int,   default=64,
                    help='θ₃ 推理批次大小（按样本×roll 计）')
+    p.add_argument('--workers',     type=int,   default=0,
+                   help='吸附多进程数（0=CPU核心数）')
     p.add_argument('--gpu',         type=int,   default=None)
     return p.parse_args()
+
+
+def _snap_one(args_tuple):
+    """多进程工作函数：对单条样本的所有 roll 做吸附。"""
+    i, coords_ik, adj_ik, n, thresh = args_tuple   # coords_ik: [K,40,2]
+    K = coords_ik.shape[0]
+    out_c = coords_ik.copy()
+    out_a = adj_ik.copy()
+    for k in range(K):
+        c, a = snap_nodes_to_walls(out_c[k], out_a[k], n, thresh)
+        out_c[k] = c
+        out_a[k] = a
+    return i, out_c, out_a
 
 
 def main():
@@ -86,25 +103,27 @@ def main():
         pmsk_all[i] = enc['attention_mask']
     print('BERT 编码完成')
 
-    # ── 吸附后处理：对每条样本每个 roll ──────────────────────────────────────
-    print(f'节点吸附（thresh_ratio={args.snap_thresh}）...')
+    # ── 吸附后处理：多进程并行 ────────────────────────────────────────────────
+    n_workers = args.workers if args.workers > 0 else cpu_count()
+    print(f'节点吸附（thresh_ratio={args.snap_thresh}，workers={n_workers}）...')
+
     snapped_coords = pred_coords.copy()          # [N, K, 40, 2]
     snapped_adj    = np.stack(                   # [N, K, 40, 40]
         [np.stack([gt_adj[i].copy() for _ in range(K)]) for i in range(N)]
     )
 
-    for i in range(N):
-        n = int(gt_n_nodes[i])
-        for k in range(K):
-            c, a = snap_nodes_to_walls(
-                snapped_coords[i, k],    # [40, 2]
-                snapped_adj[i, k],       # [40, 40]
-                n, args.snap_thresh,
-            )
-            snapped_coords[i, k] = c
-            snapped_adj[i, k]    = a
-        if (i + 1) % 500 == 0:
-            print(f'  {i+1}/{N}', flush=True)
+    tasks = [
+        (i, snapped_coords[i], snapped_adj[i], int(gt_n_nodes[i]), args.snap_thresh)
+        for i in range(N)
+    ]
+
+    with Pool(processes=n_workers) as pool:
+        for done, (i, c, a) in enumerate(pool.imap_unordered(_snap_one, tasks, chunksize=32)):
+            snapped_coords[i] = c
+            snapped_adj[i]    = a
+            if (done + 1) % 500 == 0:
+                print(f'  {done+1}/{N}', flush=True)
+
     print('吸附完成')
 
     # ── 重跑 θ₃ ──────────────────────────────────────────────────────────────

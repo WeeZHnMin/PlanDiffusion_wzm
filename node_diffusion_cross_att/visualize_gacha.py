@@ -92,47 +92,53 @@ def snap_nodes_to_walls(
       1. 将节点 i 的坐标投影到边 jk 上（吸附）
       2. 邻接图：添加 i-j、i-k，删除 j-k（节点 i 插入墙体）
     返回修正后的 (coords_copy, adj_copy)。
+    内层距离计算全程 numpy 向量化，每轮 O(n×E)。
     """
-    c = coords[:n].copy()   # [n, 2]  工作区
+    c = coords[:n].copy()   # [n, 2]
     a = adj[:n, :n].copy()  # [n, n]
 
-    # 阈值 = 包围盒对角线 × thresh_ratio
     span = np.linalg.norm(c.max(axis=0) - c.min(axis=0))
     threshold = max(span * thresh_ratio, 1e-6)
 
-    for _ in range(n * n):   # 最多迭代 n² 次避免死循环
-        edges = [(j, k) for j in range(n) for k in range(j + 1, n)
-                 if a[j, k] > 0.5]
-        snapped = False
-        for i in range(n):
-            for (j, k) in edges:
-                if i == j or i == k:
-                    continue
-                pa, pb, pi = c[j], c[k], c[i]
-                ab     = pb - pa
-                len_sq = float(np.dot(ab, ab))
-                if len_sq < 1e-12:
-                    continue
-                t = float(np.dot(pi - pa, ab)) / len_sq
-                if t <= 0.0 or t >= 1.0:
-                    continue          # 投影落在线段外，跳过
-                proj = pa + t * ab
-                if np.linalg.norm(pi - proj) < threshold:
-                    c[i]       = proj             # 吸附坐标
-                    a[i, j] = a[j, i] = 1        # 插入：i-j
-                    a[i, k] = a[k, i] = 1        # 插入：i-k
-                    a[j, k] = a[k, j] = 0        # 删除：j-k
-                    snapped = True
-                    break
-            if snapped:
-                break
-        if not snapped:
+    node_ids = np.arange(n)
+
+    for _ in range(n):          # 每轮最多吸附一个节点，至多 n 轮
+        jj, kk = np.where(np.triu(a > 0.5, k=1))
+        if len(jj) == 0:
             break
+
+        pa     = c[jj]                                    # [E, 2]
+        pb     = c[kk]                                    # [E, 2]
+        ab     = pb - pa                                  # [E, 2]
+        len_sq = (ab ** 2).sum(axis=1)                   # [E]
+
+        diff = c[:, None, :] - pa[None, :, :]            # [n, E, 2]
+        t    = (diff * ab[None]).sum(axis=2) / np.maximum(len_sq, 1e-12)  # [n, E]
+
+        valid = (t > 0) & (t < 1)
+        valid &= (node_ids[:, None] != jj[None, :])
+        valid &= (node_ids[:, None] != kk[None, :])
+
+        proj = pa[None] + t[:, :, None] * ab[None]       # [n, E, 2]
+        dist = np.linalg.norm(c[:, None, :] - proj, axis=2)   # [n, E]
+        dist[~valid] = np.inf
+
+        min_dist = dist.min()
+        if min_dist >= threshold:
+            break
+
+        i_idx, e_idx = np.unravel_index(dist.argmin(), dist.shape)
+        j, k = int(jj[e_idx]), int(kk[e_idx])
+
+        c[i_idx]         = proj[i_idx, e_idx]
+        a[i_idx, j] = a[j, i_idx] = 1
+        a[i_idx, k] = a[k, i_idx] = 1
+        a[j, k]     = a[k, j]     = 0
 
     out_coords = coords.copy()
     out_adj    = adj.copy()
-    out_coords[:n]       = c
-    out_adj[:n, :n]      = a
+    out_coords[:n]  = c
+    out_adj[:n, :n] = a
     return out_coords, out_adj
 
 
