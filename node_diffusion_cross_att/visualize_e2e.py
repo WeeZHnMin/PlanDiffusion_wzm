@@ -372,6 +372,7 @@ def parse_args():
     p.add_argument('--bert',  default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',       type=int,   default=5)
+    p.add_argument('--batch',   type=int,   default=16, help='θ₂/θ₃ 推理批次大小')
     p.add_argument('--indices', type=int,   nargs='+', default=None,
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
     p.add_argument('--custom',  action='store_true',
@@ -491,15 +492,24 @@ def main():
     print(f'  step={ckpt2.get("step","?")}')
     del ckpt2
 
-    for rec in records:
-        print(f'  [θ₂] idx={rec["idx"]} DDPM 1000步...', flush=True)
+    bs = args.batch
+    N  = len(records)
+    for start in range(0, N, bs):
+        chunk = records[start:start + bs]
+        adj_b  = np.stack([r['adj_np' ] for r in chunk])
+        mask_b = np.stack([r['mask_np'] for r in chunk])
+        ptok_b = np.stack([r['ptok_np'] for r in chunk])
+        pmsk_b = np.stack([r['pmsk_np'] for r in chunk])
+        seeds  = [r['idx'] for r in chunk]
         with torch.no_grad():
-            rec['pred_coords'] = sample_coords_batch(
+            coords_out = sample_coords_batch(
                 model2, diffusion,
-                rec['adj_np' ][None], rec['mask_np'][None],
-                rec['ptok_np'][None], rec['pmsk_np'][None],
-                device, sample_indices=[rec['idx']],
-            )[0]   # [40, 2]
+                adj_b, mask_b, ptok_b, pmsk_b,
+                device, sample_indices=seeds,
+            )  # [C, 40, 2]
+        for i, rec in enumerate(chunk):
+            rec['pred_coords'] = coords_out[i]
+        print(f'  [θ₂] {min(start + bs, N)}/{N}', flush=True)
 
     del model2, diffusion
     if device.type == 'cuda':
@@ -518,17 +528,25 @@ def main():
     print(f'  step={ckpt3.get("step","?")}')
     del ckpt3
 
-    for rec in records:
+    for start in range(0, N, bs):
+        chunk    = records[start:start + bs]
+        coords_b = np.stack([r['pred_coords'] for r in chunk])   # [C, 40, 2]
+        adj_b    = np.stack([r['adj_np' ]     for r in chunk])
+        mask_b   = np.stack([r['mask_np']     for r in chunk])
+        ptok_b   = np.stack([r['ptok_np']     for r in chunk])
+        pmsk_b   = np.stack([r['pmsk_np']     for r in chunk])
         with torch.no_grad():
-            x_in  = torch.from_numpy(rec['pred_coords'].T[None]).to(device)
-            adj_t = torch.from_numpy(rec['adj_np' ][None]).to(device)
-            msk_t = torch.from_numpy(rec['mask_np'][None]).to(device)
-            ptk_t = torch.from_numpy(rec['ptok_np'][None]).to(device)
-            pmk_t = torch.from_numpy(rec['pmsk_np'][None]).long().to(device)
-            logits = model3(x_in, adj_matrix=adj_t, node_mask=msk_t,
-                            prompt_tokens=ptk_t, prompt_mask=pmk_t)
-            rec['type_ids'] = logits[0].argmax(dim=-1).cpu().numpy()
-        print(f'  [θ₃] idx={rec["idx"]} 完成')
+            logits = model3(
+                torch.from_numpy(coords_b.transpose(0, 2, 1)).to(device),
+                adj_matrix    = torch.from_numpy(adj_b).to(device),
+                node_mask     = torch.from_numpy(mask_b).to(device),
+                prompt_tokens = torch.from_numpy(ptok_b).to(device),
+                prompt_mask   = torch.from_numpy(pmsk_b).long().to(device),
+            )  # [C, 40, n_combos]
+        preds = logits.argmax(dim=-1).cpu().numpy()
+        for i, rec in enumerate(chunk):
+            rec['type_ids'] = preds[i]
+        print(f'  [θ₃] {min(start + bs, N)}/{N}', flush=True)
 
     del model3
     if device.type == 'cuda':
