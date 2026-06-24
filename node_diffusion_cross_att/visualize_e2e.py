@@ -196,7 +196,8 @@ def sample_coords_batch(model2, diffusion,
                         adj_batch: np.ndarray, mask_batch: np.ndarray,
                         ptok_batch: np.ndarray, pmsk_batch: np.ndarray,
                         device,
-                        sample_indices: List[int] = None) -> np.ndarray:
+                        sample_indices: List[int] = None,
+                        noise_seed: int = 123456) -> np.ndarray:
     """
     DDPM 1000步批量逆采样。
     输入均为 numpy，shape [B, ...]；返回 pred_coords [B, 40, 2]。
@@ -233,7 +234,7 @@ def sample_coords_batch(model2, diffusion,
         x_slices = []
         for idx in sample_indices:
             g = torch.Generator(device=device)
-            g.manual_seed(int(idx) + 123456)
+            g.manual_seed(int(idx) + noise_seed)
             x_slices.append(torch.randn(1, 2, 40, device=device, generator=g))
         x = torch.cat(x_slices, dim=0)
     else:
@@ -412,7 +413,9 @@ def parse_args():
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
     p.add_argument('--custom',  action='store_true',
                    help='使用内置 CUSTOM_PROMPTS 5条自定义文本，无需加载测试集数据')
-    p.add_argument('--seed',    type=int,   default=42)
+    p.add_argument('--seed',       type=int, default=42)
+    p.add_argument('--noise_seed', type=int, default=123456,
+                   help='θ₂ 初始噪声种子偏移（不同值→不同抽卡结果）')
     p.add_argument('--out',   default='outputs/visualize_e2e/result.png')
     return p.parse_args()
 
@@ -533,6 +536,7 @@ def main():
             rec['adj_np'][None], rec['mask_np'][None],
             rec['ptok_np'][None], rec['pmsk_np'][None],
             device, sample_indices=[rec['idx']],
+            noise_seed=args.noise_seed,
         )  # [1, 40, 2]
         rec['pred_coords'] = coords_out[0]
         print(f'  [θ₂] idx={rec["idx"]} done', flush=True)
