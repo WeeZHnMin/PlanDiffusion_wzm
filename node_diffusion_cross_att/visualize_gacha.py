@@ -71,10 +71,69 @@ def parse_args():
     p.add_argument('--n',           type=int, default=3)
     p.add_argument('--indices',     type=int, nargs='+', default=None)
     p.add_argument('--rolls',       type=int, default=5)
+    p.add_argument('--snap',        action='store_true',
+                   help='开启节点-墙体吸附后处理：将靠近某条边的节点投影到该边并修正邻接图')
+    p.add_argument('--snap_thresh', type=float, default=0.05,
+                   help='吸附阈值，单位为有效节点包围盒对角线长度的比例（默认 0.05 = 5%%）')
     p.add_argument('--seed',        type=int, default=42)
     p.add_argument('--gpu',         type=int, default=None)
     p.add_argument('--out',         default='outputs/visualize_gacha')
     return p.parse_args()
+
+
+def snap_nodes_to_walls(
+    coords: np.ndarray,   # [40, 2]，含填充
+    adj:    np.ndarray,   # [40, 40]
+    n:      int,          # 有效节点数
+    thresh_ratio: float,  # 相对包围盒对角线的比例
+) -> tuple:
+    """
+    后处理：若节点 i 到某条边 (j,k) 的垂直距离 < 阈值，则：
+      1. 将节点 i 的坐标投影到边 jk 上（吸附）
+      2. 邻接图：添加 i-j、i-k，删除 j-k（节点 i 插入墙体）
+    返回修正后的 (coords_copy, adj_copy)。
+    """
+    c = coords[:n].copy()   # [n, 2]  工作区
+    a = adj[:n, :n].copy()  # [n, n]
+
+    # 阈值 = 包围盒对角线 × thresh_ratio
+    span = np.linalg.norm(c.max(axis=0) - c.min(axis=0))
+    threshold = max(span * thresh_ratio, 1e-6)
+
+    for _ in range(n * n):   # 最多迭代 n² 次避免死循环
+        edges = [(j, k) for j in range(n) for k in range(j + 1, n)
+                 if a[j, k] > 0.5]
+        snapped = False
+        for i in range(n):
+            for (j, k) in edges:
+                if i == j or i == k:
+                    continue
+                pa, pb, pi = c[j], c[k], c[i]
+                ab     = pb - pa
+                len_sq = float(np.dot(ab, ab))
+                if len_sq < 1e-12:
+                    continue
+                t = float(np.dot(pi - pa, ab)) / len_sq
+                if t <= 0.0 or t >= 1.0:
+                    continue          # 投影落在线段外，跳过
+                proj = pa + t * ab
+                if np.linalg.norm(pi - proj) < threshold:
+                    c[i]       = proj             # 吸附坐标
+                    a[i, j] = a[j, i] = 1        # 插入：i-j
+                    a[i, k] = a[k, i] = 1        # 插入：i-k
+                    a[j, k] = a[k, j] = 0        # 删除：j-k
+                    snapped = True
+                    break
+            if snapped:
+                break
+        if not snapped:
+            break
+
+    out_coords = coords.copy()
+    out_adj    = adj.copy()
+    out_coords[:n]       = c
+    out_adj[:n, :n]      = a
+    return out_coords, out_adj
 
 
 def render_to_ax(ax, coords: np.ndarray, adj: np.ndarray, n: int,
@@ -239,11 +298,23 @@ def main():
         )  # [B*K, 40, 2]
 
     for i, rec in enumerate(records):
-        rec['rolls'] = [{'coords': all_coords[i * K + k]} for k in range(K)]
+        rec['rolls'] = [{'coords': all_coords[i * K + k],
+                         'adj':    rec['adj_np'].copy()} for k in range(K)]
 
     del model2, diffusion
     if device.type == 'cuda':
         torch.cuda.empty_cache()
+
+    # ── 节点-墙体吸附后处理（可选）────────────────────────────────────────────
+    if args.snap:
+        print(f'\n[Snap] 节点吸附，thresh_ratio={args.snap_thresh}')
+        for rec in records:
+            n = rec['n_nodes']
+            for roll in rec['rolls']:
+                snapped_c, snapped_a = snap_nodes_to_walls(
+                    roll['coords'], roll['adj'], n, args.snap_thresh)
+                roll['coords'] = snapped_c
+                roll['adj']    = snapped_a
 
     # ── θ₃ 加载 ───────────────────────────────────────────────────────────────
     print(f'\n[θ₃] 加载: {args.ckpt3}')
@@ -255,12 +326,15 @@ def main():
     print(f'  step={ckpt3.get("step", "?")}')
     del ckpt3
 
-    # θ₃ 同样批量推理
-    coords_b = np.stack([rec['rolls'][k]['coords'] for rec in records for k in range(K)])  # [B*K,40,2]
+    # θ₃ 批量推理：使用每个 roll 自己的（可能已吸附的）坐标和邻接图
+    coords_b = np.stack([rec['rolls'][k]['coords']
+                         for rec in records for k in range(K)])   # [B*K,40,2]
+    adj_b_θ3 = np.stack([rec['rolls'][k]['adj']
+                         for rec in records for k in range(K)])   # [B*K,40,40]
     with torch.no_grad():
         logits_all = model3(
-            torch.from_numpy(coords_b.transpose(0, 2, 1)).to(device),       # [B*K,2,40]
-            adj_matrix    = torch.from_numpy(all_adj).to(device),
+            torch.from_numpy(coords_b.transpose(0, 2, 1)).to(device),
+            adj_matrix    = torch.from_numpy(adj_b_θ3).to(device),
             node_mask     = torch.from_numpy(all_mask).to(device),
             prompt_tokens = torch.from_numpy(all_ptok).to(device),
             prompt_mask   = torch.from_numpy(all_pmsk).long().to(device),
@@ -300,15 +374,16 @@ def main():
             axes = [[axes[0]], [axes[1]]]
 
         for k, roll in enumerate(rec['rolls']):
-            coords_k   = roll['coords']          # [40, 2]
-            combo_ids_k = roll['combo_ids']      # [40]
-            node_types = [id_to_combo.get(int(combo_ids_k[i]), ['other'])
-                          for i in range(n)]
+            coords_k    = roll['coords']          # [40, 2]
+            adj_k       = roll['adj']             # [40, 40]（可能已吸附修正）
+            combo_ids_k = roll['combo_ids']       # [40]
+            node_types  = [id_to_combo.get(int(combo_ids_k[i]), ['other'])
+                           for i in range(n)]
 
             # Row 0：渲染平面图
             ax_render = axes[0][k]
             try:
-                render_to_ax(ax_render, coords_k[:n], adj[:n, :n], n, node_types)
+                render_to_ax(ax_render, coords_k[:n], adj_k[:n, :n], n, node_types)
             except Exception as e:
                 ax_render.axis('off')
                 ax_render.text(0.5, 0.5, f'Error\n{e}', ha='center', va='center',
@@ -317,7 +392,7 @@ def main():
 
             # Row 1：节点坐标 + 类型着色
             ax_coord = axes[1][k]
-            draw_col4_types(ax_coord, coords_k, adj, rec['mask_np'], combo_ids_k)
+            draw_col4_types(ax_coord, coords_k, adj_k, rec['mask_np'], combo_ids_k)
 
         # 行标签
         axes[0][0].set_ylabel('Rendered', fontsize=6, labelpad=3)
