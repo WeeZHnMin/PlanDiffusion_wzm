@@ -57,7 +57,11 @@ def parse_args():
     p.add_argument('--bert',   default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',      type=int, default=0,
-                   help='样本数（0=全部）')
+                   help='样本数（0=全部，与 --start/--end 互斥）')
+    p.add_argument('--start',  type=int, default=0,
+                   help='起始样本索引（含，配合 --end 做顺序切片，用于多卡并行）')
+    p.add_argument('--end',    type=int, default=0,
+                   help='结束样本索引（不含，0=到末尾）')
     p.add_argument('--rolls',  type=int, default=5,
                    help='每条样本的噪声初始化次数')
     p.add_argument('--batch',  type=int, default=16,
@@ -91,14 +95,19 @@ def main():
         all_lines = f.readlines()
 
     total = len(all_lines)
-    n = args.n if args.n > 0 else total
-    if n < total:
-        rng = np.random.default_rng(args.seed)
-        indices = rng.choice(total, size=n, replace=False).tolist()
+    if args.start > 0 or args.end > 0:
+        # 顺序切片模式（多卡并行用）
+        end = args.end if args.end > 0 else total
+        indices = list(range(args.start, min(end, total)))
     else:
-        indices = list(range(total))
+        n = args.n if args.n > 0 else total
+        if n < total:
+            rng = np.random.default_rng(args.seed)
+            indices = rng.choice(total, size=n, replace=False).tolist()
+        else:
+            indices = list(range(total))
     N = len(indices)
-    print(f'Samples: {N} / {total}')
+    print(f'Samples: {N} / {total}  [{indices[0]}~{indices[-1]}]')
 
     records = []
     for idx in indices:
