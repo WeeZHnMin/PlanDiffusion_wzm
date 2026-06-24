@@ -119,20 +119,29 @@ def load_samples(args, id_to_combo):
         pred_combo_ids = data['pred_combo_ids']
         K = int(data['rolls']) if 'rolls' in data else 1
 
+        # 返回所有 roll 的样本列表，roll_k=-1 表示单 roll（ndim==3）
+        roll_k = args.roll if hasattr(args, 'roll') else 0
         for i in range(len(gt_n_nodes)):
             n   = int(gt_n_nodes[i])
             adj = gt_adj[i, :n, :n]
 
             gt_c     = gt_coords[i, :n]
-            gt_types = [id_to_combo.get(int(gt_combo_ids[i, k]), ['other'])
-                        for k in range(n)]
+            gt_types = [id_to_combo.get(int(gt_combo_ids[i, j]), ['other'])
+                        for j in range(n)]
 
-            # NPZ 模式：取第 0 个 roll
-            pc = pred_coords[i] if pred_coords.ndim == 3 else pred_coords[i, 0]
+            if pred_coords.ndim == 3:
+                pc = pred_coords[i]
+            else:
+                pc = pred_coords[i, roll_k]
             pred_c = pc[:n].copy()
             pred_c -= pred_c.mean(axis=0)
-            pred_types = [id_to_combo.get(int(pred_combo_ids[i, 0, k] if pred_combo_ids.ndim == 3 else pred_combo_ids[i, k]), ['other'])
-                          for k in range(n)]
+
+            if pred_combo_ids.ndim == 2:
+                pred_types = [id_to_combo.get(int(pred_combo_ids[i, j]), ['other'])
+                              for j in range(n)]
+            else:
+                pred_types = [id_to_combo.get(int(pred_combo_ids[i, roll_k, j]), ['other'])
+                              for j in range(n)]
 
             samples.append(dict(n=n, adj=adj,
                                 gt_c=gt_c, gt_types=gt_types,
@@ -142,82 +151,111 @@ def load_samples(args, id_to_combo):
     return samples
 
 
-def main():
-    args = parse_args()
-    if not args.jsonl and not args.npz:
-        raise SystemExit('请指定 --jsonl 或 --npz')
-    id_to_combo = load_vocab(Path(args.vocab))
-
-    samples = load_samples(args, id_to_combo)
+def compute_iou(samples) -> dict:
+    """对给定样本列表计算 Micro/Macro IoU，返回结果 dict。"""
     N = len(samples)
-
     sum_inter: Dict[str, float] = defaultdict(float)
     sum_union: Dict[str, float] = defaultdict(float)
     skipped = 0
 
     for i, s in enumerate(samples):
-        n          = s['n']
-        adj        = s['adj']
-        gt_c       = s['gt_c']
-        gt_types   = s['gt_types']
-        pred_c     = s['pred_c']
-        pred_types = s['pred_types']
-
         try:
-            gt_polys   = extract_polygons(gt_c,   adj, gt_types)
-            pred_polys = extract_polygons(pred_c, adj, pred_types)
+            gt_polys   = extract_polygons(s['gt_c'],   s['adj'], s['gt_types'])
+            pred_polys = extract_polygons(s['pred_c'], s['adj'], s['pred_types'])
         except Exception:
             skipped += 1
             continue
 
-        # 按类型累加交集/并集面积
-        all_types = set(gt_polys) | set(pred_polys)
-        for rt in all_types:
-            gt_merged   = unary_union(gt_polys[rt])   if gt_polys.get(rt)   else None
-            pred_merged = unary_union(pred_polys[rt]) if pred_polys.get(rt) else None
-
-            if gt_merged is None and pred_merged is None:
+        for rt in set(gt_polys) | set(pred_polys):
+            gt_m   = unary_union(gt_polys[rt])   if gt_polys.get(rt)   else None
+            pred_m = unary_union(pred_polys[rt]) if pred_polys.get(rt) else None
+            if gt_m is None and pred_m is None:
                 continue
-            elif gt_merged is None:
-                sum_union[rt] += pred_merged.area
-            elif pred_merged is None:
-                sum_union[rt] += gt_merged.area
+            elif gt_m is None:
+                sum_union[rt] += pred_m.area
+            elif pred_m is None:
+                sum_union[rt] += gt_m.area
             else:
-                sum_inter[rt] += gt_merged.intersection(pred_merged).area
-                sum_union[rt] += gt_merged.union(pred_merged).area
+                sum_inter[rt] += gt_m.intersection(pred_m).area
+                sum_union[rt] += gt_m.union(pred_m).area
 
         if (i + 1) % 500 == 0:
             print(f'  {i+1}/{N}', flush=True)
 
-    print(f'Skipped {skipped}/{N} samples (polygon errors)')
-
-    # ── Micro / Macro IoU ─────────────────────────────────────────────────────
     per_type_iou: Dict[str, float] = {}
     for rt in ROOM_TYPE_ORDER:
         u = sum_union.get(rt, 0.0)
         if u > 0:
             per_type_iou[rt] = sum_inter.get(rt, 0.0) / u
 
-    micro_iou = sum(sum_inter.values()) / max(sum(sum_union.values()), 1e-9)
-    macro_iou = sum(per_type_iou.values()) / max(len(per_type_iou), 1)
+    micro = sum(sum_inter.values()) / max(sum(sum_union.values()), 1e-9)
+    macro = sum(per_type_iou.values()) / max(len(per_type_iou), 1)
+    return dict(micro_iou=micro, macro_iou=macro,
+                per_type_iou=per_type_iou, skipped=skipped, n_samples=N)
 
-    print('\n=== IoU Results ===')
-    print(f'Micro-IoU : {micro_iou * 100:.2f}%')
-    print(f'Macro-IoU : {macro_iou * 100:.2f}%')
-    print('\nPer-type IoU:')
-    for rt in ROOM_TYPE_ORDER:
-        if rt in per_type_iou:
-            print(f'  {rt:12s}: {per_type_iou[rt]*100:.2f}%'
-                  f'  (I={sum_inter.get(rt,0):.1f}, U={sum_union.get(rt,0):.1f})')
 
-    src = args.jsonl if args.jsonl else args.npz
+def main():
+    args = parse_args()
+    if not args.jsonl and not args.npz:
+        raise SystemExit('请指定 --jsonl 或 --npz')
+    id_to_combo = load_vocab(Path(args.vocab))
+
+    # ── JSONL 模式：单次评估 ──────────────────────────────────────────────────
+    if args.jsonl:
+        samples = load_samples(args, id_to_combo)
+        res = compute_iou(samples)
+        print(f'Skipped {res["skipped"]}/{res["n_samples"]} samples')
+        print(f'\n=== IoU Results ===')
+        print(f'Micro-IoU : {res["micro_iou"]*100:.2f}%')
+        print(f'Macro-IoU : {res["macro_iou"]*100:.2f}%')
+        result = dict(**res, source=args.jsonl)
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out, 'w', encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print(f'\nSaved → {args.out}')
+        return
+
+    # ── NPZ 模式：对每个 roll 独立评估，报 best / avg / worst ─────────────────
+    print(f'读取 NPZ: {args.npz}')
+    data = np.load(args.npz)
+    K = int(data['rolls']) if 'rolls' in data else 1
+    print(f'K={K} rolls，逐 roll 评估中...')
+
+    roll_results = []
+    for k in range(K):
+        print(f'\n── Roll {k} ──────────────────────────────')
+        args.roll = k
+        samples = load_samples(args, id_to_combo)
+        res = compute_iou(samples)
+        res['roll'] = k
+        roll_results.append(res)
+        print(f'  Micro-IoU: {res["micro_iou"]*100:.2f}%  '
+              f'Macro-IoU: {res["macro_iou"]*100:.2f}%  '
+              f'skipped: {res["skipped"]}')
+
+    micros = [r['micro_iou'] for r in roll_results]
+    macros = [r['macro_iou'] for r in roll_results]
+
+    best_k  = int(np.argmax(micros))
+    worst_k = int(np.argmin(micros))
+
+    print(f'\n{"="*45}')
+    print(f'{"":12s}  {"Micro-IoU":>10}  {"Macro-IoU":>10}')
+    print(f'{"─"*45}')
+    print(f'{"Best (roll "+str(best_k)+")":12s}  '
+          f'{micros[best_k]*100:>9.2f}%  {macros[best_k]*100:>9.2f}%')
+    print(f'{"Average":12s}  '
+          f'{np.mean(micros)*100:>9.2f}%  {np.mean(macros)*100:>9.2f}%')
+    print(f'{"Worst (roll "+str(worst_k)+")":12s}  '
+          f'{micros[worst_k]*100:>9.2f}%  {macros[worst_k]*100:>9.2f}%')
+    print(f'{"="*45}')
+
     result = {
-        'micro_iou':    micro_iou,
-        'macro_iou':    macro_iou,
-        'per_type_iou': per_type_iou,
-        'n_samples':    N,
-        'skipped':      skipped,
-        'source':       src,
+        'best':  {'roll': best_k,  'micro_iou': micros[best_k],  'macro_iou': macros[best_k]},
+        'avg':   {'micro_iou': float(np.mean(micros)), 'macro_iou': float(np.mean(macros))},
+        'worst': {'roll': worst_k, 'micro_iou': micros[worst_k], 'macro_iou': macros[worst_k]},
+        'per_roll': roll_results,
+        'source': args.npz,
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, 'w', encoding='utf-8') as f:
