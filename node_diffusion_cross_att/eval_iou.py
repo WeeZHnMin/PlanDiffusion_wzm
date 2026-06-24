@@ -105,8 +105,9 @@ def load_samples(args, id_to_combo):
                 pred_types = [id_to_combo.get(int(row['pred_combo_ids'][k]), ['other'])
                               for k in range(n)]
 
-                samples.append(dict(n=n, adj=adj,
-                                    gt_c=gt_c, gt_types=gt_types,
+                samples.append(dict(n=n,
+                                    gt_adj=adj, pred_adj=adj,
+                                    gt_c=gt_c,  gt_types=gt_types,
                                     pred_c=pred_c, pred_types=pred_types))
     else:
         print(f'读取 NPZ: {args.npz}')
@@ -117,15 +118,14 @@ def load_samples(args, id_to_combo):
         gt_n_nodes     = data['gt_n_nodes']
         pred_coords    = data['pred_coords']
         pred_combo_ids = data['pred_combo_ids']
+        # pred_adj：吸附后的预测邻接图（snapped NPZ 才有，否则回退到 gt_adj）
+        pred_adj       = data['pred_adj'] if 'pred_adj' in data else None
         K = int(data['rolls']) if 'rolls' in data else 1
 
-        # 返回所有 roll 的样本列表，roll_k=-1 表示单 roll（ndim==3）
         roll_k = args.roll if hasattr(args, 'roll') else 0
         for i in range(len(gt_n_nodes)):
-            n   = int(gt_n_nodes[i])
-            adj = gt_adj[i, :n, :n]
-
-            gt_c     = gt_coords[i, :n]
+            n      = int(gt_n_nodes[i])
+            gt_c   = gt_coords[i, :n]
             gt_types = [id_to_combo.get(int(gt_combo_ids[i, j]), ['other'])
                         for j in range(n)]
 
@@ -143,9 +143,18 @@ def load_samples(args, id_to_combo):
                 pred_types = [id_to_combo.get(int(pred_combo_ids[i, roll_k, j]), ['other'])
                               for j in range(n)]
 
-            samples.append(dict(n=n, adj=adj,
-                                gt_c=gt_c, gt_types=gt_types,
-                                pred_c=pred_c, pred_types=pred_types))
+            # GT 用 gt_adj，预测用 pred_adj（若有）否则也用 gt_adj
+            gt_adj_i   = gt_adj[i, :n, :n]
+            if pred_adj is not None:
+                pred_adj_i = pred_adj[i, roll_k, :n, :n] if pred_adj.ndim == 4 \
+                             else pred_adj[i, :n, :n]
+            else:
+                pred_adj_i = gt_adj_i
+
+            samples.append(dict(n=n,
+                                gt_adj=gt_adj_i,   pred_adj=pred_adj_i,
+                                gt_c=gt_c,         gt_types=gt_types,
+                                pred_c=pred_c,     pred_types=pred_types))
 
     print(f'共 {len(samples)} 条样本')
     return samples
@@ -160,8 +169,8 @@ def compute_iou(samples) -> dict:
 
     for i, s in enumerate(samples):
         try:
-            gt_polys   = extract_polygons(s['gt_c'],   s['adj'], s['gt_types'])
-            pred_polys = extract_polygons(s['pred_c'], s['adj'], s['pred_types'])
+            gt_polys   = extract_polygons(s['gt_c'],   s['gt_adj'],   s['gt_types'])
+            pred_polys = extract_polygons(s['pred_c'], s['pred_adj'], s['pred_types'])
         except Exception:
             skipped += 1
             continue
