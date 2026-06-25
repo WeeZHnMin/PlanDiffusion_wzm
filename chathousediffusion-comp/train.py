@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     diffusion = GaussianDiffusion(model, **diffusion_dict)
 
-    data_root = "../PlanDiffusion_wzm/data/chathousediffusion/chat_train"
+    data_root = "../data/chathousediffusion/chat_train"
     trainer = Trainer(
         diffusion,
         f"{data_root}/images",
