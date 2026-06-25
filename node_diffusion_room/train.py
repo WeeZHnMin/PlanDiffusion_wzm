@@ -37,10 +37,10 @@ def build_parser(defaults=None):
     parser.add_argument("--data_path",    default=defaults.get("data_path", "data/processed/node_diffusion_room/graph_dataset_5k.npz"))
     parser.add_argument("--save_dir",     default=defaults.get("save_dir",  "checkpoints/node_diffusion_room"))
     parser.add_argument("--resume",       default="", help="path to checkpoint .pt")
-    parser.add_argument("--batch_size",   type=int,   default=defaults.get("batch_size",   144))
-    parser.add_argument("--lr",           type=float, default=defaults.get("lr",           1e-4))
+    parser.add_argument("--batch_size",   type=int,   default=defaults.get("batch_size",   512))
+    parser.add_argument("--lr",           type=float, default=defaults.get("lr",           3e-4))
     parser.add_argument("--weight_decay", type=float, default=defaults.get("weight_decay", 1e-4))
-    parser.add_argument("--total_steps",  type=int,   default=defaults.get("total_steps",  100000))
+    parser.add_argument("--total_steps",  type=int,   default=defaults.get("total_steps",  350000))
     parser.add_argument("--log_interval", type=int,   default=defaults.get("log_interval", 100))
     parser.add_argument("--save_interval",type=int,   default=defaults.get("save_interval",5000))
     parser.add_argument("--eval_interval",type=int,   default=defaults.get("eval_interval",5000),

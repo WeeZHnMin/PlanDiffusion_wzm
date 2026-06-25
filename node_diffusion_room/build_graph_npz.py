@@ -36,7 +36,7 @@ def parse_args():
     p.add_argument("--jsonl",       default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bert",        default="models/bert-base-uncased")
     p.add_argument("--output",      default="data/processed/node_diffusion_room/graph_dataset.npz")
-    p.add_argument("--augment",     type=int, default=8)
+    p.add_argument("--augment",     type=int, default=4)
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--workers",     type=int, default=0)
     p.add_argument("--max_samples", type=int, default=0,
@@ -70,7 +70,6 @@ def main():
 
     tokenizer = BertTokenizer.from_pretrained(args.bert)
 
-    adj_list    = []
     mask_list   = []
     ids_list    = []
     coords_list = []
@@ -78,6 +77,7 @@ def main():
     pmask_list  = []
     plen_list   = []
     nnodes_list = []
+    adj_list    = []
 
     t0        = time.perf_counter()
     n_graphs  = 0
@@ -131,7 +131,6 @@ def main():
             for perm in perms:
                 new_adj, new_ids, new_coords = permute_graph(
                     adj_full, combo_ids, coords, n, perm)
-                adj_list.append(new_adj)
                 mask_list.append(mask)
                 ids_list.append(new_ids)
                 coords_list.append(new_coords)
@@ -139,6 +138,7 @@ def main():
                 pmask_list.append(attn_msk)
                 plen_list.append(tlen)
                 nnodes_list.append(n)
+                adj_list.append(new_adj)
 
             if (line_no + 1) % 10000 == 0:
                 elapsed = time.perf_counter() - t0
@@ -149,8 +149,9 @@ def main():
 
     # ── 并行计算 room_membership ──────────────────────────────────────────────
     print("计算 room_membership（并行）...")
-    adj_arr  = np.stack(adj_list,  axis=0)
-    mask_arr = np.stack(mask_list, axis=0)
+    adj_arr  = np.stack(adj_list,  axis=0)   # [total, MAX_NODES, MAX_NODES]
+    mask_arr = np.stack(mask_list, axis=0)   # [total, MAX_NODES]
+    del adj_list, mask_list                  # 释放内存
 
     n_workers    = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
     tasks        = [(i, adj_arr[i], mask_arr[i]) for i in range(total)]
@@ -170,7 +171,6 @@ def main():
 
     np.savez_compressed(
         out_path,
-        adj_matrix       = adj_arr,
         node_mask        = mask_arr,
         node_combo_ids   = np.stack(ids_list,    axis=0),
         node_coords      = np.stack(coords_list, axis=0),
