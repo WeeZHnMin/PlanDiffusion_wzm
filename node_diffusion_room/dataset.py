@@ -1,5 +1,5 @@
 """
-NodeDataset for node_diffusion_tristream：cond 中附带 room_membership [N, MAX_ROOMS]。
+NodeDataset for node_diffusion_room：cond 中附带 room_membership [N, MAX_ROOMS]。
 
 npz 中必须含有 room_membership 字段（由 build_graph_npz.py 生成）。
 """

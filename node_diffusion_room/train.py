@@ -2,14 +2,14 @@
 Train NodeDiffusionTransformer (三流注意力) on preprocessed node-coordinate data.
 
 使用方法（单卡）：
-  python -m node_diffusion_tristream.train \\
-      --data_path data/processed/node_diffusion_tristream/graph_dataset_5k.npz \\
-      --save_dir  checkpoints/node_diffusion_tristream/run1
+  python -m node_diffusion_room.train \\
+      --data_path data/processed/node_diffusion_room/graph_dataset_5k.npz \\
+      --save_dir  checkpoints/node_diffusion_room/run1
 
 多卡 DDP：
-  torchrun --nproc_per_node=2 -m node_diffusion_tristream.train \\
-      --data_path data/processed/node_diffusion_tristream/graph_dataset_5k.npz \\
-      --save_dir  checkpoints/node_diffusion_tristream/run1
+  torchrun --nproc_per_node=2 -m node_diffusion_room.train \\
+      --data_path data/processed/node_diffusion_room/graph_dataset_5k.npz \\
+      --save_dir  checkpoints/node_diffusion_room/run1
 """
 
 import argparse
@@ -34,8 +34,8 @@ from .model import NodeDiffusionTransformer
 def build_parser(defaults=None):
     defaults = defaults or {}
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path",    default=defaults.get("data_path", "data/processed/node_diffusion_tristream/graph_dataset_5k.npz"))
-    parser.add_argument("--save_dir",     default=defaults.get("save_dir",  "checkpoints/node_diffusion_tristream"))
+    parser.add_argument("--data_path",    default=defaults.get("data_path", "data/processed/node_diffusion_room/graph_dataset_5k.npz"))
+    parser.add_argument("--save_dir",     default=defaults.get("save_dir",  "checkpoints/node_diffusion_room"))
     parser.add_argument("--resume",       default="", help="path to checkpoint .pt")
     parser.add_argument("--batch_size",   type=int,   default=defaults.get("batch_size",   144))
     parser.add_argument("--lr",           type=float, default=defaults.get("lr",           1e-4))

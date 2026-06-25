@@ -1,16 +1,16 @@
 """
-构建 node_diffusion_tristream 训练用 NPZ。
+构建 node_diffusion_room 训练用 NPZ。
 
 与 build_v3/build_graph_npz.py 结构一致，额外保存：
   room_membership : (N, 40, MAX_ROOMS)  float32，二值，节点-环隶属矩阵
 
 用法：
-  python -m node_diffusion_tristream.build_graph_npz
-  python -m node_diffusion_tristream.build_graph_npz --augment 8 --workers 8
+  python -m node_diffusion_room.build_graph_npz
+  python -m node_diffusion_room.build_graph_npz --augment 8 --workers 8
   # 小训练集（5k张图×8增强=40k条）
-  python -m node_diffusion_tristream.build_graph_npz \\
+  python -m node_diffusion_room.build_graph_npz \\
       --max_samples 5000 \\
-      --output data/processed/node_diffusion_tristream/graph_dataset_5k.npz
+      --output data/processed/node_diffusion_room/graph_dataset_5k.npz
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--jsonl",       default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bert",        default="models/bert-base-uncased")
-    p.add_argument("--output",      default="data/processed/node_diffusion_tristream/graph_dataset.npz")
+    p.add_argument("--output",      default="data/processed/node_diffusion_room/graph_dataset.npz")
     p.add_argument("--augment",     type=int, default=8)
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--workers",     type=int, default=0)
