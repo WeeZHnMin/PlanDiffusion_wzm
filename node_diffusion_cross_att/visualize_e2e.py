@@ -199,7 +199,8 @@ def sample_coords_batch(model2, diffusion,
                         ptok_batch: np.ndarray, pmsk_batch: np.ndarray,
                         device,
                         sample_indices: List[int] = None,
-                        noise_seed: int = 123456) -> np.ndarray:
+                        noise_seed: int = 123456,
+                        use_ddim: bool = False) -> np.ndarray:
     """
     DDPM 1000步批量逆采样。
     输入均为 numpy，shape [B, ...]；返回 pred_coords [B, 40, 2]。
@@ -242,14 +243,19 @@ def sample_coords_batch(model2, diffusion,
         eps = fwd(x, t)
         ab  = diffusion.alphas_bar[t]
         ap  = diffusion.alphas_bar_prev[t]
-        a   = diffusion.alphas[t]
-        b_  = diffusion.betas[t]
         x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
-        mu  = (ap.sqrt() * b_ / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
-        if t > 0:
-            x = mu + diffusion.posterior_variance[t].sqrt() * torch.randn(x.shape, device=device, generator=g)
+        if use_ddim:
+            # DDIM 确定性更新（σ_t=0），无每步随机噪声
+            x = ap.sqrt() * x0 + (1 - ap).sqrt() * eps
         else:
-            x = mu
+            # DDPM 随机更新
+            a  = diffusion.alphas[t]
+            b_ = diffusion.betas[t]
+            mu = (ap.sqrt() * b_ / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
+            if t > 0:
+                x = mu + diffusion.posterior_variance[t].sqrt() * torch.randn(x.shape, device=device, generator=g)
+            else:
+                x = mu
 
     return x.permute(0, 2, 1).cpu().numpy()   # [B, 40, 2]
 
@@ -415,6 +421,7 @@ def parse_args():
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
     p.add_argument('--custom',  action='store_true',
                    help='使用内置 CUSTOM_PROMPTS 5条自定义文本，无需加载测试集数据')
+    p.add_argument('--ddim',       action='store_true', help='θ₂ 使用 DDIM 确定性采样（1000步，无每步随机噪声）')
     p.add_argument('--gpu',        type=int, default=None, help='指定 GPU 编号，如 --gpu 1')
     p.add_argument('--seed',       type=int, default=42)
     p.add_argument('--noise_seed', type=int, default=123456,
@@ -542,6 +549,7 @@ def main():
             rec['ptok_np'][None], rec['pmsk_np'][None],
             device, sample_indices=[rec['idx']],
             noise_seed=args.noise_seed,
+            use_ddim=args.ddim,
         )  # [1, 40, 2]
         rec['pred_coords'] = coords_out[0]
         print(f'  [θ₂] idx={rec["idx"]} done', flush=True)
