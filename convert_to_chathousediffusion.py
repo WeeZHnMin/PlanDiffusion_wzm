@@ -319,19 +319,21 @@ def convert_row(task):
                     links.append(other['name'])
             room['link'] = links
 
-        # 输出干净的 JSON（去掉 face_idx 辅助字段）
-        json_rooms = []
+        # 按房间类型分组输出（graph_encoder.get_nodes 期望的格式）
+        # {"LivingRoom": {"rooms": [...]}, "Kitchen": {"rooms": [...]}, ...}
+        grouped: Dict[str, list] = {}
         for room in room_list:
-            json_rooms.append({
+            t = room['type']
+            grouped.setdefault(t, []).append({
                 'name':     room['name'],
-                'type':     room['type'],
                 'link':     room['link'],
                 'location': room['location'],
                 'size':     room['size'],
             })
+        json_out = {t: {'rooms': rooms} for t, rooms in grouped.items()}
 
         with open(out_text_dir / f'{stem}.json', 'w', encoding='utf-8') as f:
-            json.dump({'rooms': json_rooms}, f, ensure_ascii=False, indent=2)
+            json.dump(json_out, f, ensure_ascii=False, indent=2)
 
         return True
 
