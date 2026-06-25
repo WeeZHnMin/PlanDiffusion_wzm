@@ -230,17 +230,14 @@ def sample_coords_batch(model2, diffusion,
         return model2.coord_head(h).permute(0, 2, 1).float() # [B, 2, 40]
 
     diffusion._to(device)
-    # 每条样本用自身索引独立 seed，与全局 RNG 状态解耦，
-    # 保证同一样本无论与哪些样本同批次结果都一致。
-    if sample_indices is not None:
-        x_slices = []
-        for idx in sample_indices:
-            g = torch.Generator(device=device)
-            g.manual_seed(int(idx) + noise_seed)
-            x_slices.append(torch.randn(1, 2, 40, device=device, generator=g))
-        x = torch.cat(x_slices, dim=0)
-    else:
-        x = torch.randn(B, 2, 40, device=device)
+    # 用独立 generator 控制全部随机性（初始噪声 + 每步去噪噪声），
+    # 与全局 RNG 完全解耦，noise_seed 改变即可复现不同结果。
+    assert B == 1, 'single-sample mode only'
+    idx = sample_indices[0] if sample_indices else 0
+    g = torch.Generator(device=device)
+    g.manual_seed(int(idx) + noise_seed)
+
+    x = torch.randn(1, 2, 40, device=device, generator=g)
     for t in reversed(range(diffusion.T)):
         eps = fwd(x, t)
         ab  = diffusion.alphas_bar[t]
@@ -249,7 +246,10 @@ def sample_coords_batch(model2, diffusion,
         b_  = diffusion.betas[t]
         x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
         mu  = (ap.sqrt() * b_ / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
-        x   = mu + diffusion.posterior_variance[t].sqrt() * torch.randn_like(x) if t > 0 else mu
+        if t > 0:
+            x = mu + diffusion.posterior_variance[t].sqrt() * torch.randn(x.shape, device=device, generator=g)
+        else:
+            x = mu
 
     return x.permute(0, 2, 1).cpu().numpy()   # [B, 40, 2]
 
