@@ -19,6 +19,8 @@
 用法：
   python -m node_diffusion_rid.build_graph_npz
   python -m node_diffusion_rid.build_graph_npz --augment 8 --workers 8
+  # 小训练集（5k张图×8增强=40k条）
+  python -m node_diffusion_rid.build_graph_npz --max_samples 5000 --output data/processed/node_diffusion_rid/graph_dataset_5k.npz
 """
 
 from __future__ import annotations
@@ -46,9 +48,11 @@ def parse_args():
     p.add_argument("--output",   default="data/processed/node_diffusion_rid/graph_dataset.npz")
     p.add_argument("--augment",  type=int, default=8,
                    help="每张图随机节点重排次数（1=不增强）")
-    p.add_argument("--seed",     type=int, default=42)
-    p.add_argument("--workers",  type=int, default=0,
+    p.add_argument("--seed",        type=int, default=42)
+    p.add_argument("--workers",     type=int, default=0,
                    help="room_ids 并行计算的 worker 数，0=cpu_count()-1")
+    p.add_argument("--max_samples", type=int, default=0,
+                   help="从 jsonl 最多读取的原始图数量，0=全量")
     return p.parse_args()
 
 
@@ -104,6 +108,9 @@ def main():
             if len(enc['input_ids']) > MAX_TEXT_LEN:
                 n_skipped += 1
                 continue
+
+            if args.max_samples > 0 and n_graphs >= args.max_samples:
+                break
 
             n        = int(rec["n_nodes"])
             n_graphs += 1
