@@ -61,7 +61,7 @@ def parse_args():
                    help='θ₁ checkpoint（--custom 模式必须）')
     p.add_argument('--ckpt2',       default='checkpoints/node_diffusion/latest.pt')
     p.add_argument('--ckpt3',       default='checkpoints/node_type/20260623_010747/model_latest.pt')
-    p.add_argument('--data',        default='data/jsonl/test_graph_dataset_10k.jsonl')
+    p.add_argument('--data',        default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json',
                    help='BPE tokenizer（--custom 模式必须）')
     p.add_argument('--bert',        default='models/bert-base-uncased')
@@ -286,25 +286,29 @@ def main():
     print(f'  step={ckpt2.get("step", "?")}')
     del ckpt2
 
-    # ── θ₂ 批量推理：所有 (样本 × roll) 合并为一个大 batch ──────────────────
+    # ── θ₂ 逐条推理：每个 (样本 × roll) 独立 seed ──────────────────────────
     K = args.rolls
     B = len(records)
-    all_adj  = np.stack([rec['adj_np']  for rec in records for _ in range(K)])  # [B*K,40,40]
     all_mask = np.stack([rec['mask_np'] for rec in records for _ in range(K)])  # [B*K,40]
     all_ptok = np.stack([rec['ptok_np'] for rec in records for _ in range(K)])  # [B*K,T]
     all_pmsk = np.stack([rec['pmsk_np'] for rec in records for _ in range(K)])  # [B*K,T]
-    all_seeds = [rec['idx'] + k * 1_000_000 for rec in records for k in range(K)]
 
-    print(f'  [θ₂] 批量推理 {B}样本 × {K}rolls = {B*K} 条 ...', flush=True)
-    with torch.no_grad():
-        all_coords = sample_coords_batch(
-            model2, diffusion,
-            all_adj, all_mask, all_ptok, all_pmsk,
-            device, sample_indices=all_seeds,
-        )  # [B*K, 40, 2]
+    print(f'  [θ₂] 逐条推理 {B}样本 × {K}rolls = {B*K} 条 ...', flush=True)
+    all_coords_list = []
+    for rec in records:
+        for k in range(K):
+            seed = rec['idx'] + k * 1_000_000
+            coords_out = sample_coords_batch(
+                model2, diffusion,
+                rec['adj_np'][None], rec['mask_np'][None],
+                rec['ptok_np'][None], rec['pmsk_np'][None],
+                device, sample_indices=[seed], noise_seed=0,
+            )  # [1, 40, 2]
+            all_coords_list.append(coords_out[0])
+        print(f'    idx={rec["idx"]} done', flush=True)
 
     for i, rec in enumerate(records):
-        rec['rolls'] = [{'coords': all_coords[i * K + k],
+        rec['rolls'] = [{'coords': all_coords_list[i * K + k],
                          'adj':    rec['adj_np'].copy()} for k in range(K)]
 
     del model2, diffusion
