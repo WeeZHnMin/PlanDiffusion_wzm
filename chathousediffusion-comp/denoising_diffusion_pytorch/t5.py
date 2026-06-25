@@ -18,7 +18,7 @@ def default(val, d):
 
 MAX_LENGTH = 256
 
-DEFAULT_T5_NAME = 'models/t5-v1_1-base'
+DEFAULT_T5_NAME = '../models/t5-v1_1-base'
 
 T5_CONFIGS = {}
 
