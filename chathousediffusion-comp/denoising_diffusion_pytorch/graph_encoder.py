@@ -13,7 +13,7 @@ import os
 import numpy as np
 
 ENCODED_DIM=768
-MAX_NUM_NODES=20
+MAX_NUM_NODES=30
 
 
 room_category = {

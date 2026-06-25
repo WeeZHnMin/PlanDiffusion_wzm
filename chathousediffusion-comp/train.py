@@ -1,3 +1,5 @@
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 from denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer, seed_torch
 import os
 import pickle
