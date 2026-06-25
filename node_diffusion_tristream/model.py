@@ -163,8 +163,9 @@ class FeedForward(nn.Module):
 
 class EncoderLayer(nn.Module):
     """
-    三流注意力层：
-      1. adj_attn + room_attn + global_attn（并联相加）
+    双流注意力层：
+      1. room_attn + global_attn（并联相加）
+         adj_attn 已被 room_attn 完全包含（平面图中每条边必属于某个环），故去除。
       2. cross_attn（节点查文本）
       3. ffn
     """
@@ -173,17 +174,15 @@ class EncoderLayer(nn.Module):
         self.norm1       = nn.LayerNorm(d_model)
         self.norm_cross  = nn.LayerNorm(d_model)
         self.norm2       = nn.LayerNorm(d_model)
-        self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
         self.room_attn   = MultiHeadAttention(heads, d_model, dropout)
         self.global_attn = MultiHeadAttention(heads, d_model, dropout)
         self.cross_attn  = MultiHeadAttention(heads, d_model, dropout)
         self.ff          = FeedForward(d_model, dropout)
         self.dropout     = nn.Dropout(dropout)
 
-    def forward(self, x, adj_mask, room_mask, text_feat, text_mask):
+    def forward(self, x, room_mask, text_feat, text_mask):
         x2 = self.norm1(x)
         x  = x + self.dropout(
-            self.adj_attn   (x2, x2, x2, adj_mask)  +
             self.room_attn  (x2, x2, x2, room_mask) +
             self.global_attn(x2, x2, x2, None)
         )
@@ -242,12 +241,7 @@ class NodeDiffusionTransformer(nn.Module):
 
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total     = sum(p.numel() for p in self.parameters())
-        print(f"NodeDiffusionTransformer(TriStream): {trainable:,} trainable / {total:,} total")
-
-    def _build_adj_mask(self, adj_matrix, node_mask):
-        adj_mask = 1 - adj_matrix
-        pad_keys = (1 - node_mask).unsqueeze(1)
-        return torch.clamp(adj_mask + pad_keys, 0, 1)
+        print(f"NodeDiffusionTransformer(room_attn+global_attn): {trainable:,} trainable / {total:,} total")
 
     def _build_room_mask(self, room_membership, node_mask):
         """
@@ -262,6 +256,7 @@ class NodeDiffusionTransformer(nn.Module):
     def forward(self, x, timesteps, adj_matrix, node_mask,
                 prompt_tokens=None, prompt_mask=None,
                 room_membership=None, **kwargs):
+        # adj_matrix 仅用于在线计算 room_membership（推理时无预计算的情况）
         del kwargs
         B, _, N = x.shape
         x = x.permute(0, 2, 1).float()
@@ -270,8 +265,6 @@ class NodeDiffusionTransformer(nn.Module):
             timestep_embedding(timesteps, self.model_channels)
         ).unsqueeze(1)
         node_emb = self.input_emb(x) + t_emb
-
-        adj_mask = self._build_adj_mask(adj_matrix.float(), node_mask.float())
 
         if room_membership is None:
             room_membership = assign_room_membership(adj_matrix.float(), node_mask.float())
@@ -295,6 +288,6 @@ class NodeDiffusionTransformer(nn.Module):
 
         seq = node_emb
         for layer in self.layers:
-            seq = layer(seq, adj_mask, room_mask, text_feat, text_mask)
+            seq = layer(seq, room_mask, text_feat, text_mask)
 
         return self.coord_head(seq).permute(0, 2, 1)   # [B, 2, N]
