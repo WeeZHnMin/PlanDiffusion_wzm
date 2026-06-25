@@ -72,42 +72,37 @@ from llm_graph.infer_batch import decode_bpe_text, MAX_BERT_LEN
 
 # ── 内置自定义文本（风格与训练集一致）────────────────────────────────────────
 CUSTOM_PROMPTS = [
-    # test idx=2929
-    "Living room is central, with a bedroom above to the left, a bedroom above "
-    "to the right, a bathroom directly above, a bedroom below to the right, a "
-    "bathroom directly below, and a bedroom to the left. Kitchen is at the bottom "
-    "left, adjacent to the left bedroom above and the bottom bathroom to the right. "
-    "The top bathroom is sandwiched between the two top bedrooms.",
+    # train idx=46871
+    "The living room is on the left, adjacent to the central corridor. The corridor "
+    "connects the living room to the kitchen on the right, with a bedroom and bathroom "
+    "above, and another bedroom and bathroom below. The kitchen is positioned in the "
+    "upper right corner, adjacent to the corridor and the bedroom below it.",
 
-    # test idx=3278
-    "The kitchen is at the bottom center, adjacent to the corridor above and the "
-    "living room to the right. The living room occupies the right side, extending "
-    "from the top bedroom down to the kitchen. The corridor runs vertically through "
-    "the center, connecting the kitchen, living room, and the stack of bedrooms and "
-    "bathrooms on the left. The bedrooms and bathrooms are arranged in a column on "
-    "the left side, with the top bedroom also positioned above the corridor.",
+    # train idx=52448
+    "The kitchen is located at the top center, flanked by a bedroom on the left and "
+    "a bathroom on the right. The living room is situated below the kitchen and to the "
+    "left of the central corridor. A bedroom is positioned to the right of the corridor, "
+    "while a bathroom and two bedrooms are located in the bottom left corner, below the "
+    "living room.",
 
-    # test idx=6238
-    "Kitchen is at the top center, adjacent to a bedroom on its right and a bathroom "
-    "below it. The living room is a large area on the right side, extending from the "
-    "top bedroom down to the bottom bathroom. A central corridor connects the kitchen, "
-    "living room, and the stack of rooms on the left, which includes a bathroom and "
-    "two bedrooms arranged vertically.",
+    # train idx=60361
+    "Living room is on the left, adjacent to the corridor on its right and the kitchen "
+    "below it. The corridor is central, connecting the living room, kitchen, and two "
+    "bedrooms, with one bedroom above and one below. The bathroom is on the far right, "
+    "adjacent to the corridor and the lower bedroom.",
 
-    # test idx=6618
-    "Living room is on the left, adjacent to the corridor and the bottom bedroom; "
-    "the corridor runs vertically through the center, connecting the living room, "
-    "three bedrooms, two bathrooms, and the kitchen. The top-left bedroom is above "
-    "the living room, while the top-right bedroom and bathroom are in the upper right "
-    "corner. The kitchen is in the bottom right corner, adjacent to the bottom bedroom "
-    "and below the middle bathroom.",
+    # train idx=99812
+    "Kitchen is at the top left, adjacent to a bathroom on its left and a bedroom below "
+    "it. The central bathroom is to the right of the kitchen and above the living room, "
+    "with a bedroom to its right. The living room is centrally located below the central "
+    "bathroom, with a bedroom to its right and another bedroom to the left of the central "
+    "bathroom.",
 
-    # test idx=9821
-    "The living room is centrally located on the left, with a bathroom in the "
-    "top-left corner and a bedroom directly below it. A bedroom sits above the "
-    "living room, while another bedroom is positioned to the right of the living "
-    "room. The kitchen is in the top-right corner, adjacent to the top bedroom, "
-    "with a large bedroom below it and a second bathroom in the bottom-right corner.",
+    # train idx=105900
+    "The corridor is central, connecting the living room on the left, the kitchen below, "
+    "and the bathroom and bedrooms on the right. The living room is positioned to the left "
+    "of the corridor, with a bedroom above it and another bedroom below it. The kitchen is "
+    "located at the bottom left, adjacent to the corridor and below the lower bedroom.",
 ]
 from .model import NodeDiffusionTransformer
 from .diffusion import GaussianDiffusion
