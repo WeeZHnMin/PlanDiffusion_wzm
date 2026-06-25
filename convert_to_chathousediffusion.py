@@ -346,6 +346,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data',    default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--out',     default='data/chathousediffusion/chat_train')
+    p.add_argument('--suffix',  default='', help='子目录后缀，如 _test 生成验证集')
     p.add_argument('--workers', type=int, default=0, help='0=CPU核心数-1')
     p.add_argument('--max',     type=int, default=0,  help='最多处理条数，0=全量')
     return p.parse_args()
@@ -356,9 +357,9 @@ def main():
     n_workers = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
 
     out_root     = Path(args.out)
-    out_img_dir  = out_root / 'images'
-    out_mask_dir = out_root / 'masks'
-    out_text_dir = out_root / 'texts'
+    out_img_dir  = out_root / f'images{args.suffix}'
+    out_mask_dir = out_root / f'masks{args.suffix}'
+    out_text_dir = out_root / f'texts{args.suffix}'
     for d in [out_img_dir, out_mask_dir, out_text_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -379,12 +380,28 @@ def main():
     ]
 
     ok = 0
+    results = []
     with Pool(processes=n_workers) as pool:
         for done, result in enumerate(pool.imap_unordered(convert_row, tasks, chunksize=64)):
             if result:
                 ok += 1
+            results.append(result)
             if (done + 1) % 5000 == 0:
                 print(f'  {done+1}/{len(tasks)}  ok={ok}', flush=True)
+
+    # 生成 texts.csv（filename → json字符串）
+    csv_path = out_text_dir / 'texts.csv'
+    import csv as csv_mod
+    with open(csv_path, 'w', newline='', encoding='utf-8') as csvf:
+        writer = csv_mod.writer(csvf)
+        writer.writerow(['0', '1'])
+        for i in range(len(rows)):
+            json_path = out_text_dir / f'{i:05d}.json'
+            if json_path.exists():
+                with open(json_path, encoding='utf-8') as jf:
+                    content = jf.read().strip()
+                writer.writerow([f'{i:05d}.png', content])
+    print(f'CSV → {csv_path}')
 
     print(f'\n完成: ok={ok}/{len(tasks)}')
     print(f'输出 → {out_root}/')
