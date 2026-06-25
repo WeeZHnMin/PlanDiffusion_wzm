@@ -53,7 +53,6 @@ class NodeDataset(Dataset):
             prompt_mask = np.zeros(T, dtype=np.float32)
             prompt_mask[:l] = 1.0
         cond = {
-            'adj_matrix':      self.adj_matrix[idx].astype(np.float32),
             'node_mask':       self.node_mask[idx].astype(np.float32),
             'room_membership': self.room_membership[idx],
             'prompt_tokens':   self.prompt_tokens[idx],

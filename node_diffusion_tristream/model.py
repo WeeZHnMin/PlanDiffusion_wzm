@@ -84,28 +84,6 @@ def _assign_room_membership_single(adj, n):
     return membership
 
 
-def assign_room_membership(adj_matrix, node_mask):
-    """
-    批量计算 room_membership。
-
-    adj_matrix : [B, N, N]  float tensor
-    node_mask  : [B, N]     float tensor
-    返回       : [B, N, MAX_ROOMS]  FloatTensor，二值
-    """
-    B, N, _ = adj_matrix.shape
-    adj_np   = (adj_matrix > 0.5).cpu().numpy()
-    mask_np  = node_mask.cpu().numpy()
-
-    out = torch.zeros(B, N, MAX_ROOMS, dtype=torch.float32)
-    for b in range(B):
-        n = int(mask_np[b].sum())
-        if n < 3:
-            continue
-        m = _assign_room_membership_single(adj_np[b, :n, :n], n)
-        out[b, :n, :] = torch.from_numpy(m)
-
-    return out.to(adj_matrix.device)
-
 
 # ── Transformer 基础模块 ──────────────────────────────────────────────────────
 
@@ -253,10 +231,9 @@ class NodeDiffusionTransformer(nn.Module):
         pad_keys = (1 - node_mask).unsqueeze(1)
         return torch.clamp(mask + pad_keys, 0, 1)
 
-    def forward(self, x, timesteps, adj_matrix, node_mask,
+    def forward(self, x, timesteps, node_mask,
                 prompt_tokens=None, prompt_mask=None,
                 room_membership=None, **kwargs):
-        # adj_matrix 仅用于在线计算 room_membership（推理时无预计算的情况）
         del kwargs
         B, _, N = x.shape
         x = x.permute(0, 2, 1).float()
@@ -266,8 +243,6 @@ class NodeDiffusionTransformer(nn.Module):
         ).unsqueeze(1)
         node_emb = self.input_emb(x) + t_emb
 
-        if room_membership is None:
-            room_membership = assign_room_membership(adj_matrix.float(), node_mask.float())
         room_membership = room_membership.float().to(x.device)
         room_mask = self._build_room_mask(room_membership, node_mask.float())
 
