@@ -1,11 +1,11 @@
 """
 从 JSONL 数据集抽样，做坐标增强（旋转90°/180°/水平镜像），
-渲染平面图 PNG（无文字，PIL 实现），输出中间 JSONL（prompt 留空）。
+渲染平面图 PNG（含房间标签，PIL 实现），输出中间 JSONL（prompt 留空待 captioning）。
 
 流程：
     1. 抽 n_orig 条原始样本（默认 16667）
     2. 每条做 3 种变换：rot90 / rot180 / flip_h → 共约 5 万条
-    3. 渲染成 PNG，不含文字标注
+    3. 渲染成 PNG，房间多边形上标注房间类型（Bath/Bed/Kitchen 等）
     4. 保存中间 JSONL（含变换后 node_coords，prompt=""）
 
 用法：
@@ -25,7 +25,8 @@ from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+from shapely.geometry import Polygon as ShapelyPolygon
 
 # ── 房间颜色（RGB）────────────────────────────────────────────────────────────
 ROOM_COLORS_RGB = {
@@ -42,6 +43,39 @@ ROOM_TYPE_ORDER = [
     "bathroom", "bedroom", "living_room", "kitchen",
     "corridor", "dining_room", "other",
 ]
+
+ROOM_LABELS = {
+    "bathroom":    "Bath",
+    "bedroom":     "Bed",
+    "living_room": "Living",
+    "kitchen":     "Kitchen",
+    "corridor":    "Corridor",
+    "dining_room": "Dining",
+    "other":       "Other",
+}
+
+# 尝试加载系统字体，失败则用 PIL 默认字体
+def _load_font(size=16):
+    candidates = [
+        "arial.ttf", "Arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+_FONT = None
+
+def get_font():
+    global _FONT
+    if _FONT is None:
+        _FONT = _load_font(16)
+    return _FONT
 
 
 # ── 坐标增强 ──────────────────────────────────────────────────────────────────
@@ -169,11 +203,27 @@ def render_pil(coords_raw, adj_raw, node_types, n, out_path: Path, img_size=400)
     img  = Image.new('RGB', (img_size, img_size), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # 房间多边形
+    font = get_font()
+
+    # 房间多边形 + 标签
     for face, room_type in zip(faces, face_types):
         pts   = [to_px(*coords[i]) for i in face]
         color = ROOM_COLORS_RGB.get(room_type, (234, 237, 237))
         draw.polygon(pts, fill=color, outline=(85, 85, 85))
+        # 用 shapely representative_point 找标签位置（保证在多边形内）
+        try:
+            rp = ShapelyPolygon(pts).representative_point()
+            cx, cy = int(rp.x), int(rp.y)
+        except Exception:
+            cx = sum(p[0] for p in pts) // len(pts)
+            cy = sum(p[1] for p in pts) // len(pts)
+        label = ROOM_LABELS.get(room_type, room_type)
+        try:
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(label) * 6, 12
+        draw.text((cx - tw // 2, cy - th // 2), label, fill=(34, 34, 34), font=font)
 
     # 边
     for i in range(n):
