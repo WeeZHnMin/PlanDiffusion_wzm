@@ -14,7 +14,6 @@ class NodeDataset(Dataset):
     Each sample returns:
       x    : FloatTensor [2, 40]   coordinates (x,y)
       cond : dict with
-               adj_matrix      [40, 40]         0/1邻接矩阵
                node_mask       [40]              1=有效节点
                room_membership [40, MAX_ROOMS]   二值，节点-环隶属矩阵
                prompt_tokens   [T]               BERT input_ids
@@ -24,7 +23,6 @@ class NodeDataset(Dataset):
     def __init__(self, npz_path):
         d = np.load(npz_path, allow_pickle=True)
         self.coords        = d['node_coords'].astype(np.float32)
-        self.adj_matrix    = d['adj_matrix'].astype(np.uint8)
         self.node_mask     = d['node_mask'].astype(np.uint8)
         self.prompt_tokens = d['prompt_tokens'].astype(np.int64)
         self._prompt_mask  = d['prompt_mask'].astype(np.float32) \
