@@ -37,7 +37,7 @@ if __name__ == "__main__":
     trainer_dict = {
         "train_batch_size": 32,
         "train_lr": 8e-5,
-        "train_num_steps": 500000,
+        "train_num_steps": 700000,
         "gradient_accumulate_every": 1,
         "ema_decay": 0.995,
         "save_and_sample_every": 5000,
