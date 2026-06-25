@@ -47,8 +47,11 @@ def build_parser(defaults=None):
                         help="每隔多少步计算一次 Room Invasion Rate")
     parser.add_argument("--eval_size",    type=int,   default=defaults.get("eval_size",    200),
                         help="固定评估子集大小（每次相同的 200 条）")
+    parser.add_argument("--eval_batch_size", type=int, default=defaults.get("eval_batch_size", 16),
+                        help="评估时的 batch size")
     parser.add_argument("--eval_seed",    type=int,   default=defaults.get("eval_seed",    0),
                         help="固定评估子集的随机种子")
+
     parser.add_argument("--model_channels",type=int,  default=defaults.get("model_channels",384))
     parser.add_argument("--num_layers",   type=int,   default=defaults.get("num_layers",   6))
     parser.add_argument("--num_heads",    type=int,   default=defaults.get("num_heads",    6))
@@ -68,6 +71,7 @@ def move_cond(cond, device):
 def ddpm_sample(model, diffusion, cond, device):
     """
     标准 DDPM 反向采样（1000 步），返回预测坐标 [B, 2, N]。
+    评估时 batch_size=16 以控制显存和时间。
     """
     B = cond['node_mask'].shape[0]
     N = cond['node_mask'].shape[1]
@@ -78,14 +82,12 @@ def ddpm_sample(model, diffusion, cond, device):
 
     for t_val in range(T - 1, -1, -1):
         t_tensor = torch.full((B,), t_val, device=device, dtype=torch.long)
-
-        eps = model(x, t_tensor, **cond)   # [B, 2, N]
+        eps = model(x, t_tensor, **cond)
 
         alpha_t    = diffusion.alphas[t_val]
         abar_t     = diffusion.alphas_bar[t_val]
         post_var_t = diffusion.posterior_variance[t_val]
 
-        # DDPM 均值
         coef = (1 - alpha_t) / (1 - abar_t).sqrt()
         mean = (x - coef * eps) / alpha_t.sqrt()
 
@@ -94,7 +96,7 @@ def ddpm_sample(model, diffusion, cond, device):
         else:
             x = mean
 
-    return x   # [B, 2, N]
+    return x
 
 
 # ── Room Invasion Rate ────────────────────────────────────────────────────────
@@ -135,7 +137,7 @@ def _room_invaded(coords_n2, room_ids_n):
 def evaluate_rir(model, diffusion, eval_loader, device):
     """
     Room Invasion Rate：有节点侵入其他房间凸包的样本占比。
-    越低越好，0 = 完全无侵入。使用完整 DDPM 1000 步推理。
+    越低越好，0 = 完全无侵入。使用完整 DDPM 1000 步推理，batch_size=16。
     """
     model.eval()
     invaded_count = 0
@@ -245,7 +247,7 @@ def main(argv=None, defaults=None):
         rng_eval.manual_seed(args.eval_seed)
         eval_idx  = torch.randperm(len(dataset), generator=rng_eval)[:eval_size].tolist()
         eval_subset = Subset(dataset, eval_idx)
-        eval_loader = DataLoader(eval_subset, batch_size=args.batch_size,
+        eval_loader = DataLoader(eval_subset, batch_size=args.eval_batch_size,
                                  shuffle=False, num_workers=0, pin_memory=True)
         print(f"eval 子集: {eval_size} 条样本（seed={args.eval_seed}），每 {args.eval_interval} 步评估一次（完整 DDPM 1000步）")
 
