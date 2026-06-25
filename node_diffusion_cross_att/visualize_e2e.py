@@ -415,6 +415,7 @@ def parse_args():
                    help='手动指定测试集索引，例如 --indices 0 42 100 200 500；指定后忽略 --n 和 --seed')
     p.add_argument('--custom',  action='store_true',
                    help='使用内置 CUSTOM_PROMPTS 5条自定义文本，无需加载测试集数据')
+    p.add_argument('--gpu',        type=int, default=None, help='指定 GPU 编号，如 --gpu 1')
     p.add_argument('--seed',       type=int, default=42)
     p.add_argument('--noise_seed', type=int, default=123456,
                    help='θ₂ 初始噪声种子偏移（不同值→不同抽卡结果）')
@@ -426,6 +427,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.gpu is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
