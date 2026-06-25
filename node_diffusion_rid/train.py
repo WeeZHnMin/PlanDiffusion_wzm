@@ -24,8 +24,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.optim import AdamW
 
-from node_diffusion_cross_att.dataset import load_node_data, NodeDataset
 from node_diffusion_cross_att.diffusion import GaussianDiffusion
+from .dataset import load_node_data, NodeDataset
 from .model import NodeDiffusionTransformer
 
 

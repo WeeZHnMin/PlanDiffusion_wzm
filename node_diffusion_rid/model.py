@@ -252,7 +252,7 @@ class NodeDiffusionTransformer(nn.Module):
         return torch.clamp(adj_mask + pad_keys, 0, 1)
 
     def forward(self, x, timesteps, adj_matrix, node_mask,
-                prompt_tokens=None, prompt_mask=None, **kwargs):
+                prompt_tokens=None, prompt_mask=None, room_ids=None, **kwargs):
         del kwargs
         B, _, N = x.shape
         x = x.permute(0, 2, 1).float()           # [B, N, 2]
@@ -261,8 +261,12 @@ class NodeDiffusionTransformer(nn.Module):
             timestep_embedding(timesteps, self.model_channels)
         ).unsqueeze(1)                            # [B, 1, d]
 
-        # ── Room ID embedding（从邻接矩阵在线计算，无梯度）────────────────────
-        room_ids = assign_room_ids(adj_matrix.float(), node_mask.float())  # [B, N]
+        # ── Room ID embedding ─────────────────────────────────────────────────
+        # 优先使用 dataset 预计算的 room_ids（快）；
+        # 若未提供（推理时直接调用）则在线计算（慢，fallback）。
+        if room_ids is None:
+            room_ids = assign_room_ids(adj_matrix.float(), node_mask.float())
+        room_ids = room_ids.long().to(x.device)
         rid_emb  = self.room_embed(room_ids)                               # [B, N, d]
 
         node_emb = self.input_emb(x) + t_emb + rid_emb                    # [B, N, d]
