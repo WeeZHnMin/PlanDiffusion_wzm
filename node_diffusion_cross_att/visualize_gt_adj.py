@@ -79,7 +79,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt2', default='checkpoints/node_diffusion_cross_att/latest.pt')
     p.add_argument('--ckpt3', default='checkpoints/node_type/20260616_223156/model_latest.pt')
-    p.add_argument('--data',  default='data/jsonl/test_graph_dataset_10k.jsonl')
+    p.add_argument('--data',  default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--bert',  default='models/bert-base-uncased')
     p.add_argument('--combo_vocab', default='node_diffusion_cross_att/type_combo_vocab_old.json')
     p.add_argument('--n',       type=int, default=5)

@@ -12,7 +12,7 @@
 
 用法：
   python -m llm_graph.infer_batch \\
-      --ckpt checkpoints/llm_graph/stage2/20260603_045254/best.pt \\
+      --ckpt checkpoints/llm_graph/stage2/20260614_155601/latest.pt \\
       --out  data/processed/node_diffusion_cross_att/gen_adj_test.npz
 
   # 批次并行推理（默认 batch_size=16）
@@ -20,15 +20,17 @@
 """
 
 import argparse
+import json
 import os
 import numpy as np
 import torch
 
 from llm_graph.infer_stage1 import (
-    load_model, load_dataset, get_prefix_and_gt,
+    load_model,
     parse_sequence, has_triangle, node_degrees,
     MAX_NODES, BOS_ID, PAD_ID, EOS_ID, SEP_ID,
     N_START, NODE_START, VOCAB_SIZE,
+    encode_text,
 )
 
 MAX_BERT_LEN = 224
@@ -37,7 +39,7 @@ MAX_BERT_LEN = 224
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/20260614_155601/latest.pt')
-    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
+    p.add_argument('--data',        default='data/jsonl/test_graph_dataset_10k.jsonl')
     p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json')
     p.add_argument('--bert',        default='models/bert-base-uncased')
     p.add_argument('--out',         default='data/processed/node_diffusion_cross_att/gen_adj_test.npz')
@@ -46,11 +48,6 @@ def parse_args():
     p.add_argument('--temperature', type=float, default=1.0)
     p.add_argument('--seed',        type=int, default=0)
     return p.parse_args()
-
-
-def decode_bpe_text(token_ids: list, tokenizer) -> str:
-    ids = [t for t in token_ids if t < 10000]
-    return tokenizer.decode(ids)
 
 
 # ── 批次自回归生成 ─────────────────────────────────────────────────────────────
@@ -215,18 +212,24 @@ def main():
     print(f'device: {device}')
 
     model = load_model(args.ckpt, device)
-    all_tokens, all_lengths, all_textlens = load_dataset(args.data)
-
-    from tokenizers import Tokenizer
-    bpe_tok = Tokenizer.from_file(args.vocab)
 
     from transformers import BertTokenizer
     bert_tok = BertTokenizer.from_pretrained(args.bert)
     print(f'BERT tokenizer loaded from {args.bert}')
 
-    N = len(all_tokens)
+    # 读取 JSONL
+    print(f'读取数据集: {args.data}')
+    rows = []
+    with open(args.data, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+
+    N = len(rows)
     if args.max_samples > 0:
         N = min(N, args.max_samples)
+        rows = rows[:N]
     BS = args.batch_size
     print(f'处理样本数: {N}  batch_size: {BS}')
 
@@ -239,13 +242,16 @@ def main():
 
     n_valid = 0
     for b_start in range(0, N, BS):
-        b_end    = min(b_start + BS, N)
-        indices  = list(range(b_start, b_end))
+        b_end   = min(b_start + BS, N)
+        indices = list(range(b_start, b_end))
 
-        # 准备前缀
+        # 准备前缀：从 JSONL 的 prompt 字段编码
         prefixes = []
+        texts    = []
         for i in indices:
-            prefix, _ = get_prefix_and_gt(i, all_tokens, all_lengths, all_textlens)
+            text = rows[i]['prompt']
+            texts.append(text)
+            prefix = encode_text(text, args.vocab) + [BOS_ID]
             prefixes.append(prefix)
 
         # 批次自回归生成
@@ -253,7 +259,7 @@ def main():
                                   max_new_tokens=200,
                                   temperature=args.temperature)
 
-        # 解析 + BERT 重编码
+        # 解析 + BERT 编码
         for local_i, i in enumerate(indices):
             gen_seq = gen_seqs[local_i]
             parsed  = parse_sequence(gen_seq)
@@ -267,9 +273,7 @@ def main():
                 valid_out[i]       = True
                 n_valid += 1
 
-            text_ids = prefixes[local_i][:-1]
-            text     = decode_bpe_text(text_ids, bpe_tok)
-            enc = bert_tok(text, max_length=MAX_BERT_LEN,
+            enc = bert_tok(texts[local_i], max_length=MAX_BERT_LEN,
                            padding='max_length', truncation=True)
             ptok_out[i]  = enc['input_ids']
             pmask_out[i] = enc['attention_mask']
