@@ -132,8 +132,11 @@ class Trainer(object):
                 onehot=onehot,
             )
 
+            # 评估只取前 200 条，避免每次 val 要跑 9000+ 条 DDIM 采样
+            from torch.utils.data import Subset
+            val_subset = Subset(self.val_ds, list(range(min(200, len(self.val_ds)))))
             val_dl = DataLoader(
-                self.val_ds,
+                val_subset,
                 batch_size=train_batch_size,
                 shuffle=False,
                 pin_memory=False,
