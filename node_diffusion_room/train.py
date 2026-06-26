@@ -92,9 +92,17 @@ def main(argv=None, defaults=None):
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
+    no_decay = {'bias', 'norm', 'LayerNorm'}
     opt = AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=args.lr, weight_decay=args.weight_decay,
+        [
+            {'params': [p for n, p in model.named_parameters()
+                        if p.requires_grad and not any(nd in n for nd in no_decay)],
+             'weight_decay': args.weight_decay},
+            {'params': [p for n, p in model.named_parameters()
+                        if p.requires_grad and any(nd in n for nd in no_decay)],
+             'weight_decay': 0.0},
+        ],
+        lr=args.lr,
     )
 
     use_amp = device.type == 'cuda'

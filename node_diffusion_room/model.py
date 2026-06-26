@@ -158,11 +158,11 @@ class EncoderLayer(nn.Module):
         self.ff          = FeedForward(d_model, dropout)
         self.dropout     = nn.Dropout(dropout)
 
-    def forward(self, x, room_mask, text_feat, text_mask):
+    def forward(self, x, room_mask, text_feat, text_mask, pad_mask=None):
         x2 = self.norm1(x)
         x  = x + self.dropout(
             self.room_attn  (x2, x2, x2, room_mask) +
-            self.global_attn(x2, x2, x2, None)
+            self.global_attn(x2, x2, x2, pad_mask)   # padding key 被屏蔽
         )
         x2 = self.norm_cross(x)
         x  = x + self.dropout(self.cross_attn(x2, text_feat, text_feat, text_mask))
@@ -224,27 +224,32 @@ class NodeDiffusionTransformer(nn.Module):
     def _build_room_mask(self, room_membership, node_mask):
         """
         room_membership: [B, N, MAX_ROOMS]
-        返回 room_mask  : [B, N, N]，1=屏蔽（两节点不共享任何环）
+        返回:
+          room_mask : [B, N, N]  1=屏蔽（不共享环 或 padding key）
+          pad_mask  : [B, 1, N]  1=屏蔽（padding key），供 global_attn 使用
         """
+        dt       = room_membership.dtype
         room_nn  = torch.bmm(room_membership, room_membership.transpose(1, 2))
-        mask     = (room_nn == 0).float()
-        pad_keys = (1 - node_mask).unsqueeze(1)
-        return torch.clamp(mask + pad_keys, 0, 1)
+        mask     = (room_nn == 0).to(dt)
+        pad_keys = (1 - node_mask.to(dt)).unsqueeze(1)          # [B, 1, N]
+        room_mask = torch.clamp(mask + pad_keys, 0, 1)
+        return room_mask, pad_keys
 
     def forward(self, x, timesteps, node_mask,
                 prompt_tokens=None, prompt_mask=None,
                 room_membership=None, **kwargs):
         del kwargs
         B, _, N = x.shape
-        x = x.permute(0, 2, 1).float()
+        x = x.permute(0, 2, 1)                          # [B, N, 2]，保留 AMP dtype
 
         t_emb    = self.time_embed(
             timestep_embedding(timesteps, self.model_channels)
         ).unsqueeze(1)
-        node_emb = self.input_emb(x) + t_emb
+        node_emb = self.input_emb(x) + t_emb            # [B, N, d]
 
-        room_membership = room_membership.float().to(x.device)
-        room_mask = self._build_room_mask(room_membership, node_mask.float())
+        room_membership = room_membership.to(device=x.device, dtype=node_emb.dtype)
+        room_mask, pad_mask = self._build_room_mask(
+            room_membership, node_mask.to(node_emb.dtype))
 
         if prompt_tokens is not None:
             bert_attn = prompt_mask if prompt_mask is not None \
@@ -254,7 +259,7 @@ class NodeDiffusionTransformer(nn.Module):
                     input_ids=prompt_tokens,
                     attention_mask=bert_attn,
                 ).last_hidden_state
-            text_feat = self.text_proj(text_hidden)
+            text_feat = self.text_proj(text_hidden).to(node_emb.dtype)
             text_mask = (1 - bert_attn.float()).unsqueeze(1)
         else:
             text_feat = torch.zeros(B, 1, self.model_channels,
@@ -263,6 +268,6 @@ class NodeDiffusionTransformer(nn.Module):
 
         seq = node_emb
         for layer in self.layers:
-            seq = layer(seq, room_mask, text_feat, text_mask)
+            seq = layer(seq, room_mask, text_feat, text_mask, pad_mask)
 
         return self.coord_head(seq).permute(0, 2, 1)   # [B, 2, N]
