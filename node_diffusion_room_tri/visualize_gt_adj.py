@@ -292,11 +292,12 @@ def draw_col4_render(ax, coords: np.ndarray, adj_np: np.ndarray,
 # ── DDPM 采样 ─────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def sample_coords(model, diffusion, room_mb_np: np.ndarray,
+def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
                   mask_np: np.ndarray, ptok_np: np.ndarray, pmsk_np: np.ndarray,
                   device, seed: int = 0) -> np.ndarray:
-    """DDPM 1000步逆采样，用 room_membership 作为结构条件。返回 [N_NODES, 2]。"""
+    """DDPM 1000步逆采样，三流条件：room_membership + adj_matrix + text。返回 [N_NODES, 2]。"""
     room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)   # [1, N, MAX_ROOMS]
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)        # [1, N, N]
     mask    = torch.from_numpy(mask_np[None]).float().to(device)       # [1, N]
     ptok    = torch.from_numpy(ptok_np[None]).to(device)               # [1, T]
     pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)        # [1, T]
@@ -310,7 +311,7 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray,
         tb  = torch.full((1,), t, device=device, dtype=torch.long)
         eps = model(x, tb, mask,
                     prompt_tokens=ptok, prompt_mask=pmsk,
-                    room_membership=room_mb)
+                    room_membership=room_mb, adj_matrix=adj)
         ab  = diffusion.alphas_bar[t]
         ap  = diffusion.alphas_bar_prev[t]
         x0  = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-300, 300)
@@ -431,8 +432,8 @@ def main():
         print(f'  DDPM 1000步  idx={rec["idx"]}...', flush=True)
         rec['pred_coords'] = sample_coords(
             model, diffusion,
-            rec['room_mb_np'], rec['mask_np'],
-            rec['ptok_np'], rec['pmsk_np'],
+            rec['room_mb_np'], rec['adj_np'],
+            rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
             device, seed=rec['idx'],
         )   # [40, 2]
 
