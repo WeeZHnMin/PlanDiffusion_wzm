@@ -11,8 +11,8 @@
   Col4  渲染平面图（GT 节点类型着色）
 
 用法（项目根目录）：
-    python -m node_diffusion_room.visualize_gt_adj \\
-        --ckpt   checkpoints/node_diffusion_room/run1/latest.pt \\
+    python -m node_diffusion_room_tri.visualize_gt_adj \\
+        --ckpt   checkpoints/node_diffusion_room_tri/run1/latest.pt \\
         --data   data/jsonl/final_graph_dataset_v3.jsonl \\
         --n      5 \\
         --out    outputs/visualize_gt_adj_room/result.png
@@ -331,7 +331,7 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room/run1/latest.pt')
+    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_tri/run1/latest.pt')
     p.add_argument('--data',    default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--bert',    default='models/bert-base-uncased')
     p.add_argument('--n',       type=int, default=5)
