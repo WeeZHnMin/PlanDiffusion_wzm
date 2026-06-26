@@ -3,9 +3,13 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 from denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer, seed_torch
 import os
 import pickle
+import argparse
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", default="", help="milestone to resume from, e.g. 'latest' or 'best'")
+    args = parser.parse_args()
     seed_torch()
     # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     onehot = False
@@ -78,5 +82,9 @@ if __name__ == "__main__":
             },
             f,
         )
+
+    if args.resume:
+        trainer.load(args.resume)
+        print(f"resumed from milestone '{args.resume}', step={trainer.step}")
 
     trainer.train()
