@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+import time
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -175,6 +177,11 @@ class Trainer(object):
         self.cond_scale = cond_scale
         self.use_graphormer = use_graphormer
 
+        # 训练日志 & 最优 checkpoint 跟踪
+        self.log_path = self.results_folder / 'train_log.jsonl'
+        self.best_micro_iou = -1.0
+        self._t0 = time.time()
+
     @property
     def device(self):
         return "cuda"
@@ -260,13 +267,26 @@ class Trainer(object):
                 self.step += 1
                 self.ema.update()
 
+                # JSONL 训练日志（每步写入）
+                with open(self.log_path, 'a') as _lf:
+                    _lf.write(json.dumps({
+                        'step': self.step,
+                        'loss': round(total_loss, 6),
+                        'elapsed': round(time.time() - self._t0, 1),
+                    }) + '\n')
+
                 if self.step != 0 and divisible_by(
                     self.step, self.save_and_sample_every
                 ):
                     self.ema.ema_model.eval()
                     milestone = self.step // self.save_and_sample_every
-                    self.val(milestone=milestone)
-                    self.save(milestone)
+                    micro_iou = self.val(milestone=milestone)
+                    # 只保两个 checkpoint：latest 和 best
+                    self.save('latest')
+                    if micro_iou is not None and micro_iou > self.best_micro_iou:
+                        self.best_micro_iou = micro_iou
+                        self.save('best')
+                        print(f"  [best] step={self.step} micro_iou={micro_iou:.4f} -> model-best.pt")
                     torch.cuda.empty_cache()
                 pbar.update(1)
 
@@ -386,6 +406,15 @@ class Trainer(object):
                     f"image{idxs[i//self.batch_size][i%self.batch_size]}-micro_iou: {micro_iou_list[i]}, macro_iou: {macro_iou_list[i]}\n"
                 )
             f.write(f"micro_iou: {micro_iou}, macro_iou: {macro_iou}")
+        # 将验证结果追加到 JSONL 日志
+        with open(self.log_path, 'a') as _lf:
+            _lf.write(json.dumps({
+                'step': self.step,
+                'val_micro_iou': round(float(micro_iou), 6),
+                'val_macro_iou': round(float(macro_iou), 6),
+                'elapsed': round(time.time() - self._t0, 1),
+            }) + '\n')
+        return micro_iou
 
     def predict_load(self, load_model):
         self.load(load_model)
