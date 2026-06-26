@@ -120,9 +120,12 @@ def main(argv=None, defaults=None):
                 print(f"  missing keys: {missing}")
             if unexpected:
                 print(f"  unexpected keys: {unexpected}")
-        opt.load_state_dict(ckpt["opt"])
-        if "scaler" in ckpt:
-            scaler.load_state_dict(ckpt["scaler"])
+        try:
+            opt.load_state_dict(ckpt["opt"])
+            if "scaler" in ckpt:
+                scaler.load_state_dict(ckpt["scaler"])
+        except ValueError:
+            print("  [warn] optimizer state 结构不兼容，跳过 opt 恢复，仅加载模型权重")
         start_step = ckpt["step"] + 1
         if is_master:
             print(f"resumed from step {start_step}")
