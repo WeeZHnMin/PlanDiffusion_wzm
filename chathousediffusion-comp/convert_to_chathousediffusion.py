@@ -248,13 +248,16 @@ def render_semantic(coords, adj, faces, face_types, img_size=IMG_SIZE):
 
 
 def render_boundary(coords, adj, faces, img_size=IMG_SIZE):
-    """渲染外轮廓 mask：房间区域=255，背景=0。"""
+    """渲染外轮廓 mask：建筑内部=0，外部=255。
+    ChatHouseDiffusion feature_to_mask 对 <0.9 的像素返回1（扩散区域），
+    所以内部必须是黑(0)，外部才能是白(255)被排除在外。
+    """
     to_px = to_px_fn(coords, img_size)
-    img = Image.new('L', (img_size, img_size), 0)
+    img = Image.new('L', (img_size, img_size), 255)  # 外部白色
     draw = ImageDraw.Draw(img)
     for face in faces:
         pts = [to_px(*coords[i]) for i in face]
-        draw.polygon(pts, fill=255)
+        draw.polygon(pts, fill=0)  # 内部黑色
     return img
 
 
