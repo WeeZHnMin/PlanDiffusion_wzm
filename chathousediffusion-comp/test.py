@@ -10,9 +10,8 @@ from denoising_diffusion_pytorch import Unet, GaussianDiffusion, Trainer, seed_t
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--milestone', type=int, default=1,
-                   help='加载 model-N.pt，N = step // save_and_sample_every')
-    p.add_argument('--gpu',       type=str, default='1')
+    p.add_argument('--milestone', type=str, default='latest',
+                   help='加载 model-{milestone}.pt，可用 latest / best')
     p.add_argument('--results',   default='./results/ours_v1')
     p.add_argument('--data_root', default='../data/chathousediffusion/chat_train')
     return p.parse_args()
@@ -20,7 +19,6 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     with open(os.path.join(args.results, "params.pkl"), "rb") as f:
         params = pickle.load(f)
