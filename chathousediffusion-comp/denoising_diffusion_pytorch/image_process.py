@@ -59,7 +59,11 @@ def get_color_map():
         ],
         dtype=np.int64,
     )
-    cIdx = np.array([1, 2, 3, 4, 6, 8, 8, 8, 8, 5, 1, 7, 1, 12, 9, 10, 12, 12]) - 1
+    # 对齐 convert_to_chathousediffusion.py 的 CHAT_TYPE2ID 编码：
+    # pixel*15 存图 → /255 → *17 → round 还原类别
+    # 0=背景(黑), 1=LivingRoom, 2=MasterRoom, 3=Kitchen, 4=Bathroom,
+    # 5=DiningRoom, 6=CommonRoom, 7=Storage, 13=External(白,推理时mask覆盖)
+    cIdx = np.array([9, 1, 2, 3, 4, 6, 8, 7, 1, 5, 1, 7, 1, 12, 9, 10, 11, 12]) - 1
     return color[cIdx]
 
 

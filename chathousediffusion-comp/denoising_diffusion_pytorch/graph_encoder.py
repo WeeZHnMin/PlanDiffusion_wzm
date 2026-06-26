@@ -30,6 +30,7 @@ room_category = {
     "Balcony": [10],
     "Entrance": [11],
     "Storage": [12],
+    "CommonRoom": [13],
 }
 room_location = {
     "north": [0, 1, 0],
@@ -124,24 +125,38 @@ def get_nodes(text):
     name2node = {}
     node_list = []
     Node.ID = 0
-    for key, value in info.items():
-        # number=value.get("num")
-        # number = len(value.get("rooms"))
-        for room in value.get("rooms"):
-            name = room.get("name", "Unknown")
-            link = room.get("link", [])
-            if len(link)>0 and isinstance(link[0],list):
-                link = link[0]
-            if len(link)>0 and not isinstance(link[0], str):
-                link = []
-            location = room.get("location", "Unknown")
-            size = room.get("size", "Unknown")
-            category = key
-            node = Node(name, link, location, size, category)
-            node_list.append(node)
-            name2node[name] = node
-        # for _ in range(MAX_ROOMS_PER_TYPE - number):
-        #     node_list.append(Node())
+
+    # 兼容两种格式：
+    # 格式A（原始）: {"LivingRoom": {"rooms": [{name, link, location, size}, ...]}, ...}
+    # 格式B（我们）: {"rooms": [{name, type, link, location, size}, ...]}
+    if "rooms" in info and isinstance(info["rooms"], list):
+        # 格式B：扁平列表，category 从每个房间的 "type" 字段读取
+        rooms_iter = [("__flat__", info)]
+        def _iter_flat(value):
+            for room in value["rooms"]:
+                yield room.get("type", "Unknown"), room
+        room_gen = _iter_flat(info)
+    else:
+        # 格式A：顶层 key 即 category
+        def _iter_orig(d):
+            for key, value in d.items():
+                for room in (value.get("rooms") or []):
+                    yield key, room
+        room_gen = _iter_orig(info)
+
+    for category, room in room_gen:
+        name = room.get("name", "Unknown")
+        link = room.get("link", [])
+        if len(link) > 0 and isinstance(link[0], list):
+            link = link[0]
+        if len(link) > 0 and not isinstance(link[0], str):
+            link = []
+        location = room.get("location", "Unknown")
+        size = room.get("size", "Unknown")
+        node = Node(name, link, location, size, category)
+        node_list.append(node)
+        name2node[name] = node
+
     for node in node_list:
         new_link_ids = []
         for name in node.link:
