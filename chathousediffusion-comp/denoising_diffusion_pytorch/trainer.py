@@ -59,6 +59,7 @@ class Trainer(object):
         train_num_workers=8,
         mode="train",
         inject_step=25,
+        val_size=200,
     ):
         super().__init__()
 
@@ -132,11 +133,14 @@ class Trainer(object):
                 onehot=onehot,
             )
 
-            # 评估只取前 200 条，避免每次 val 要跑 9000+ 条 DDIM 采样
+            # val_size=None 跑全量测试集，否则只取前 val_size 条
             from torch.utils.data import Subset
-            val_subset = Subset(self.val_ds, list(range(min(200, len(self.val_ds)))))
+            if val_size is not None and val_size < len(self.val_ds):
+                val_ds_eff = Subset(self.val_ds, list(range(val_size)))
+            else:
+                val_ds_eff = self.val_ds
             val_dl = DataLoader(
-                val_subset,
+                val_ds_eff,
                 batch_size=train_batch_size,
                 shuffle=False,
                 pin_memory=False,
