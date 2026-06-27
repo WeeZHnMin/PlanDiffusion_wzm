@@ -1,18 +1,24 @@
 """
 node_diffusion_room_tri IoU 评估脚本
 
-GT 和预测坐标均质心归零后，用 Shapely 多边形面积计算 micro/macro IoU。
-背景区域不参与计算，与 ChatHouseDiffusion 的评估逻辑等价。
+Pipeline:
+  1. 扩散模型（DDIM）生成节点坐标
+  2. TextCondGNN 预测节点类型（combo_id → 类型字符串列表）
+  3. 半边算法 find_faces + vote_room_type 投票确定房间类型
+  4. Shapely 多边形 micro/macro IoU
 
 用法：
   python -m node_diffusion_room_tri.eval_iou \
-      --ckpt  checkpoints/node_diffusion_room_tri/run1/latest.pt \
-      --jsonl data/jsonl/test_graph_dataset_10k.jsonl \
-      --n_samples 200 \
-      --timesteps 200
+      --ckpt       checkpoints/node_diffusion_room_tri/run1/latest.pt \
+      --type_ckpt  checkpoints/node_type/model_latest.pt \
+      --jsonl      data/jsonl/test_graph_dataset_18k5.jsonl \
+      --n_samples  200 \
+      --ddim_steps 200 \
+      --batch_size 16
 """
 
 import argparse
+import ast
 import json
 import math
 import time
@@ -37,7 +43,15 @@ ROOM_TYPE_ORDER = [
 ]
 
 
-# ── 平面图拓扑（复用 find_faces / vote_room_type）─────────────────────────────
+# ── Vocab ─────────────────────────────────────────────────────────────────────
+
+def load_vocab(path: str):
+    """返回 {combo_id(int): [type_str, ...]}"""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {int(k): v for k, v in payload["id_to_combo"].items()}
+
+
+# ── 半边面算法 ────────────────────────────────────────────────────────────────
 
 def _build_sorted_neighbors(coords, adj, n):
     nbrs = {i: [] for i in range(n)}
@@ -75,7 +89,6 @@ def _signed_area(face, coords):
 
 
 def find_faces(coords, adj):
-    """coords: list of (x,y), adj: list-of-lists 0/1"""
     n = len(coords)
     sorted_nbrs = _build_sorted_neighbors(coords, adj, n)
     visited = set(); faces = []
@@ -99,7 +112,13 @@ def find_faces(coords, adj):
     return [f for i, f in enumerate(faces) if i != outer_idx]
 
 
+# ── 类型投票 ──────────────────────────────────────────────────────────────────
+
 def vote_room_type(face, node_types, all_nbrs):
+    """
+    specificity score = face_count(t) / (ext_count(t) + 1)
+    来自 node_diffusion_cross_att/render.py 同名函数。
+    """
     face_set = set(face)
     face_counts = Counter()
     for node in face:
@@ -123,11 +142,6 @@ def vote_room_type(face, node_types, all_nbrs):
 # ── 多边形 IoU ────────────────────────────────────────────────────────────────
 
 def coords_to_polys_by_type(coords_np, adj_list, node_types, n):
-    """
-    coords_np : np.ndarray [n, 2]（已质心归零）
-    adj_list  : list of lists [n][n]
-    返回 dict: room_type -> List[Polygon]
-    """
     coords = [(float(coords_np[i, 0]), float(coords_np[i, 1])) for i in range(n)]
     faces = find_faces(coords, adj_list)
     if not faces:
@@ -163,45 +177,30 @@ def compute_iou(gt_by_type, pred_by_type):
     return sum(intersections) / sum(unions), sum(ious) / len(ious)
 
 
-# ── DDPM 反向采样 ─────────────────────────────────────────────────────────────
+# ── DDIM 批次推理 ─────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def ddpm_sample(model, diffusion, cond_batched, device, timesteps):
-    """
-    cond_batched: dict, 所有张量已有 batch 维 (B=1)
-    返回 pred_coords [2, MAX_NODES]
-    """
+def ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
     diffusion._to(device)
-    x = torch.randn(1, 2, MAX_NODES, device=device)
-
-    for t in reversed(range(timesteps)):
-        t_tensor = torch.tensor([t], device=device)
-        eps = model(x, t_tensor, **cond_batched)
-
-        s1  = diffusion.sqrt_alphas_bar[t]
-        s2  = diffusion.sqrt_one_minus_alphas_bar[t]
-        x0  = (x - s2 * eps) / s1.clamp(min=1e-3)
-
-        if t == 0:
-            x = x0
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+    B = next(iter(cond_batched.values())).shape[0]
+    x = torch.randn(B, 2, MAX_NODES, device=device)
+    for i, t in enumerate(ts):
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+        eps  = model(x, t_tensor, **cond_batched)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
         else:
-            alpha          = diffusion.alphas[t]
-            alpha_bar      = diffusion.alphas_bar[t]
-            alpha_bar_prev = diffusion.alphas_bar_prev[t]
-            beta           = diffusion.betas[t]
-            coeff1 = beta * alpha_bar_prev.sqrt() / (1 - alpha_bar)
-            coeff2 = (1 - alpha_bar_prev) * alpha.sqrt() / (1 - alpha_bar)
-            mean   = coeff1 * x0 + coeff2 * x
-            var    = diffusion.posterior_variance[t]
-            x      = mean + var.sqrt() * torch.randn_like(x)
-
-    return x[0]  # [2, MAX_NODES]
+            x = x0
+    return x  # [B, 2, MAX_NODES]
 
 
 # ── 质心归零 ──────────────────────────────────────────────────────────────────
 
 def center_at_origin(coords_np, mask_np):
-    """coords_np [MAX_NODES, 2], mask_np [MAX_NODES] → centered copy"""
     valid = coords_np[mask_np.astype(bool)]
     centroid = valid.mean(axis=0)
     return coords_np - centroid
@@ -211,23 +210,26 @@ def center_at_origin(coords_np, mask_np):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt",       default="checkpoints/node_diffusion_room_tri/run1/latest.pt")
-    p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_10k.jsonl")
-    p.add_argument("--n_samples",  type=int, default=200)
-    p.add_argument("--timesteps",  type=int, default=200,
-                   help="推理步数，可小于训练步数(1000)以加速，越小越快但精度略降")
-    p.add_argument("--bert",       default="models/bert-base-uncased")
-    p.add_argument("--device",     default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--ckpt",        default="checkpoints/node_diffusion_room_tri/run1/latest.pt")
+    p.add_argument("--type_ckpt",   default="checkpoints/node_type/model_latest.pt",
+                   help="TextCondGNN 节点类型分类器权重")
+    p.add_argument("--vocab",       default="data/processed/type_combo_vocab_v3.json")
+    p.add_argument("--jsonl",       default="data/jsonl/test_graph_dataset_18k5.jsonl")
+    p.add_argument("--n_samples",   type=int, default=200)
+    p.add_argument("--ddim_steps",  type=int, default=200)
+    p.add_argument("--batch_size",  type=int, default=16)
+    p.add_argument("--bert",        default="models/bert-base-uncased")
+    p.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
-    p.add_argument("--out",        default="", help="可选：结果保存路径(.json)")
+    p.add_argument("--out",         default="", help="可选：结果保存路径(.json)")
     args = p.parse_args()
 
     device    = torch.device(args.device)
     tokenizer = BertTokenizer.from_pretrained(args.bert)
 
-    # ── 加载模型 ────────────────────────────────────────────────────────────
+    # ── 加载扩散模型 ───────────────────────────────────────────────────────────
     model = NodeDiffusionTransformer(
         model_channels=args.model_channels,
         num_layers=args.num_layers,
@@ -238,105 +240,162 @@ def main():
     raw_sd = ckpt["model"]
     if any(k.startswith("module.") for k in raw_sd):
         raw_sd = {k[7:]: v for k, v in raw_sd.items()}
-    missing, unexpected = model.load_state_dict(raw_sd, strict=False)
-    if missing:
-        print(f"  [warn] missing keys: {len(missing)}")
+    model.load_state_dict(raw_sd, strict=False)
     model.eval()
-    print(f"Loaded: {args.ckpt}  step={ckpt.get('step', '?')}")
+    print(f"Loaded diffusion: {args.ckpt}  step={ckpt.get('step', '?')}")
 
     diffusion = GaussianDiffusion(timesteps=1000)
 
-    # ── 逐条评估 ────────────────────────────────────────────────────────────
-    micro_list, macro_list = [], []
-    skipped = 0
-    t0 = time.time()
+    # ── 加载类型分类器 ─────────────────────────────────────────────────────────
+    from node_diffusion_cross_att.type_model import TextCondGNN
+    type_model = TextCondGNN(
+        d_model=args.model_channels,
+        num_layers=4,
+        num_heads=args.num_heads,
+        bert_name=args.bert,
+    ).to(device)
+    type_ckpt = torch.load(args.type_ckpt, map_location=device)
+    type_sd   = type_ckpt.get("model", type_ckpt)
+    if any(k.startswith("module.") for k in type_sd):
+        type_sd = {k[7:]: v for k, v in type_sd.items()}
+    type_model.load_state_dict(type_sd, strict=False)
+    type_model.eval()
+    print(f"Loaded type model: {args.type_ckpt}  step={type_ckpt.get('step', '?')}")
 
+    # ── 加载词表 ───────────────────────────────────────────────────────────────
+    id_to_combo = load_vocab(args.vocab)   # {int: [str, ...]}
+
+    # ── 第一步：预处理所有样本 ────────────────────────────────────────────────
+    prepared = []
+    skipped  = 0
     with open(args.jsonl, encoding="utf-8") as f:
-        for sample_idx, line in enumerate(f):
-            if len(micro_list) + skipped >= args.n_samples:
+        for line in f:
+            if len(prepared) + skipped >= args.n_samples:
                 break
             line = line.strip()
             if not line:
                 continue
-
             rec = json.loads(line)
             n   = int(rec["n_nodes"])
             if n < 3:
                 skipped += 1
                 continue
 
-            # ── GT ──────────────────────────────────────────────────────────
-            raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)  # [n,2]
+            raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
             adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
             np.fill_diagonal(adj_raw, 0)
-            node_types = []
-            for k in range(n):
-                t = rec["node_types"][k]
-                node_types.append(t if isinstance(t, list) else [t])
+
+            # GT 类型（来自 jsonl）
+            gt_node_types = [
+                (t if isinstance(t, list) else [t])
+                for t in rec["node_types"][:n]
+            ]
 
             gt_centered = center_at_origin(raw_coords, np.ones(n))
             adj_list    = adj_raw.tolist()
-            gt_polys    = coords_to_polys_by_type(gt_centered, adj_list, node_types, n)
+            gt_polys    = coords_to_polys_by_type(gt_centered, adj_list, gt_node_types, n)
             if not gt_polys:
                 skipped += 1
                 continue
 
-            # ── 构造模型输入 ─────────────────────────────────────────────────
             mask_np = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
-
-            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32)
-            coords_pad[:n] = raw_coords
-
             adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
             adj_pad[:n, :n] = adj_raw.astype(np.float32)
-
             membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
-            m = _assign_room_membership_single(adj_raw.astype(bool), n)
-            membership[:n] = m
+            membership[:n] = _assign_room_membership_single(adj_raw.astype(bool), n)
 
             prompt = rec.get("prompt", "").replace("\n", " ").strip()
             enc  = tokenizer(prompt, add_special_tokens=True,
-                             max_length=MAX_TEXT_LEN, padding="max_length",
-                             truncation=True)
+                             max_length=MAX_TEXT_LEN, padding="max_length", truncation=True)
             ptok = np.array(enc["input_ids"],      dtype=np.int64)
             pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
-            cond = {k: torch.from_numpy(v).unsqueeze(0).to(device) for k, v in {
-                "node_mask":       mask_np,
-                "room_membership": membership,
-                "adj_matrix":      adj_pad,
-                "prompt_tokens":   ptok,
-                "prompt_mask":     pmsk,
-            }.items()}
+            prepared.append({
+                "mask_np":    mask_np,
+                "adj_pad":    adj_pad,
+                "membership": membership,
+                "ptok":       ptok,
+                "pmsk":       pmsk,
+                "n":          n,
+                "adj_list":   adj_list,
+                "gt_polys":   gt_polys,
+            })
 
-            # ── 推理 ─────────────────────────────────────────────────────────
-            pred_xy = ddpm_sample(model, diffusion, cond, device, args.timesteps)
-            pred_np = pred_xy.cpu().numpy().T  # [MAX_NODES, 2]
+    print(f"预处理完成: {len(prepared)} 条有效，{skipped} 条跳过")
+    print(f"DDIM {args.ddim_steps} 步，batch_size={args.batch_size}，开始推理...")
 
-            pred_centered = center_at_origin(pred_np, mask_np)
-            pred_polys    = coords_to_polys_by_type(
-                pred_centered[:n], adj_list, node_types, n)
+    # ── 第二步：批次 DDIM + 类型预测 ─────────────────────────────────────────
+    all_pred_np        = []   # [MAX_NODES, 2] per sample
+    all_pred_types     = []   # List[List[str]] per sample (len=n)
+    t0 = time.time()
+    VB = args.batch_size
 
-            micro, macro = compute_iou(gt_polys, pred_polys)
-            micro_list.append(micro)
-            macro_list.append(macro)
+    with torch.no_grad():
+        for bi in range(0, len(prepared), VB):
+            chunk = prepared[bi: bi + VB]
+            B = len(chunk)
 
-            done = len(micro_list)
-            if done % 20 == 0:
-                elapsed = time.time() - t0
-                print(f"[{done}/{args.n_samples}]  "
-                      f"micro={np.mean(micro_list):.4f}  "
-                      f"macro={np.mean(macro_list):.4f}  "
-                      f"elapsed={elapsed:.1f}s")
+            mask_t  = torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device)
+            memb_t  = torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device)
+            adj_t   = torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device)
+            ptok_t  = torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device)
+            pmsk_t  = torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device)
+
+            cond_b = {
+                "node_mask":       mask_t,
+                "room_membership": memb_t,
+                "adj_matrix":      adj_t,
+                "prompt_tokens":   ptok_t,
+                "prompt_mask":     pmsk_t,
+            }
+
+            # DDIM 采样
+            pred_xy = ddim_sample(model, diffusion, cond_b, device, args.ddim_steps)
+            # pred_xy: [B, 2, MAX_NODES]
+
+            # 类型预测（用预测坐标 + 原始图结构 + 文本）
+            type_logits = type_model(
+                pred_xy,          # [B, 2, MAX_NODES]
+                adj_matrix=adj_t,
+                node_mask=mask_t,
+                prompt_tokens=ptok_t,
+                prompt_mask=pmsk_t,
+            )  # [B, MAX_NODES, N_TYPES]
+
+            combo_ids = type_logits.argmax(dim=-1).cpu().numpy()  # [B, MAX_NODES]
+
+            for j in range(B):
+                all_pred_np.append(pred_xy[j].cpu().numpy().T)  # [MAX_NODES, 2]
+                n_j = chunk[j]["n"]
+                node_types_j = [
+                    id_to_combo.get(int(combo_ids[j, k]), ["other"])
+                    for k in range(n_j)
+                ]
+                all_pred_types.append(node_types_j)
+
+            done = min(bi + VB, len(prepared))
+            print(f"  [{done}/{len(prepared)}]  {time.time() - t0:.1f}s", flush=True)
+
+    # ── 第三步：逐样本计算 IoU ────────────────────────────────────────────────
+    micro_list, macro_list = [], []
+    for s, pred_np, pred_types in zip(prepared, all_pred_np, all_pred_types):
+        pred_centered = center_at_origin(pred_np, s["mask_np"])
+        pred_polys    = coords_to_polys_by_type(
+            pred_centered[:s["n"]], s["adj_list"], pred_types, s["n"])
+        micro, macro  = compute_iou(s["gt_polys"], pred_polys)
+        micro_list.append(micro)
+        macro_list.append(macro)
 
     print(f"\n=== 评估完成 ({len(micro_list)} 条, skipped={skipped}) ===")
     print(f"Micro-IoU : {np.mean(micro_list):.6f}")
     print(f"Macro-IoU : {np.mean(macro_list):.6f}")
+    print(f"耗时      : {time.time() - t0:.1f}s")
 
     if args.out:
-        import json as _json
-        Path(args.out).write_text(_json.dumps({
-            "n": len(micro_list),
+        Path(args.out).write_text(json.dumps({
+            "ckpt":      args.ckpt,
+            "type_ckpt": args.type_ckpt,
+            "n":         len(micro_list),
             "micro_iou": float(np.mean(micro_list)),
             "macro_iou": float(np.mean(macro_list)),
             "micro_list": micro_list,

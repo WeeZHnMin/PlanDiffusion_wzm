@@ -249,7 +249,7 @@ def build_parser(defaults=None):
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
     parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0))
     # ── 验证参数 ────────────────────────────────────────────────────────────
-    parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    ""),
+    parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    "data/jsonl/val_graph_dataset_18k5.jsonl"),
                         help="验证集 jsonl 路径（空则跳过验证）")
     parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 5000),
                         help="每隔多少步做一次验证")
