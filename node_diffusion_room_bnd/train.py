@@ -211,7 +211,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
 
     if not micro_list:
         print(f"[val step {step}] 所有样本均被跳过，无法计算 IoU")
-        return
+        return None
 
     avg_micro = float(np.mean(micro_list))
     avg_macro = float(np.mean(macro_list))
@@ -225,6 +225,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
             'val_macro_iou': round(avg_macro, 6),
             'val_n': len(micro_list),
         }) + '\n')
+    return avg_micro
 
 
 # ── 训练入口 ──────────────────────────────────────────────────────────────────
@@ -252,11 +253,11 @@ def build_parser(defaults=None):
                         help="验证集 jsonl 路径（空则跳过验证）")
     parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 5000),
                         help="每隔多少步做一次验证")
-    parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        200),
+    parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224),
                         help="每次验证随机采样的样本数")
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200),
                         help="DDIM 推理步数")
-    parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    32),
+    parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16),
                         help="验证推理批次大小")
     return parser
 
@@ -372,6 +373,7 @@ def main(argv=None, defaults=None):
 
     model.train()
     running_loss = running_rmse = 0.0
+    best_micro_iou = -1.0
     t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
@@ -420,8 +422,18 @@ def main(argv=None, defaults=None):
 
         # ── 验证（每 val_interval 步，仅 master）────────────────────────────
         if is_master and val_records and step > 0 and step % args.val_interval == 0:
-            _run_val(model, diffusion, val_tokenizer, val_records,
-                     args, device, step, log_file)
+            micro = _run_val(model, diffusion, val_tokenizer, val_records,
+                             args, device, step, log_file)
+            if micro is not None and micro > best_micro_iou:
+                best_micro_iou = micro
+                raw_model = model.module if use_ddp else model
+                best_path = save_dir / "best.pt"
+                torch.save({
+                    "model": raw_model.state_dict(), "opt": opt.state_dict(),
+                    "scaler": scaler.state_dict(), "step": step,
+                    "micro_iou": micro,
+                }, best_path)
+                print(f"  best model saved (micro_iou={micro:.4f}) -> {best_path}")
 
     if is_master:
         ckpt_path = save_dir / "latest.pt"
