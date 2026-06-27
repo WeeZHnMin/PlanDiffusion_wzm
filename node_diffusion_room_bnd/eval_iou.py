@@ -192,21 +192,29 @@ def compute_iou(gt_by_type, pred_by_type):
 @torch.no_grad()
 def ddpm_sample(model, diffusion, cond_batched, gt_coords_np, device, timesteps):
     """
-    cond_batched : dict, 所有张量已有 batch 维 (B=1)
-    gt_coords_np : [MAX_NODES, 2] float32，GT 节点坐标，用于 pin 轮廓节点
-    返回 pred_coords [2, MAX_NODES]
+    DDPM 批次采样。
+
+    cond_batched : dict，所有张量形状 [B, ...]
+    gt_coords_np : [B, MAX_NODES, 2] 或 [MAX_NODES, 2] float32
+    返回         : [B, 2, MAX_NODES] float32 tensor
     """
     diffusion._to(device)
-    x = torch.randn(1, 2, MAX_NODES, device=device)
 
-    is_bnd = cond_batched.get('is_boundary', None)   # [1, MAX_NODES]
+    is_bnd = cond_batched.get('is_boundary', None)   # [B, MAX_NODES]
+    B = next(iter(cond_batched.values())).shape[0]
+    x = torch.randn(B, 2, MAX_NODES, device=device)
+
+    gt_xy = bnd_mask = None
     if is_bnd is not None:
-        gt_xy    = torch.from_numpy(gt_coords_np.T[None]).float().to(device)  # [1, 2, MAX_NODES]
-        bnd_mask = is_bnd.unsqueeze(1).bool()                                  # [1, 1, MAX_NODES]
-        x = torch.where(bnd_mask, gt_xy, x)  # 初始噪声中轮廓节点直接置为 GT
+        gt_np = np.asarray(gt_coords_np, dtype=np.float32)
+        if gt_np.ndim == 2:
+            gt_np = gt_np[None]                                            # [1,N,2]
+        gt_xy    = torch.from_numpy(gt_np.transpose(0, 2, 1)).to(device)  # [B,2,N]
+        bnd_mask = is_bnd.unsqueeze(1).bool()                              # [B,1,N]
+        x = torch.where(bnd_mask, gt_xy, x)
 
     for t in reversed(range(timesteps)):
-        t_tensor = torch.tensor([t], device=device)
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
         eps = model(x, t_tensor, **cond_batched)
 
         s1  = diffusion.sqrt_alphas_bar[t]
@@ -226,11 +234,10 @@ def ddpm_sample(model, diffusion, cond_batched, gt_coords_np, device, timesteps)
             var    = diffusion.posterior_variance[t]
             x      = mean + var.sqrt() * torch.randn_like(x)
 
-        # 每步强制轮廓节点回到 GT 坐标（与训练时 q_sample 行为一致）
-        if is_bnd is not None:
+        if bnd_mask is not None:
             x = torch.where(bnd_mask, gt_xy, x)
 
-    return x[0]  # [2, MAX_NODES]
+    return x   # [B, 2, MAX_NODES]
 
 
 # ── 质心归零 ──────────────────────────────────────────────────────────────────
@@ -249,7 +256,9 @@ def main():
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_10k.jsonl")
     p.add_argument("--n_samples",  type=int, default=200)
     p.add_argument("--timesteps",  type=int, default=200,
-                   help="推理步数，可小于训练步数(1000)以加速，越小越快但精度略降")
+                   help="推理步数，可小于训练步数(1000)以加速")
+    p.add_argument("--batch_size", type=int, default=16,
+                   help="推理批次大小")
     p.add_argument("--bert",       default="models/bert-base-uncased")
     p.add_argument("--device",     default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--model_channels", type=int, default=384)
@@ -280,33 +289,29 @@ def main():
 
     diffusion = GaussianDiffusion(timesteps=1000)
 
-    # ── 逐条评估 ────────────────────────────────────────────────────────────
-    micro_list, macro_list = [], []
-    skipped = 0
-    t0 = time.time()
-
+    # ── 第一步：预处理所有样本（CPU）────────────────────────────────────────
+    prepared = []
+    skipped  = 0
     with open(args.jsonl, encoding="utf-8") as f:
-        for sample_idx, line in enumerate(f):
-            if len(micro_list) + skipped >= args.n_samples:
+        for line in f:
+            if len(prepared) + skipped >= args.n_samples:
                 break
             line = line.strip()
             if not line:
                 continue
-
             rec = json.loads(line)
             n   = int(rec["n_nodes"])
             if n < 3:
                 skipped += 1
                 continue
 
-            # ── GT ──────────────────────────────────────────────────────────
             raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
             adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
             np.fill_diagonal(adj_raw, 0)
-            node_types = []
-            for k in range(n):
-                t = rec["node_types"][k]
-                node_types.append(t if isinstance(t, list) else [t])
+            node_types = [
+                (t if isinstance(t, list) else [t])
+                for t in rec["node_types"][:n]
+            ]
 
             gt_centered = center_at_origin(raw_coords, np.ones(n))
             adj_list    = adj_raw.tolist()
@@ -315,68 +320,83 @@ def main():
                 skipped += 1
                 continue
 
-            # ── 构造模型输入 ─────────────────────────────────────────────────
-            mask_np = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
-
-            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32)
-            coords_pad[:n] = raw_coords
-
-            adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
+            mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
+            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = raw_coords
+            adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
             adj_pad[:n, :n] = adj_raw.astype(np.float32)
 
             membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
-            m = _assign_room_membership_single(adj_raw.astype(bool), n)
-            membership[:n] = m
+            membership[:n] = _assign_room_membership_single(adj_raw.astype(bool), n)
 
-            # 计算 is_boundary（用 GT 坐标和邻接矩阵）
             coords_ll = [(float(raw_coords[i, 0]), float(raw_coords[i, 1])) for i in range(n)]
-            bnd_n     = _find_outer_face_nodes(coords_ll, adj_list, n)
             is_bnd_np = np.zeros(MAX_NODES, dtype=np.float32)
-            is_bnd_np[:n] = bnd_n.astype(np.float32)
+            is_bnd_np[:n] = _find_outer_face_nodes(coords_ll, adj_list, n).astype(np.float32)
 
             prompt = rec.get("prompt", "").replace("\n", " ").strip()
             enc  = tokenizer(prompt, add_special_tokens=True,
-                             max_length=MAX_TEXT_LEN, padding="max_length",
-                             truncation=True)
+                             max_length=MAX_TEXT_LEN, padding="max_length", truncation=True)
             ptok = np.array(enc["input_ids"],      dtype=np.int64)
             pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
-            cond = {k: torch.from_numpy(v).unsqueeze(0).to(device) for k, v in {
-                "node_mask":       mask_np,
-                "room_membership": membership,
-                "adj_matrix":      adj_pad,
-                "prompt_tokens":   ptok,
-                "prompt_mask":     pmsk,
-                "is_boundary":     is_bnd_np,
-            }.items()}
+            prepared.append({
+                "mask_np":    mask_np,
+                "coords_pad": coords_pad,
+                "adj_pad":    adj_pad,
+                "membership": membership,
+                "is_bnd_np":  is_bnd_np,
+                "ptok":       ptok,
+                "pmsk":       pmsk,
+                "n":          n,
+                "adj_list":   adj_list,
+                "node_types": node_types,
+                "gt_polys":   gt_polys,
+            })
 
-            # ── 推理 ─────────────────────────────────────────────────────────
-            pred_xy = ddpm_sample(model, diffusion, cond, coords_pad, device, args.timesteps)
-            pred_np = pred_xy.cpu().numpy().T  # [MAX_NODES, 2]
+    print(f"预处理完成：{len(prepared)} 条有效（跳过 {skipped} 条）")
 
-            pred_centered = center_at_origin(pred_np, mask_np)
-            pred_polys    = coords_to_polys_by_type(
-                pred_centered[:n], adj_list, node_types, n)
+    # ── 第二步：批次 DDPM 推理（GPU）────────────────────────────────────────
+    all_pred_np = []
+    t0  = time.time()
+    BS  = args.batch_size
+    print(f"批次推理 batch={BS}，DDPM {args.timesteps} 步...", flush=True)
 
-            micro, macro = compute_iou(gt_polys, pred_polys)
-            micro_list.append(micro)
-            macro_list.append(macro)
+    for bi in range(0, len(prepared), BS):
+        chunk = prepared[bi: bi + BS]
+        B = len(chunk)
 
-            done = len(micro_list)
-            if done % 20 == 0:
-                elapsed = time.time() - t0
-                print(f"[{done}/{args.n_samples}]  "
-                      f"micro={np.mean(micro_list):.4f}  "
-                      f"macro={np.mean(macro_list):.4f}  "
-                      f"elapsed={elapsed:.1f}s")
+        cond_b = {
+            "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+            "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+            "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+            "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+            "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+            "is_boundary":     torch.from_numpy(np.stack([s["is_bnd_np"]  for s in chunk])).to(device),
+        }
+        gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
+
+        pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
+        for j in range(B):
+            all_pred_np.append(pred_xy[j].cpu().numpy().T)   # [MAX_NODES, 2]
+
+        done = min(bi + BS, len(prepared))
+        elapsed = time.time() - t0
+        print(f"  [{done}/{len(prepared)}]  elapsed={elapsed:.1f}s", flush=True)
+
+    # ── 第三步：逐样本计算 IoU（CPU）────────────────────────────────────────
+    micro_list, macro_list = [], []
+    for s, pred_np in zip(prepared, all_pred_np):
+        pred_cen   = center_at_origin(pred_np, s["mask_np"])
+        pred_polys = coords_to_polys_by_type(pred_cen[:s["n"]], s["adj_list"], s["node_types"], s["n"])
+        micro, macro = compute_iou(s["gt_polys"], pred_polys)
+        micro_list.append(micro)
+        macro_list.append(macro)
 
     print(f"\n=== 评估完成 ({len(micro_list)} 条, skipped={skipped}) ===")
     print(f"Micro-IoU : {np.mean(micro_list):.6f}")
     print(f"Macro-IoU : {np.mean(macro_list):.6f}")
 
     if args.out:
-        import json as _json
-        Path(args.out).write_text(_json.dumps({
+        Path(args.out).write_text(json.dumps({
             "n": len(micro_list),
             "micro_iou": float(np.mean(micro_list)),
             "macro_iou": float(np.mean(macro_list)),
