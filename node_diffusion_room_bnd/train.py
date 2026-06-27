@@ -111,8 +111,9 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
 
     micro_list, macro_list = [], []
     t0 = time.perf_counter()
+    print(f"[val step {step}] 开始推理 {len(sample_recs)} 条（DDIM {args.ddim_steps} 步）...", flush=True)
 
-    for rec in sample_recs:
+    for si, rec in enumerate(sample_recs):
         n = int(rec["n_nodes"])
         if n < 3:
             continue
@@ -169,6 +170,11 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         micro, macro = compute_iou(gt_polys, pred_polys)
         micro_list.append(micro)
         macro_list.append(macro)
+
+        if (si + 1) % 50 == 0:
+            elapsed = time.perf_counter() - t0
+            print(f"  [{si+1}/{len(sample_recs)}] micro={np.mean(micro_list):.4f}  "
+                  f"macro={np.mean(macro_list):.4f}  {elapsed:.1f}s", flush=True)
 
     raw_model.train()
 
