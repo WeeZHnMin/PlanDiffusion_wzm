@@ -52,28 +52,31 @@ MAX_TEXT_LEN = 192
 @torch.no_grad()
 def _ddim_sample(model, diffusion, cond_batched, gt_coords_np, device, ddim_steps=200):
     """
-    DDIM 确定性采样（eta=0），等间隔跳步。
-    boundary 节点每步强制 pin 到 GT 坐标，与训练 q_sample 行为一致。
+    DDIM 确定性采样（eta=0），等间隔跳步，支持批次推理。
 
-    gt_coords_np : [MAX_NODES, 2] float32
-    返回 [2, MAX_NODES] float32 tensor（在 device 上）
+    cond_batched  : dict，所有张量形状 [B, ...]
+    gt_coords_np  : [B, MAX_NODES, 2] float32（或 [MAX_NODES, 2] 单样本）
+    返回          : [B, 2, MAX_NODES] float32 tensor
     """
     diffusion._to(device)
-
-    # 等间隔从 T-1 到 0，共 ddim_steps 个时间步（降噪方向）
     ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
 
-    x = torch.randn(1, 2, MAX_NODES, device=device)
+    is_bnd = cond_batched.get('is_boundary', None)   # [B, MAX_NODES]
+    B = next(iter(cond_batched.values())).shape[0]
+    x = torch.randn(B, 2, MAX_NODES, device=device)
 
-    is_bnd = cond_batched.get('is_boundary', None)   # [1, MAX_NODES]
     gt_xy = bnd_mask = None
     if is_bnd is not None:
-        gt_xy    = torch.from_numpy(gt_coords_np.T[None]).float().to(device)  # [1,2,N]
-        bnd_mask = is_bnd.unsqueeze(1).bool()                                  # [1,1,N]
+        gt_np = np.asarray(gt_coords_np, dtype=np.float32)
+        if gt_np.ndim == 2:          # 单样本 [MAX_NODES, 2] → [1, MAX_NODES, 2]
+            gt_np = gt_np[None]
+        # [B, MAX_NODES, 2] → transpose → [B, 2, MAX_NODES]
+        gt_xy    = torch.from_numpy(gt_np.transpose(0, 2, 1)).to(device)  # [B,2,N]
+        bnd_mask = is_bnd.unsqueeze(1).bool()                              # [B,1,N]
         x = torch.where(bnd_mask, gt_xy, x)
 
     for i, t in enumerate(ts):
-        t_tensor = torch.tensor([t], device=device)
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
         eps  = model(x, t_tensor, **cond_batched)
         ab_t = diffusion.alphas_bar[t]
         x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
@@ -82,20 +85,20 @@ def _ddim_sample(model, diffusion, cond_batched, gt_coords_np, device, ddim_step
             ab_prev = diffusion.alphas_bar[ts[i + 1]]
             x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
         else:
-            x = x0   # 最后一步直接输出 x0
+            x = x0
 
         if bnd_mask is not None:
             x = torch.where(bnd_mask, gt_xy, x)
 
-    return x[0]   # [2, MAX_NODES]
+    return x   # [B, 2, MAX_NODES]
 
 
 # ── 验证函数 ──────────────────────────────────────────────────────────────────
 
 def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file):
     """
-    从 val_records 随机采 val_n 条，DDIM 推理，计算 micro/macro IoU。
-    IoU 计算逻辑与 eval_iou.py 完全一致。
+    从 val_records 随机采 val_n 条，批次 DDIM 推理，计算 micro/macro IoU。
+    推理按 val_batch 分批，IoU 仍逐样本计算（需要 node_types 等 per-sample 信息）。
     """
     from .eval_iou import (
         _find_outer_face_nodes,
@@ -109,16 +112,13 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
     raw_model = model.module if isinstance(model, DDP) else model
     raw_model.eval()
 
-    micro_list, macro_list = [], []
-    t0 = time.perf_counter()
-    print(f"[val step {step}] 开始推理 {len(sample_recs)} 条（DDIM {args.ddim_steps} 步）...", flush=True)
-
-    for si, rec in enumerate(sample_recs):
+    # ── 第一步：预处理所有样本（CPU），过滤无效样本 ───────────────────────────
+    prepared = []   # list of dict，存 numpy arrays + per-sample meta
+    for rec in sample_recs:
         n = int(rec["n_nodes"])
         if n < 3:
             continue
 
-        # ── GT ──────────────────────────────────────────────────────────────
         raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
         adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
         np.fill_diagonal(adj_raw, 0)
@@ -133,7 +133,6 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         if not gt_polys:
             continue
 
-        # ── 构造模型输入 ─────────────────────────────────────────────────────
         mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
         coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = raw_coords
         adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
@@ -152,31 +151,63 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         ptok = np.array(enc["input_ids"],      dtype=np.int64)
         pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
-        cond = {k: torch.from_numpy(v).unsqueeze(0).to(device) for k, v in {
-            "node_mask":       mask_np,
-            "room_membership": membership,
-            "adj_matrix":      adj_pad,
-            "prompt_tokens":   ptok,
-            "prompt_mask":     pmsk,
-            "is_boundary":     is_bnd_np,
-        }.items()}
+        prepared.append({
+            # GPU 推理用
+            "mask_np":    mask_np,
+            "coords_pad": coords_pad,
+            "adj_pad":    adj_pad,
+            "membership": membership,
+            "is_bnd_np":  is_bnd_np,
+            "ptok":       ptok,
+            "pmsk":       pmsk,
+            # IoU 计算用（CPU，per-sample）
+            "n":          n,
+            "adj_list":   adj_list,
+            "node_types": node_types,
+            "gt_polys":   gt_polys,
+            "mask_np_ref": mask_np,
+        })
 
-        # ── DDIM 推理 ────────────────────────────────────────────────────────
-        pred_xy  = _ddim_sample(raw_model, diffusion, cond, coords_pad, device, args.ddim_steps)
-        pred_np  = pred_xy.cpu().numpy().T        # [MAX_NODES, 2]
-        pred_cen = center_at_origin(pred_np, mask_np)
-        pred_polys = coords_to_polys_by_type(pred_cen[:n], adj_list, node_types, n)
+    t0 = time.perf_counter()
+    print(f"[val step {step}] 批次推理 {len(prepared)} 条（DDIM {args.ddim_steps} 步，"
+          f"batch={args.val_batch}）...", flush=True)
 
-        micro, macro = compute_iou(gt_polys, pred_polys)
-        micro_list.append(micro)
-        macro_list.append(macro)
+    # ── 第二步：批次 DDIM 推理 ────────────────────────────────────────────────
+    all_pred_np = []   # list of [MAX_NODES, 2] numpy
+    VB = args.val_batch
+    for bi in range(0, len(prepared), VB):
+        chunk = prepared[bi: bi + VB]
+        B = len(chunk)
 
-        if (si + 1) % 50 == 0:
-            elapsed = time.perf_counter() - t0
-            print(f"  [{si+1}/{len(sample_recs)}] micro={np.mean(micro_list):.4f}  "
-                  f"macro={np.mean(macro_list):.4f}  {elapsed:.1f}s", flush=True)
+        cond_b = {
+            "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+            "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+            "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+            "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+            "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+            "is_boundary":     torch.from_numpy(np.stack([s["is_bnd_np"]  for s in chunk])).to(device),
+        }
+        gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
+
+        pred_xy = _ddim_sample(raw_model, diffusion, cond_b, gt_coords_b, device, args.ddim_steps)
+        # pred_xy: [B, 2, MAX_NODES]
+        for j in range(B):
+            all_pred_np.append(pred_xy[j].cpu().numpy().T)   # [MAX_NODES, 2]
+
+        done = min(bi + VB, len(prepared))
+        elapsed = time.perf_counter() - t0
+        print(f"  [{done}/{len(prepared)}]  {elapsed:.1f}s", flush=True)
 
     raw_model.train()
+
+    # ── 第三步：逐样本计算 IoU ────────────────────────────────────────────────
+    micro_list, macro_list = [], []
+    for s, pred_np in zip(prepared, all_pred_np):
+        pred_cen   = center_at_origin(pred_np, s["mask_np_ref"])
+        pred_polys = coords_to_polys_by_type(pred_cen[:s["n"]], s["adj_list"], s["node_types"], s["n"])
+        micro, macro = compute_iou(s["gt_polys"], pred_polys)
+        micro_list.append(micro)
+        macro_list.append(macro)
 
     if not micro_list:
         print(f"[val step {step}] 所有样本均被跳过，无法计算 IoU")
@@ -225,6 +256,8 @@ def build_parser(defaults=None):
                         help="每次验证随机采样的样本数")
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200),
                         help="DDIM 推理步数")
+    parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    32),
+                        help="验证推理批次大小")
     return parser
 
 
