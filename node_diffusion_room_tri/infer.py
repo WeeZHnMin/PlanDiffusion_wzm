@@ -151,7 +151,7 @@ def snap_nodes(coords, adj, n, threshold_ratio=0.02):
 
 # ── 节点连接图渲染 ────────────────────────────────────────────────────────────
 
-def render_graph(coords, adj, n, img_size=384, margin=32, node_r=13):
+def render_graph(coords, adj, n, img_size=768, margin=48, node_r=18):
     """
     coords : [[x, y], ...] 长度 n，原始坐标（任意范围）
     adj    : n×n int 列表
@@ -177,7 +177,7 @@ def render_graph(coords, adj, n, img_size=384, margin=32, node_r=13):
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     ]:
         try:
-            font = ImageFont.truetype(font_path, 12)
+            font = ImageFont.truetype(font_path, 16)
             break
         except Exception:
             pass
@@ -224,7 +224,7 @@ def main():
     p.add_argument("--num_heads",      type=int, default=6)
     p.add_argument("--img_dir",        default="outputs/tri_infer_imgs",
                    help="节点连接图保存目录")
-    p.add_argument("--img_size",       type=int, default=384)
+    p.add_argument("--img_size",       type=int, default=768)
     args = p.parse_args()
 
     device    = torch.device(args.device)
