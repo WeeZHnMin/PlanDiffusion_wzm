@@ -6,37 +6,191 @@ Train NodeDiffusionTransformer（四流：adj_attn + room_attn + global_attn + b
 使用方法（单卡）：
   python -m node_diffusion_room_bnd.train \\
       --data_path data/processed/node_diffusion_room_bnd/graph_dataset.npz \\
-      --save_dir  checkpoints/node_diffusion_room_bnd/run1
+      --save_dir  checkpoints/node_diffusion_room_bnd/run1 \\
+      --val_jsonl data/jsonl/test_graph_dataset_10k.jsonl
 
   # 从 tri 迁移权重续训：
   python -m node_diffusion_room_bnd.transfer_weights
   python -m node_diffusion_room_bnd.train \\
       --data_path data/processed/node_diffusion_room_bnd/graph_dataset.npz \\
       --save_dir  checkpoints/node_diffusion_room_bnd/run1 \\
-      --resume    checkpoints/node_diffusion_room_bnd/init_from_tri.pt
+      --resume    checkpoints/node_diffusion_room_bnd/init_from_tri.pt \\
+      --val_jsonl data/jsonl/test_graph_dataset_10k.jsonl
 
 多卡 DDP：
   torchrun --nproc_per_node=2 -m node_diffusion_room_bnd.train \\
       --data_path data/processed/node_diffusion_room_bnd/graph_dataset.npz \\
-      --save_dir  checkpoints/node_diffusion_room_bnd/run1
+      --save_dir  checkpoints/node_diffusion_room_bnd/run1 \\
+      --val_jsonl data/jsonl/test_graph_dataset_10k.jsonl
 """
 
 import argparse
 import json
 import os
+import random
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.optim import AdamW
+from transformers import BertTokenizer
 
 from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
-from .model import NodeDiffusionTransformer
+from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 
+MAX_NODES    = 40
+MAX_TEXT_LEN = 192
+
+
+# ── DDIM 推理（验证用）────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def _ddim_sample(model, diffusion, cond_batched, gt_coords_np, device, ddim_steps=200):
+    """
+    DDIM 确定性采样（eta=0），等间隔跳步。
+    boundary 节点每步强制 pin 到 GT 坐标，与训练 q_sample 行为一致。
+
+    gt_coords_np : [MAX_NODES, 2] float32
+    返回 [2, MAX_NODES] float32 tensor（在 device 上）
+    """
+    diffusion._to(device)
+
+    # 等间隔从 T-1 到 0，共 ddim_steps 个时间步（降噪方向）
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+
+    x = torch.randn(1, 2, MAX_NODES, device=device)
+
+    is_bnd = cond_batched.get('is_boundary', None)   # [1, MAX_NODES]
+    gt_xy = bnd_mask = None
+    if is_bnd is not None:
+        gt_xy    = torch.from_numpy(gt_coords_np.T[None]).float().to(device)  # [1,2,N]
+        bnd_mask = is_bnd.unsqueeze(1).bool()                                  # [1,1,N]
+        x = torch.where(bnd_mask, gt_xy, x)
+
+    for i, t in enumerate(ts):
+        t_tensor = torch.tensor([t], device=device)
+        eps  = model(x, t_tensor, **cond_batched)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0   # 最后一步直接输出 x0
+
+        if bnd_mask is not None:
+            x = torch.where(bnd_mask, gt_xy, x)
+
+    return x[0]   # [2, MAX_NODES]
+
+
+# ── 验证函数 ──────────────────────────────────────────────────────────────────
+
+def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file):
+    """
+    从 val_records 随机采 val_n 条，DDIM 推理，计算 micro/macro IoU。
+    IoU 计算逻辑与 eval_iou.py 完全一致。
+    """
+    from .eval_iou import (
+        _find_outer_face_nodes,
+        coords_to_polys_by_type,
+        compute_iou,
+        center_at_origin,
+    )
+
+    sample_recs = random.sample(val_records, min(args.val_n, len(val_records)))
+
+    raw_model = model.module if isinstance(model, DDP) else model
+    raw_model.eval()
+
+    micro_list, macro_list = [], []
+    t0 = time.perf_counter()
+
+    for rec in sample_recs:
+        n = int(rec["n_nodes"])
+        if n < 3:
+            continue
+
+        # ── GT ──────────────────────────────────────────────────────────────
+        raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
+        adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
+        np.fill_diagonal(adj_raw, 0)
+        node_types = [
+            (t if isinstance(t, list) else [t])
+            for t in rec["node_types"][:n]
+        ]
+
+        gt_centered = center_at_origin(raw_coords, np.ones(n))
+        adj_list    = adj_raw.tolist()
+        gt_polys    = coords_to_polys_by_type(gt_centered, adj_list, node_types, n)
+        if not gt_polys:
+            continue
+
+        # ── 构造模型输入 ─────────────────────────────────────────────────────
+        mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
+        coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = raw_coords
+        adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
+        adj_pad[:n, :n] = adj_raw.astype(np.float32)
+
+        membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
+        membership[:n] = _assign_room_membership_single(adj_raw.astype(bool), n)
+
+        coords_ll = [(float(raw_coords[i, 0]), float(raw_coords[i, 1])) for i in range(n)]
+        is_bnd_np = np.zeros(MAX_NODES, dtype=np.float32)
+        is_bnd_np[:n] = _find_outer_face_nodes(coords_ll, adj_list, n).astype(np.float32)
+
+        prompt = rec.get("prompt", "").replace("\n", " ").strip()
+        enc  = tokenizer(prompt, add_special_tokens=True,
+                         max_length=MAX_TEXT_LEN, padding="max_length", truncation=True)
+        ptok = np.array(enc["input_ids"],      dtype=np.int64)
+        pmsk = np.array(enc["attention_mask"], dtype=np.float32)
+
+        cond = {k: torch.from_numpy(v).unsqueeze(0).to(device) for k, v in {
+            "node_mask":       mask_np,
+            "room_membership": membership,
+            "adj_matrix":      adj_pad,
+            "prompt_tokens":   ptok,
+            "prompt_mask":     pmsk,
+            "is_boundary":     is_bnd_np,
+        }.items()}
+
+        # ── DDIM 推理 ────────────────────────────────────────────────────────
+        pred_xy  = _ddim_sample(raw_model, diffusion, cond, coords_pad, device, args.ddim_steps)
+        pred_np  = pred_xy.cpu().numpy().T        # [MAX_NODES, 2]
+        pred_cen = center_at_origin(pred_np, mask_np)
+        pred_polys = coords_to_polys_by_type(pred_cen[:n], adj_list, node_types, n)
+
+        micro, macro = compute_iou(gt_polys, pred_polys)
+        micro_list.append(micro)
+        macro_list.append(macro)
+
+    raw_model.train()
+
+    if not micro_list:
+        print(f"[val step {step}] 所有样本均被跳过，无法计算 IoU")
+        return
+
+    avg_micro = float(np.mean(micro_list))
+    avg_macro = float(np.mean(macro_list))
+    elapsed   = time.perf_counter() - t0
+    print(f"[val step {step:6d}] n={len(micro_list)} | "
+          f"micro_iou={avg_micro:.4f} | macro_iou={avg_macro:.4f} | {elapsed:.1f}s")
+    if log_file:
+        log_file.write(json.dumps({
+            'step': step,
+            'val_micro_iou': round(avg_micro, 6),
+            'val_macro_iou': round(avg_macro, 6),
+            'val_n': len(micro_list),
+        }) + '\n')
+
+
+# ── 训练入口 ──────────────────────────────────────────────────────────────────
 
 def build_parser(defaults=None):
     defaults = defaults or {}
@@ -56,6 +210,15 @@ def build_parser(defaults=None):
     parser.add_argument("--timesteps",    type=int,   default=defaults.get("timesteps",    1000))
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
     parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0))
+    # ── 验证参数 ────────────────────────────────────────────────────────────
+    parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    ""),
+                        help="验证集 jsonl 路径（空则跳过验证）")
+    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 5000),
+                        help="每隔多少步做一次验证")
+    parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        200),
+                        help="每次验证随机采样的样本数")
+    parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200),
+                        help="DDIM 推理步数")
     return parser
 
 
@@ -142,6 +305,18 @@ def main(argv=None, defaults=None):
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
+    # ── 预加载验证集（仅 master）─────────────────────────────────────────────
+    val_records  = []
+    val_tokenizer = None
+    if is_master and args.val_jsonl:
+        with open(args.val_jsonl, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    val_records.append(json.loads(line))
+        print(f"验证集: {len(val_records)} 条记录，每 {args.val_interval} 步随机采 {args.val_n} 条验证")
+        val_tokenizer = BertTokenizer.from_pretrained(args.bert)
+
     dataset = NodeDataset(args.data_path)
     if is_master:
         steps_per_epoch = len(dataset) / args.batch_size
@@ -203,6 +378,11 @@ def main(argv=None, defaults=None):
                 "scaler": scaler.state_dict(), "step": step,
             }, ckpt_path)
             print(f"  saved -> {ckpt_path}")
+
+        # ── 验证（每 val_interval 步，仅 master）────────────────────────────
+        if is_master and val_records and step > 0 and step % args.val_interval == 0:
+            _run_val(model, diffusion, val_tokenizer, val_records,
+                     args, device, step, log_file)
 
     if is_master:
         ckpt_path = save_dir / "latest.pt"

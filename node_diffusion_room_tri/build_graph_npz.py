@@ -36,7 +36,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--jsonl",       default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bert",        default="models/bert-base-uncased")
-    p.add_argument("--output",      default="data/processed/node_diffusion_room/graph_dataset.npz")
+    p.add_argument("--output",      default="data/processed/node_diffusion_room_tri/graph_dataset.npz")
     p.add_argument("--augment",     type=int, default=4)
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--workers",     type=int, default=0)

@@ -131,7 +131,7 @@ def parse_args():
     p.add_argument("--jsonl",       default="data/jsonl/final_graph_dataset_v3.jsonl")
     p.add_argument("--bert",        default="models/bert-base-uncased")
     p.add_argument("--output",      default="data/processed/node_diffusion_room_bnd/graph_dataset.npz")
-    p.add_argument("--augment",     type=int, default=4)
+    p.add_argument("--augment",     type=int, default=2)
     p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--workers",     type=int, default=0)
     p.add_argument("--max_samples", type=int, default=0,
