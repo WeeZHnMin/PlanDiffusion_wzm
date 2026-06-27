@@ -216,7 +216,7 @@ def build_parser(defaults=None):
                         help="每隔多少步做一次验证")
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224),
                         help="每次验证随机采样的样本数")
-    parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200),
+    parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   500),
                         help="DDIM 推理步数")
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16),
                         help="验证推理批次大小")

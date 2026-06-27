@@ -14,7 +14,7 @@
 用法（项目根目录）：
     python -m node_diffusion_room_tri.visualize_gt_adj \\
         --ckpt   checkpoints/node_diffusion_room_tri/latest.pt \\
-        --data   data/jsonl/final_graph_dataset_v3.jsonl \\
+        --data   data/jsonl/test_graph_dataset_10k.jsonl \\
         --n      5 \\
         --out    outputs/visualize_gt_adj_room/result.png
 """
@@ -46,6 +46,7 @@ from transformers import BertTokenizer
 
 from .model import NodeDiffusionTransformer, _assign_room_membership_single
 from .diffusion import GaussianDiffusion
+from .eval_iou import TextCondGNN, load_vocab
 
 # ── 渲染常量（来自 render.py，内联以消除跨包依赖）─────────────────────────────
 ROOM_TYPE_ORDER = [
@@ -252,7 +253,6 @@ def draw_col4_render(ax, coords: np.ndarray, adj_np: np.ndarray,
     span   = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
     margin = span * 0.12
     mn_x, mn_y = min(xs), min(ys)
-
     def norm(x, y):
         return (
             (x - mn_x + margin) / (span + 2 * margin),
@@ -332,8 +332,8 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_tri/run1/latest.pt')
-    p.add_argument('--data',    default='data/jsonl/final_graph_dataset_v3.jsonl')
+    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_tri/latest.pt')
+    p.add_argument('--data',    default='data/jsonl/test_graph_dataset_10k.jsonl')
     p.add_argument('--bert',    default='models/bert-base-uncased')
     p.add_argument('--n',       type=int, default=5)
     p.add_argument('--indices', type=int, nargs='+', default=None,
@@ -341,6 +341,10 @@ def parse_args():
     p.add_argument('--seed',    type=int, default=42)
     p.add_argument('--gpu',     type=int, default=None)
     p.add_argument('--out',     default='outputs/visualize_gt_adj_room/result.png')
+    p.add_argument('--use_type_model', action='store_true',
+                   help='用 TextCondGNN 预测节点类型（否则 Col5 沿用 GT 类型）')
+    p.add_argument('--type_ckpt', default='checkpoints/node_type/model_latest.pt')
+    p.add_argument('--vocab',     default="node_diffusion_room_tri/type_combo_vocab_v3.json")
     return p.parse_args()
 
 
@@ -449,6 +453,41 @@ def main():
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
+    # ── 类型模型推理（可选）──────────────────────────────────────────────────────
+    if args.use_type_model:
+        print(f'\n加载类型模型: {args.type_ckpt}')
+        id_to_combo = load_vocab(args.vocab)
+        type_model  = TextCondGNN(bert_name=args.bert).to(device)
+        type_ckpt   = torch.load(args.type_ckpt, map_location=device)
+        type_sd     = type_ckpt.get('model', type_ckpt)
+        if any(k.startswith('module.') for k in type_sd):
+            type_sd = {k[7:]: v for k, v in type_sd.items()}
+        type_model.load_state_dict(type_sd, strict=False)
+        type_model.eval()
+
+        with torch.no_grad():
+            for rec in records:
+                pred_xy = torch.from_numpy(
+                    rec['pred_coords'].T[None]).float().to(device)       # [1, 2, N_NODES]
+                adj_t  = torch.from_numpy(rec['adj_np'][None]).to(device)
+                mask_t = torch.from_numpy(rec['mask_np'][None]).to(device)
+                ptok_t = torch.from_numpy(rec['ptok_np'][None]).to(device)
+                pmsk_t = torch.from_numpy(rec['pmsk_np'][None]).to(device)
+                logits = type_model(pred_xy, adj_matrix=adj_t, node_mask=mask_t,
+                                    prompt_tokens=ptok_t, prompt_mask=pmsk_t)
+                combo_ids = logits.argmax(dim=-1).cpu().numpy()[0]       # [N_NODES]
+                n_eff = rec['n_nodes']
+                rec['pred_node_types'] = [
+                    id_to_combo.get(int(combo_ids[k]), ['other'])
+                    for k in range(N_NODES)
+                ]
+                print(f'  类型推理完成  idx={rec["idx"]}  '
+                      f'前{n_eff}个: {[rec["pred_node_types"][k] for k in range(n_eff)]}')
+
+        del type_model
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     B = len(records)
     print(f'\n绘制 {B} × 5 图...')
@@ -470,8 +509,9 @@ def main():
         draw_col4_render (axs[2], rec['gt_coords_np'], rec['adj_np'],
                           rec['mask_np'], rec['node_types'])
         draw_col3_coords (axs[3], rec['pred_coords'], rec['adj_np'], rec['mask_np'])
+        pred_types_for_render = rec.get('pred_node_types', rec['node_types'])
         draw_col4_render (axs[4], rec['pred_coords'], rec['adj_np'],
-                          rec['mask_np'], rec['node_types'])
+                          rec['mask_np'], pred_types_for_render)
 
     col_titles = ['Text Description',
                   'GT Adjacency Graph',
