@@ -190,13 +190,20 @@ def compute_iou(gt_by_type, pred_by_type):
 # ── DDPM 反向采样 ─────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def ddpm_sample(model, diffusion, cond_batched, device, timesteps):
+def ddpm_sample(model, diffusion, cond_batched, gt_coords_np, device, timesteps):
+    """
+    cond_batched : dict, 所有张量已有 batch 维 (B=1)
+    gt_coords_np : [MAX_NODES, 2] float32，GT 节点坐标，用于 pin 轮廓节点
+    返回 pred_coords [2, MAX_NODES]
+    """
     diffusion._to(device)
     x = torch.randn(1, 2, MAX_NODES, device=device)
 
-    # 轮廓节点的初始值设为真实坐标（已在 cond 中编码为 x0 的一部分）
-    # 在采样循环中每步都强制覆盖轮廓节点为真实坐标
     is_bnd = cond_batched.get('is_boundary', None)   # [1, MAX_NODES]
+    if is_bnd is not None:
+        gt_xy    = torch.from_numpy(gt_coords_np.T[None]).float().to(device)  # [1, 2, MAX_NODES]
+        bnd_mask = is_bnd.unsqueeze(1).bool()                                  # [1, 1, MAX_NODES]
+        x = torch.where(bnd_mask, gt_xy, x)  # 初始噪声中轮廓节点直接置为 GT
 
     for t in reversed(range(timesteps)):
         t_tensor = torch.tensor([t], device=device)
@@ -219,9 +226,9 @@ def ddpm_sample(model, diffusion, cond_batched, device, timesteps):
             var    = diffusion.posterior_variance[t]
             x      = mean + var.sqrt() * torch.randn_like(x)
 
-        # 强制轮廓节点坐标 = 真实值（保持固定）
-        # 注意：cond 中的 node_mask*is_boundary 对应的是 x0 的真实坐标
-        # 推理时我们需要知道真实 GT 坐标 —— 这在评估时是已知的，通过 x_gt 传入
+        # 每步强制轮廓节点回到 GT 坐标（与训练时 q_sample 行为一致）
+        if is_bnd is not None:
+            x = torch.where(bnd_mask, gt_xy, x)
 
     return x[0]  # [2, MAX_NODES]
 
@@ -344,7 +351,7 @@ def main():
             }.items()}
 
             # ── 推理 ─────────────────────────────────────────────────────────
-            pred_xy = ddpm_sample(model, diffusion, cond, device, args.timesteps)
+            pred_xy = ddpm_sample(model, diffusion, cond, coords_pad, device, args.timesteps)
             pred_np = pred_xy.cpu().numpy().T  # [MAX_NODES, 2]
 
             pred_centered = center_at_origin(pred_np, mask_np)

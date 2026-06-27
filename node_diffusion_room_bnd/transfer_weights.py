@@ -84,11 +84,12 @@ def main():
     # ── 保存 ─────────────────────────────────────────────────────────────
     dst_path = Path(args.dst)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
+    src_step = ckpt.get("step", 0)
     torch.save({
         "model": model.state_dict(),
-        "step":  ckpt.get("step", 0),
+        "step":  0,   # bnd 从第 0 步重新开始训练
     }, dst_path)
-    print(f"\n保存 → {dst_path}  (step={ckpt.get('step', 0)})")
+    print(f"\n保存 → {dst_path}  (src step={src_step} → bnd step=0)")
 
 
 if __name__ == "__main__":

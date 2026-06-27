@@ -133,8 +133,8 @@ def main(argv=None, defaults=None):
             opt.load_state_dict(ckpt["opt"])
             if "scaler" in ckpt:
                 scaler.load_state_dict(ckpt["scaler"])
-        except ValueError:
-            print("  [warn] optimizer state 结构不兼容，跳过 opt 恢复，仅加载模型权重")
+        except (ValueError, KeyError):
+            print("  [warn] optimizer state 缺失或结构不兼容，跳过 opt 恢复，仅加载模型权重")
         start_step = ckpt["step"] + 1
         if is_master:
             print(f"resumed from step {start_step}")

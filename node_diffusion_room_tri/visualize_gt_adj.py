@@ -4,15 +4,16 @@
 只测试 node_diffusion_room（坐标扩散模型），不需要 θ₃ 类型分类器。
 节点类型直接从 JSONL 的 node_types 字段读取，用于渲染着色。
 
-输出 N 行 × 4 列图：
+输出 N 行 × 5 列图：
   Col1  输入文本描述
   Col2  GT 邻接图（spring layout）
-  Col3  θ₂ 预测坐标图
-  Col4  渲染平面图（GT 节点类型着色）
+  Col3  GT 真实平面图（GT 坐标渲染）
+  Col4  θ₂ 预测坐标图
+  Col5  预测平面图（预测坐标渲染）
 
 用法（项目根目录）：
     python -m node_diffusion_room_tri.visualize_gt_adj \\
-        --ckpt   checkpoints/node_diffusion_room_tri/run1/latest.pt \\
+        --ckpt   checkpoints/node_diffusion_room_tri/latest.pt \\
         --data   data/jsonl/final_graph_dataset_v3.jsonl \\
         --n      5 \\
         --out    outputs/visualize_gt_adj_room/result.png
@@ -406,6 +407,12 @@ def main():
         ptok_np = np.array(enc['input_ids'],      dtype=np.int64)
         pmsk_np = np.array(enc['attention_mask'], dtype=np.float32)
 
+        # GT 坐标（padded 到 N_NODES）
+        raw_coords   = d.get('node_coords', [])
+        gt_coords_np = np.zeros((N_NODES, 2), dtype=np.float32)
+        for k in range(min(n_eff, len(raw_coords))):
+            gt_coords_np[k] = raw_coords[k]
+
         print(f'  [idx={idx}] n={n_eff}  text={text[:60]}...')
         records.append(dict(
             idx=idx, text=text, n_nodes=n_eff,
@@ -413,6 +420,7 @@ def main():
             node_types=node_types,
             room_mb_np=room_mb_np,
             ptok_np=ptok_np, pmsk_np=pmsk_np,
+            gt_coords_np=gt_coords_np,
         ))
 
     # ── 加载模型 ──────────────────────────────────────────────────────────────
@@ -443,11 +451,11 @@ def main():
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
     B = len(records)
-    print(f'\n绘制 {B} × 4 图...')
-    COL_W = [4.2, 2.6, 2.6, 2.8]
+    print(f'\n绘制 {B} × 5 图...')
+    COL_W = [4.2, 2.6, 2.8, 2.6, 2.8]
     ROW_H = 2.7
     fig, axes = plt.subplots(
-        B, 4,
+        B, 5,
         figsize=(sum(COL_W) + 0.2, B * ROW_H + 0.55),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
@@ -459,14 +467,17 @@ def main():
         axs = axes[row_i]
         draw_col1_text   (axs[0], rec['text'])
         draw_col2_adj    (axs[1], rec['adj_np'], rec['n_nodes'], seed=args.seed)
-        draw_col3_coords (axs[2], rec['pred_coords'], rec['adj_np'], rec['mask_np'])
-        draw_col4_render (axs[3], rec['pred_coords'], rec['adj_np'],
+        draw_col4_render (axs[2], rec['gt_coords_np'], rec['adj_np'],
+                          rec['mask_np'], rec['node_types'])
+        draw_col3_coords (axs[3], rec['pred_coords'], rec['adj_np'], rec['mask_np'])
+        draw_col4_render (axs[4], rec['pred_coords'], rec['adj_np'],
                           rec['mask_np'], rec['node_types'])
 
     col_titles = ['Text Description',
                   'GT Adjacency Graph',
+                  'GT Floor Plan',
                   r'$\theta_2$: Predicted Coords',
-                  'Rendered Floor Plan']
+                  'Predicted Floor Plan']
     for j, title in enumerate(col_titles):
         axes[0][j].set_title(title, fontsize=13, fontweight='bold', pad=5)
 

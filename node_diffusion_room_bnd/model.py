@@ -293,7 +293,7 @@ class NodeDiffusionTransformer(nn.Module):
             non_bnd_mask = self._build_non_bnd_mask(
                 is_boundary.to(device=x.device, dtype=dt))
         else:
-            non_bnd_mask = torch.ones(B, 1, N, device=x.device, dtype=dt)  # 全屏蔽（无条件）
+            non_bnd_mask = None  # 无轮廓条件时 bnd_attn 做自由全局注意力
 
         if prompt_tokens is not None:
             bert_attn = prompt_mask if prompt_mask is not None \
