@@ -222,8 +222,8 @@ def main():
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
-    p.add_argument("--img_dir",        default="",
-                   help="节点连接图保存目录（空则不保存图片）")
+    p.add_argument("--img_dir",        default="outputs/tri_infer_imgs",
+                   help="节点连接图保存目录")
     p.add_argument("--img_size",       type=int, default=384)
     args = p.parse_args()
 
