@@ -7,7 +7,7 @@
 
 用法：
   python -m node_diffusion_room_tri.build_graph_npz
-  python -m node_diffusion_room_tri.build_graph_npz --augment 8 --workers 8
+  python -m node_diffusion_room_tri.build_graph_npz --augment 2 --workers 8
   # 小训练集
   python -m node_diffusion_room_tri.build_graph_npz \\
       --max_samples 5000 \\

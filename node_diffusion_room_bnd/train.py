@@ -321,6 +321,7 @@ def main(argv=None, defaults=None):
     scaler  = torch.amp.GradScaler('cuda', enabled=use_amp)
 
     start_step = 0
+    _resumed_iou = -1.0
     if args.resume:
         ckpt   = torch.load(args.resume, map_location=device)
         raw_sd = ckpt["model"]
@@ -341,6 +342,7 @@ def main(argv=None, defaults=None):
         start_step = ckpt["step"] + 1
         if is_master:
             print(f"resumed from step {start_step}")
+        _resumed_iou = ckpt.get("micro_iou", -1.0)
 
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -373,7 +375,7 @@ def main(argv=None, defaults=None):
 
     model.train()
     running_loss = running_rmse = 0.0
-    best_micro_iou = -1.0
+    best_micro_iou = _resumed_iou if args.resume else -1.0
     t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
@@ -387,9 +389,21 @@ def main(argv=None, defaults=None):
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
 
+        if not torch.isfinite(loss):
+            if is_master:
+                print(f"  [warn] step {step}: non-finite loss {loss.item()}, skipping batch")
+            opt.zero_grad()
+            continue
+
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if not torch.isfinite(grad_norm):
+            if is_master:
+                print(f"  [warn] step {step}: non-finite grad_norm {grad_norm:.4f}, skipping update")
+            opt.zero_grad()
+            scaler.update()
+            continue
         scaler.step(opt)
         scaler.update()
 
