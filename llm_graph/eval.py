@@ -7,45 +7,52 @@ llm_graph 主评估脚本（测试集）：
 用法：
   python -m llm_graph.eval \
       --ckpt checkpoints/llm_graph/stage2/best.pt \
-      --n-samples 1000
+      --data data/jsonl/test_graph_dataset_18k5.jsonl \
+      --n_samples 1000
 """
 
 import argparse
 import json
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from .infer_stage1 import (
-    generate, load_model, load_dataset,
-    get_prefix_and_gt, parse_sequence, node_degrees,
+    load_model, parse_sequence, node_degrees,
+    encode_text, BOS_ID,
 )
+from .infer_batch import generate_batch
 
 
 # ── 图编辑距离（边集对称差）────────────────────────────────────────────────────
 
 def graph_edit_distance(adj_gen: list, adj_gt: list) -> int:
+    n_gen = len(adj_gen)
+    n_gt  = len(adj_gt)
     def edges(adj, n):
         return {(i, j) for i in range(n) for j in range(i + 1, n) if adj[i][j]}
-    e_gen = edges(adj_gen, len(adj_gen))
-    e_gt  = edges(adj_gt,  len(adj_gt))
+    e_gen = edges(adj_gen, n_gen)
+    e_gt  = edges(adj_gt,  n_gt)
     return len(e_gen.symmetric_difference(e_gt))
+
+
+def face_count(adj: list) -> int:
+    """内部面数（房间数）= E - N + 1，连通平面图欧拉公式。"""
+    n = len(adj)
+    e = sum(adj[i][j] for i in range(n) for j in range(i + 1, n))
+    return max(0, e - n + 1)
 
 
 # ── KL 散度 ───────────────────────────────────────────────────────────────────
 
 def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> float:
-    """
-    KL(P || Q)，P 为真实分布，Q 为生成分布。
-    Q 中缺失的值用 eps 平滑，防止 log(0)。
-    """
     support = set(p_counts) | set(q_counts)
     p_total = sum(p_counts.values())
     q_total = sum(q_counts.values())
     if p_total == 0 or q_total == 0:
         return float('nan')
-
     kl = 0.0
     for x in support:
         p = p_counts.get(x, 0) / p_total
@@ -57,64 +64,95 @@ def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> fl
 
 # ── 主评估循环 ────────────────────────────────────────────────────────────────
 
-def evaluate(model, all_tokens, all_lengths, all_textlens,
-             indices, device, temperature=1.0):
-    ged_list = []
+def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16):
+    ged_list        = []
+    face_diff_list  = []
     gt_node_counts  = Counter()
     gen_node_counts = Counter()
     gt_degrees      = Counter()
     gen_degrees     = Counter()
     n_invalid_gen   = 0
-    n_match_list    = []   # gen_n == gt_n
-    gen_n_list      = []   # 生成的 N 序列，用于检测坍缩
+    n_match_list    = []
+    gen_n_list      = []
+    samples_out     = []
 
-    for i, idx in enumerate(indices):
-        prefix, gt_seq = get_prefix_and_gt(idx, all_tokens, all_lengths, all_textlens)
-        gt = parse_sequence(gt_seq)
-        if not gt['valid']:
-            continue
+    for b_start in range(0, len(rows), batch_size):
+        batch = rows[b_start: b_start + batch_size]
 
-        gen_seq = generate(model, prefix, device,
-                           max_new_tokens=200, temperature=temperature)
-        gen = parse_sequence(gen_seq)
+        prefixes, gt_list = [], []
+        for rec in batch:
+            prompt = rec.get('prompt', '').replace('\n', ' ').strip()
+            prefix = encode_text(prompt, vocab) + [BOS_ID]
+            prefixes.append(prefix)
 
-        # 真实图分布（始终统计，保证 P 基于完整样本集）
-        gt_node_counts[gt['n_nodes']] += 1
-        for d in node_degrees(gt['adj']):
-            gt_degrees[d] += 1
+            n = int(rec['n_nodes'])
+            adj_raw = rec['adj_matrix']
+            gt_adj  = [list(row[:n]) for row in adj_raw[:n]]
+            gt_list.append({'n_nodes': n, 'adj': gt_adj, 'prompt': prompt})
 
-        if gen['valid']:
-            gen_node_counts[gen['n_nodes']] += 1
-            for d in node_degrees(gen['adj']):
-                gen_degrees[d] += 1
-            ged_list.append(graph_edit_distance(gen['adj'], gt['adj']))
-            n_match_list.append(int(gen['n_nodes'] == gt['n_nodes']))
-            gen_n_list.append(gen['n_nodes'])
-        else:
-            n_invalid_gen += 1
+        gen_seqs = generate_batch(model, prefixes, device,
+                                  max_new_tokens=200, temperature=temperature)
 
-        if (i + 1) % 100 == 0:
-            print(f'  {i + 1}/{len(indices)} done ...')
+        for gt, gen_seq in zip(gt_list, gen_seqs):
+            gen = parse_sequence(gen_seq)
 
-    avg_ged     = float(np.mean(ged_list)) if ged_list else float('nan')
-    node_kl     = kl_divergence(gt_node_counts, gen_node_counts)
-    degree_kl   = kl_divergence(gt_degrees, gen_degrees)
+            gt_node_counts[gt['n_nodes']] += 1
+            for d in node_degrees(gt['adj']):
+                gt_degrees[d] += 1
 
-    # 坍缩诊断
-    n_match_rate = float(np.mean(n_match_list)) if n_match_list else float('nan')
-    gen_n_std    = float(np.std(gen_n_list))    if gen_n_list  else float('nan')
-    gen_n_mean   = float(np.mean(gen_n_list))   if gen_n_list  else float('nan')
+            sample = {
+                'prompt':      gt['prompt'],
+                'gt_n_nodes':  gt['n_nodes'],
+                'gt_adj':      gt['adj'],
+                'gen_valid':   gen['valid'],
+                'gen_n_nodes': gen['n_nodes'] if gen['valid'] else None,
+                'gen_adj':     gen['adj']     if gen['valid'] else None,
+                'ged':         None,
+            }
+
+            if gen['valid']:
+                gen_node_counts[gen['n_nodes']] += 1
+                for d in node_degrees(gen['adj']):
+                    gen_degrees[d] += 1
+                ged = graph_edit_distance(gen['adj'], gt['adj'])
+                ged_list.append(ged)
+                n_match_list.append(int(gen['n_nodes'] == gt['n_nodes']))
+                gen_n_list.append(gen['n_nodes'])
+                sample['ged'] = ged
+                fd = abs(face_count(gen['adj']) - face_count(gt['adj']))
+                face_diff_list.append(fd)
+                sample['face_diff'] = fd
+                sample['gen_faces'] = face_count(gen['adj'])
+                sample['gt_faces']  = face_count(gt['adj'])
+            else:
+                n_invalid_gen += 1
+
+            samples_out.append(sample)
+
+        done = min(b_start + batch_size, len(rows))
+        if done % 100 < batch_size or done == len(rows):
+            print(f'  {done}/{len(rows)} done ...')
+
+    avg_ged       = float(np.mean(ged_list))       if ged_list       else float('nan')
+    avg_face_diff = float(np.mean(face_diff_list)) if face_diff_list else float('nan')
+    node_kl       = kl_divergence(gt_node_counts, gen_node_counts)
+    degree_kl     = kl_divergence(gt_degrees, gen_degrees)
+    n_match_rate  = float(np.mean(n_match_list)) if n_match_list else float('nan')
+    gen_n_std     = float(np.std(gen_n_list))    if gen_n_list  else float('nan')
+    gen_n_mean    = float(np.mean(gen_n_list))   if gen_n_list  else float('nan')
 
     return {
-        'n_samples':     len(indices),
-        'n_valid_gen':   len(ged_list),
-        'n_invalid_gen': n_invalid_gen,
-        'avg_ged':       round(avg_ged, 4),
-        'node_count_kl': round(node_kl,   4),
-        'degree_kl':     round(degree_kl, 4),
-        'n_match_rate':  round(n_match_rate, 4),  # gen_N == gt_N 的比例
-        'gen_n_mean':    round(gen_n_mean, 2),     # 生成 N 的均值
-        'gen_n_std':     round(gen_n_std,  2),     # 生成 N 的标准差（接近 0 = 坍缩）
+        'n_samples':      len(rows),
+        'n_valid_gen':    len(ged_list),
+        'n_invalid_gen':  n_invalid_gen,
+        'avg_ged':        round(avg_ged, 4),
+        'avg_face_diff':  round(avg_face_diff, 4),
+        'node_count_kl':  round(node_kl,   4),
+        'degree_kl':      round(degree_kl, 4),
+        'n_match_rate':   round(n_match_rate, 4),
+        'gen_n_mean':     round(gen_n_mean, 2),
+        'gen_n_std':      round(gen_n_std,  2),
+        'samples':        samples_out,
     }
 
 
@@ -123,12 +161,13 @@ def evaluate(model, all_tokens, all_lengths, all_textlens,
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',        default='checkpoints/llm_graph/stage2/best.pt')
-    p.add_argument('--data',        default='data/processed/graph_tree/text_graph_tree_test_10k.npz')
-    p.add_argument('--n-samples',   type=int,   default=0,
-                   help='评估样本数（0=全部）')
+    p.add_argument('--data',        default='data/jsonl/test_graph_dataset_18k5.jsonl')
+    p.add_argument('--vocab',       default='llm_graph/vocab/wp_tokenizer.json')
+    p.add_argument('--n_samples',   type=int,   default=0, help='评估样本数（0=全部）')
     p.add_argument('--temperature', type=float, default=1.0)
+    p.add_argument('--batch_size',  type=int,   default=16)
     p.add_argument('--seed',        type=int,   default=42)
-    p.add_argument('--out',         default='llm_graph/eval_results.json')
+    p.add_argument('--out',         default='outputs/llm_graph_eval.jsonl')
     return p.parse_args()
 
 
@@ -140,20 +179,29 @@ def main():
     print(f'device: {device}')
 
     model = load_model(args.ckpt, device)
-    all_tokens, all_lengths, all_textlens = load_dataset(args.data)
 
-    n = len(all_tokens)
-    if args.n_samples > 0 and args.n_samples < n:
-        rng     = np.random.default_rng(args.seed)
-        indices = rng.choice(n, size=args.n_samples, replace=False)
-    else:
-        indices = np.arange(n)
+    print(f'读取数据集: {args.data}')
+    rows = []
+    with open(args.data, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
 
-    results = evaluate(model, all_tokens, all_lengths, all_textlens,
-                       indices, device, temperature=args.temperature)
+    if args.n_samples > 0 and args.n_samples < len(rows):
+        rng  = np.random.default_rng(args.seed)
+        idxs = rng.choice(len(rows), size=args.n_samples, replace=False)
+        rows = [rows[i] for i in idxs]
+
+    print(f'评估样本数: {len(rows)}  batch_size: {args.batch_size}')
+
+    results = evaluate(model, rows, args.vocab, device,
+                       temperature=args.temperature,
+                       batch_size=args.batch_size)
 
     print(f'\n{"─" * 40}')
     print(f'  avg_ged        : {results["avg_ged"]}')
+    print(f'  avg_face_diff  : {results["avg_face_diff"]}')
     print(f'  Node-count KL  : {results["node_count_kl"]}')
     print(f'  Degree KL      : {results["degree_kl"]}')
     print(f'  valid gen      : {results["n_valid_gen"]}/{results["n_samples"]}')
@@ -161,9 +209,19 @@ def main():
     print(f'  gen N mean±std : {results["gen_n_mean"]} ± {results["gen_n_std"]}')
     print(f'{"─" * 40}')
 
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+
+    # 每条样本写一行 jsonl
     with open(args.out, 'w', encoding='utf-8') as f:
+        for s in results.pop('samples'):
+            f.write(json.dumps(s, ensure_ascii=False) + '\n')
+    print(f'样本结果保存至 {args.out}')
+
+    # 汇总指标单独保存
+    summary_path = args.out.replace('.jsonl', '_summary.json')
+    with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f'结果保存至 {args.out}')
+    print(f'汇总指标保存至 {summary_path}')
 
 
 if __name__ == '__main__':

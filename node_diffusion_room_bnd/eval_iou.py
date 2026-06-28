@@ -187,6 +187,44 @@ def compute_iou(gt_by_type, pred_by_type):
     return sum(intersections) / sum(unions), sum(ious) / len(ious)
 
 
+# ── DDIM 采样（默认推荐）────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def ddim_sample(model, diffusion, cond_batched, gt_coords_np, device, ddim_steps=200):
+    diffusion._to(device)
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+
+    is_bnd = cond_batched.get('is_boundary', None)
+    B = next(iter(cond_batched.values())).shape[0]
+    x = torch.randn(B, 2, MAX_NODES, device=device)
+
+    gt_xy = bnd_mask = None
+    if is_bnd is not None:
+        gt_np = np.asarray(gt_coords_np, dtype=np.float32)
+        if gt_np.ndim == 2:
+            gt_np = gt_np[None]
+        gt_xy    = torch.from_numpy(gt_np.transpose(0, 2, 1)).to(device)
+        bnd_mask = is_bnd.unsqueeze(1).bool()
+        x = torch.where(bnd_mask, gt_xy, x)
+
+    for i, t in enumerate(ts):
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+        eps  = model(x, t_tensor, **cond_batched)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+
+        if bnd_mask is not None:
+            x = torch.where(bnd_mask, gt_xy, x)
+
+    return x   # [B, 2, MAX_NODES]
+
+
 # ── DDPM 反向采样 ─────────────────────────────────────────────────────────────
 
 @torch.no_grad()
@@ -255,10 +293,10 @@ def main():
     p.add_argument("--ckpt",       default="checkpoints/node_diffusion_room_bnd/run1/latest.pt")
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_10k.jsonl")
     p.add_argument("--n_samples",  type=int, default=200)
-    p.add_argument("--timesteps",  type=int, default=200,
-                   help="推理步数，可小于训练步数(1000)以加速")
-    p.add_argument("--batch_size", type=int, default=16,
-                   help="推理批次大小")
+    p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm"])
+    p.add_argument("--ddim_steps", type=int, default=200, help="DDIM 步数")
+    p.add_argument("--timesteps",  type=int, default=1000, help="DDPM 全步数")
+    p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--bert",       default="models/bert-base-uncased")
     p.add_argument("--device",     default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--model_channels", type=int, default=384)
@@ -339,17 +377,19 @@ def main():
             pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
             prepared.append({
-                "mask_np":    mask_np,
-                "coords_pad": coords_pad,
-                "adj_pad":    adj_pad,
-                "membership": membership,
-                "is_bnd_np":  is_bnd_np,
-                "ptok":       ptok,
-                "pmsk":       pmsk,
-                "n":          n,
-                "adj_list":   adj_list,
-                "node_types": node_types,
-                "gt_polys":   gt_polys,
+                "mask_np":      mask_np,
+                "coords_pad":   coords_pad,
+                "adj_pad":      adj_pad,
+                "membership":   membership,
+                "is_bnd_np":    is_bnd_np,
+                "ptok":         ptok,
+                "pmsk":         pmsk,
+                "n":            n,
+                "adj_list":     adj_list,
+                "node_types":   node_types,
+                "gt_polys":     gt_polys,
+                "prompt":         prompt,
+                "gt_node_coords": gt_centered.tolist(),
             })
 
     print(f"预处理完成：{len(prepared)} 条有效（跳过 {skipped} 条）")
@@ -358,7 +398,8 @@ def main():
     all_pred_np = []
     t0  = time.time()
     BS  = args.batch_size
-    print(f"批次推理 batch={BS}，DDPM {args.timesteps} 步...", flush=True)
+    sampler_info = f"DDIM {args.ddim_steps} 步" if args.sampler == "ddim" else f"DDPM {args.timesteps} 步"
+    print(f"批次推理 batch={BS}，{sampler_info}...", flush=True)
 
     for bi in range(0, len(prepared), BS):
         chunk = prepared[bi: bi + BS]
@@ -374,7 +415,10 @@ def main():
         }
         gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
 
-        pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
+        if args.sampler == "ddim":
+            pred_xy = ddim_sample(model, diffusion, cond_b, gt_coords_b, device, args.ddim_steps)
+        else:
+            pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
         for j in range(B):
             all_pred_np.append(pred_xy[j].cpu().numpy().T)   # [MAX_NODES, 2]
 
@@ -383,13 +427,23 @@ def main():
         print(f"  [{done}/{len(prepared)}]  elapsed={elapsed:.1f}s", flush=True)
 
     # ── 第三步：逐样本计算 IoU（CPU）────────────────────────────────────────
-    micro_list, macro_list = [], []
+    micro_list, macro_list, samples_out = [], [], []
     for s, pred_np in zip(prepared, all_pred_np):
+        n = s["n"]
         pred_cen   = center_at_origin(pred_np, s["mask_np"])
-        pred_polys = coords_to_polys_by_type(pred_cen[:s["n"]], s["adj_list"], s["node_types"], s["n"])
+        pred_polys = coords_to_polys_by_type(pred_cen[:n], s["adj_list"], s["node_types"], n)
         micro, macro = compute_iou(s["gt_polys"], pred_polys)
         micro_list.append(micro)
         macro_list.append(macro)
+        samples_out.append({
+            "prompt":           s["prompt"],
+            "n_nodes":          n,
+            "adj_matrix":       s["adj_list"],
+            "gt_node_coords":   s["gt_node_coords"],
+            "pred_node_coords": pred_cen[:n].tolist(),
+            "micro_iou":        round(micro, 6),
+            "macro_iou":        round(macro, 6),
+        })
 
     print(f"\n=== 评估完成 ({len(micro_list)} 条, skipped={skipped}) ===")
     print(f"Micro-IoU : {np.mean(micro_list):.6f}")
@@ -397,11 +451,10 @@ def main():
 
     if args.out:
         Path(args.out).write_text(json.dumps({
-            "n": len(micro_list),
+            "n":        len(micro_list),
             "micro_iou": float(np.mean(micro_list)),
             "macro_iou": float(np.mean(macro_list)),
-            "micro_list": micro_list,
-            "macro_list": macro_list,
+            "samples":  samples_out,
         }, indent=2))
         print(f"结果保存 → {args.out}")
 
