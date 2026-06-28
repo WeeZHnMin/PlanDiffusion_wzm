@@ -17,21 +17,112 @@ Train NodeDiffusionTransformer（三流：adj_attn + room_attn + global_attn）�
 import argparse
 import json
 import os
+import random
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.optim import AdamW
+from transformers import BertTokenizer
 
 from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
-from .model import NodeDiffusionTransformer
+from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
+
+
+# ── DDIM 推理（验证用）────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
+    diffusion._to(device)
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+    B  = next(iter(cond_batched.values())).shape[0]
+    x  = torch.randn(B, 2, MAX_NODES, device=device)
+    for i, t in enumerate(ts):
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+        eps  = model(x, t_tensor, **cond_batched)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+    return x   # [B, 2, MAX_NODES]
+
+
+# ── 验证函数（MSE）────────────────────────────────────────────────────────────
+
+def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file):
+    raw_model = model.module if hasattr(model, 'module') else model
+    raw_model.eval()
+
+    sample = random.sample(val_records, min(args.val_n, len(val_records)))
+
+    prepared = []
+    for rec in sample:
+        n = int(rec["n_nodes"])
+        if n < 3:
+            continue
+        raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
+        adj_raw    = np.array(rec["adj_matrix"], dtype=np.int32)[:n, :n]
+        np.fill_diagonal(adj_raw, 0)
+
+        mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
+        adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
+        adj_pad[:n, :n] = adj_raw.astype(np.float32)
+        membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
+        membership[:n] = _assign_room_membership_single(adj_raw.astype(bool), n)
+
+        prompt = rec.get("prompt", "").replace("\n", " ").strip()
+        enc  = tokenizer(prompt, add_special_tokens=True,
+                         max_length=MAX_TEXT_LEN, padding="max_length", truncation=True)
+        ptok = np.array(enc["input_ids"],      dtype=np.int64)
+        pmsk = np.array(enc["attention_mask"], dtype=np.float32)
+
+        gt_centered = raw_coords - raw_coords.mean(axis=0)
+        prepared.append({
+            "mask_np": mask_np, "adj_pad": adj_pad, "membership": membership,
+            "ptok": ptok, "pmsk": pmsk, "n": n, "gt_centered": gt_centered,
+        })
+
+    all_mse = []
+    BS = args.val_batch
+    t0 = time.perf_counter()
+    for bi in range(0, len(prepared), BS):
+        chunk = prepared[bi: bi + BS]
+        B = len(chunk)
+        cond_b = {
+            "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+            "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+            "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+            "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+            "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+        }
+        pred_xy = _ddim_sample(raw_model, diffusion, cond_b, device, args.ddim_steps)
+        for j in range(B):
+            s = chunk[j]
+            n = s["n"]
+            pred_np = pred_xy[j].cpu().numpy().T[:n]          # [n, 2]
+            pred_cen = pred_np - pred_np.mean(axis=0)
+            mse = float(np.mean((pred_cen - s["gt_centered"]) ** 2))
+            all_mse.append(mse)
+
+    avg_mse = float(np.mean(all_mse)) if all_mse else float('inf')
+    elapsed = time.perf_counter() - t0
+    print(f"[val step {step:6d}] n={len(all_mse)} | val_mse={avg_mse:.4f} | {elapsed:.1f}s")
+    log_file.write(json.dumps({'step': step, 'val_mse': round(avg_mse, 4),
+                               'elapsed_val': round(elapsed, 1)}) + '\n')
+
+    raw_model.train()
+    return avg_mse
 
 
 # ── 训练入口 ──────────────────────────────────────────────────────────────────
@@ -54,8 +145,15 @@ def build_parser(defaults=None):
     parser.add_argument("--timesteps",    type=int,   default=defaults.get("timesteps",    1000))
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
     parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0))
-    parser.add_argument("--large_node_weight",     type=float, default=defaults.get("large_node_weight",     3.0))
-    parser.add_argument("--large_node_threshold",  type=int,   default=defaults.get("large_node_threshold",  23))
+    parser.add_argument("--large_node_weight",    type=float, default=defaults.get("large_node_weight",    1.0),
+                        help="节点数>=阈值的样本权重倍数，1.0=不启用")
+    parser.add_argument("--large_node_threshold", type=int,   default=defaults.get("large_node_threshold", 23))
+    parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    ""),
+                        help="验证集 jsonl 路径，留空则不做验证")
+    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 5000))
+    parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
+    parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
+    parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
     return parser
 
 
@@ -142,6 +240,18 @@ def main(argv=None, defaults=None):
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
+    # ── 预加载验证集（仅 master）─────────────────────────────────────────────
+    val_records   = []
+    val_tokenizer = None
+    if is_master and args.val_jsonl:
+        with open(args.val_jsonl, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    val_records.append(json.loads(line))
+        print(f"验证集: {len(val_records)} 条，每 {args.val_interval} 步随机采 {args.val_n} 条，DDIM {args.ddim_steps} 步")
+        val_tokenizer = BertTokenizer.from_pretrained(args.bert)
+
     dataset = NodeDataset(args.data_path)
     if is_master:
         steps_per_epoch = len(dataset) / args.batch_size
@@ -160,6 +270,7 @@ def main(argv=None, defaults=None):
 
     model.train()
     running_loss = running_rmse = 0.0
+    best_val_mse = float('inf')
     t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
@@ -205,6 +316,20 @@ def main(argv=None, defaults=None):
                 "scaler": scaler.state_dict(), "step": step,
             }, ckpt_path)
             print(f"  saved -> {ckpt_path}")
+
+        if is_master and val_records and step > 0 and step % args.val_interval == 0:
+            mse = _run_val(model, diffusion, val_tokenizer, val_records,
+                           args, device, step, log_file)
+            if mse < best_val_mse:
+                best_val_mse = mse
+                raw_model = model.module if use_ddp else model
+                best_path = save_dir / "best.pt"
+                torch.save({
+                    "model": raw_model.state_dict(), "opt": opt.state_dict(),
+                    "scaler": scaler.state_dict(), "step": step,
+                    "val_mse": mse,
+                }, best_path)
+                print(f"  best model saved (val_mse={mse:.4f}) -> {best_path}")
 
     if is_master:
         ckpt_path = save_dir / "latest.pt"
