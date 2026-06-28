@@ -36,7 +36,7 @@ if __name__ == "__main__":
     diffusion_dict = {
         "image_size": 64,
         "timesteps": 1000,
-        "sampling_timesteps": 50,
+        "sampling_timesteps": 200,
         "cond_drop_prob": 0.1,
     }
 

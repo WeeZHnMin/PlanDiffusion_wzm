@@ -23,6 +23,7 @@ if __name__ == "__main__":
     with open(os.path.join(args.results, "params.pkl"), "rb") as f:
         params = pickle.load(f)
 
+    params["diffusion_dict"]["sampling_timesteps"] = 200
     model     = Unet(**params["unet_dict"])
     diffusion = GaussianDiffusion(model, **params["diffusion_dict"])
 
