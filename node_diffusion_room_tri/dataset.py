@@ -7,7 +7,7 @@ npz 中必须含有 room_membership 和 adj_matrix 字段（由 build_graph_npz.
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 
 class NodeDataset(Dataset):
@@ -40,6 +40,7 @@ class NodeDataset(Dataset):
                 )
         self.room_membership = d['room_membership'].astype(np.float32)  # [N, 40, MAX_ROOMS]
         self.adj_matrix      = d['adj_matrix'].astype(np.float32)       # [N, 40, 40]
+        self.n_nodes         = d['n_nodes'].astype(np.int32)            # [N]
         print(f"NodeDataset(TriStream adj+room+global): {len(self.coords)} samples from {npz_path}")
 
     def __len__(self):
@@ -64,18 +65,30 @@ class NodeDataset(Dataset):
         return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
 
 
-def load_node_data(npz_path_or_dataset, batch_size, shuffle=True, sampler=None):
+def load_node_data(npz_path_or_dataset, batch_size, shuffle=True, sampler=None,
+                   large_node_weight=1.0, large_node_threshold=23):
     if isinstance(npz_path_or_dataset, NodeDataset):
         dataset = npz_path_or_dataset
     else:
         dataset = NodeDataset(npz_path_or_dataset)
+
+    if sampler is None and large_node_weight > 1.0:
+        weights = np.where(dataset.n_nodes >= large_node_threshold,
+                           large_node_weight, 1.0).astype(np.float32)
+        sampler = WeightedRandomSampler(
+            torch.from_numpy(weights), num_samples=len(dataset), replacement=True)
+        shuffle = False
+        large_frac = (dataset.n_nodes >= large_node_threshold).mean()
+        print(f"WeightedRandomSampler: n>={large_node_threshold} 占 {large_frac:.1%}，"
+              f"权重={large_node_weight:.1f}x")
+
     if sampler is not None:
         shuffle = False
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                         sampler=sampler, num_workers=2, drop_last=True)
     epoch = 0
     while True:
-        if sampler is not None:
+        if hasattr(sampler, 'set_epoch'):
             sampler.set_epoch(epoch)
         yield from loader
         epoch += 1

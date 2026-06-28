@@ -54,6 +54,8 @@ def build_parser(defaults=None):
     parser.add_argument("--timesteps",    type=int,   default=defaults.get("timesteps",    1000))
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
     parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0))
+    parser.add_argument("--large_node_weight",     type=float, default=defaults.get("large_node_weight",     3.0))
+    parser.add_argument("--large_node_threshold",  type=int,   default=defaults.get("large_node_threshold",  23))
     return parser
 
 
@@ -152,7 +154,9 @@ def main(argv=None, defaults=None):
                                      rank=rank, shuffle=True, drop_last=True)
         data = load_node_data(dataset, args.batch_size, sampler=sampler)
     else:
-        data = load_node_data(dataset, args.batch_size, shuffle=True)
+        data = load_node_data(dataset, args.batch_size, shuffle=True,
+                              large_node_weight=args.large_node_weight,
+                              large_node_threshold=args.large_node_threshold)
 
     model.train()
     running_loss = running_rmse = 0.0
