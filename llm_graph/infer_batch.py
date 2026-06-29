@@ -97,12 +97,13 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
         logits[mask] = NEG_INF
         return int(torch.multinomial(torch.softmax(logits, dim=-1), 1).item())
 
-    def _append(b, tok):
+    def _append(b, tok, track=True):
         pos = seq_lens[b]
         ids_buf[b, pos]  = tok
         attn_buf[b, pos] = 1
         seq_lens[b]      = pos + 1
-        seqs[b].append(tok)
+        if track:
+            seqs[b].append(tok)
 
     # ── 前缀一次性 forward → 初始 KV cache ───────────────────────────────────
     out0    = model(
@@ -118,9 +119,9 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
     # ── 生成循环：每步每样本恰好 1 token ─────────────────────────────────────
     logits_all = init_logits
     for step in range(max_new_tokens):
-        # 每步新 token 的 position_id = 各样本实际前缀长 + 已生成步数
         gen_pos = torch.tensor([[pre_lens[b] + step] for b in range(B)],
                                 dtype=torch.long, device=device)   # [B, 1]
+        skip_track: set = set()   # 本步 edges_second fallback 的样本，PAD 不写 seqs
         active = [b for b in range(B) if not finished[b]]
         if not active:
             break
@@ -231,7 +232,8 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
                         run_adjs[b][first][sec] = run_adjs[b][sec][first] = 1
                     next_toks[b] = sec_tok
                 else:
-                    next_toks[b] = PAD_ID   # first 已全连，跳过（罕见）
+                    next_toks[b] = PAD_ID   # first 已全连，只填 KV buffer 不写 seqs
+                    skip_track.add(b)
                 phases[b] = 'edges_first'
 
         # ── 追加 token 并推进 KV cache ────────────────────────────────────────
@@ -239,7 +241,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
             tok = next_toks[b]
             if tok is None:
                 tok = PAD_ID   # finished 样本填 PAD 保持 buffer 对齐
-            _append(b, tok)
+            _append(b, tok, track=(b not in skip_track))
 
         cur_max  = max(seq_lens)
         new_toks = ids_buf[:, cur_max - 1: cur_max]   # [B, 1]，刚追加的 token

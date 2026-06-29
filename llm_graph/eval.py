@@ -24,7 +24,6 @@ from .infer_stage1 import (
     encode_text, BOS_ID, generate,
 )
 from .infer_batch import generate_batch
-from .infer_batch_orig import generate_batch as generate_batch_orig
 
 
 # ── 图编辑距离（边集对称差）────────────────────────────────────────────────────
@@ -65,7 +64,7 @@ def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> fl
 
 # ── 主评估循环 ────────────────────────────────────────────────────────────────
 
-def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False, use_c2=True, use_orig=False):
+def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False, use_c2=True):
     ged_list        = []
     face_diff_list  = []
     gt_node_counts  = Counter()
@@ -99,10 +98,6 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
             gen_seqs = [generate(model, prefixes[0], device,
                                  max_new_tokens=200, temperature=temperature)]
             print(f'  {b_start + 1}/{len(rows)} done ...')
-        elif use_orig:
-            gen_seqs = generate_batch_orig(model, prefixes, device,
-                                           max_new_tokens=200, temperature=temperature,
-                                           use_c2=use_c2)
         else:
             gen_seqs = generate_batch(model, prefixes, device,
                                       max_new_tokens=200, temperature=temperature,
@@ -197,7 +192,6 @@ def parse_args():
     p.add_argument('--out-theta2',  default='', help='θ₂输入用JSONL路径（空=不输出）')
     p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
     p.add_argument('--no-c2',       action='store_true', help='关闭 C2：让模型自己决定 SEP 时机，用实际 parent 数推算 N')
-    p.add_argument('--orig',        action='store_true', help='使用原始批量推理（无 KV cache），用于对比')
     return p.parse_args()
 
 
@@ -229,8 +223,7 @@ def main():
                        temperature=args.temperature,
                        batch_size=args.batch_size,
                        one_by_one=args.one_by_one,
-                       use_c2=not args.no_c2,
-                       use_orig=args.orig)
+                       use_c2=not args.no_c2)
 
     print(f'\n{"─" * 40}')
     print(f'  avg_ged        : {results["avg_ged"]}')

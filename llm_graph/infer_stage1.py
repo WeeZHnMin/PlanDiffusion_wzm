@@ -139,6 +139,20 @@ def parse_sequence(tokens: list, count_actual_n: bool = False) -> dict:
             if 0 <= u < N and 0 <= v < N and u != v:
                 adj[u][v] = adj[v][u] = 1
         result['adj'] = adj
+
+        # 所有节点度数 >= 2
+        degrees = [sum(row) for row in adj]
+        if any(d < 2 for d in degrees):
+            return result
+
+        # 无三角环
+        for u in range(N):
+            for v in range(u + 1, N):
+                if adj[u][v]:
+                    for w in range(v + 1, N):
+                        if adj[u][w] and adj[v][w]:
+                            return result  # 存在三角形
+
         result['valid'] = True
     except Exception:
         pass
