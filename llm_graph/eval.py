@@ -72,7 +72,10 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
     gt_degrees      = Counter()
     gen_degrees     = Counter()
     n_invalid_gen   = 0
-    n_match_list    = []
+    n_match_list    = []   # exact
+    n_match1_list   = []   # ±1
+    n_match2_list   = []   # ±2
+    n_match3_list   = []   # ±3
     gen_n_list      = []
     samples_out     = []
 
@@ -122,7 +125,11 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
                     gen_degrees[d] += 1
                 ged = graph_edit_distance(gen['adj'], gt['adj'])
                 ged_list.append(ged)
-                n_match_list.append(int(gen['n_nodes'] == gt['n_nodes']))
+                diff_n = abs(gen['n_nodes'] - gt['n_nodes'])
+                n_match_list.append(int(diff_n == 0))
+                n_match1_list.append(int(diff_n <= 1))
+                n_match2_list.append(int(diff_n <= 2))
+                n_match3_list.append(int(diff_n <= 3))
                 gen_n_list.append(gen['n_nodes'])
                 sample['ged'] = ged
                 fd = abs(face_count(gen['adj']) - face_count(gt['adj']))
@@ -144,9 +151,12 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
     avg_face_diff = float(np.mean(face_diff_list)) if face_diff_list else float('nan')
     node_kl       = kl_divergence(gt_node_counts, gen_node_counts)
     degree_kl     = kl_divergence(gt_degrees, gen_degrees)
-    n_match_rate  = float(np.mean(n_match_list)) if n_match_list else float('nan')
-    gen_n_std     = float(np.std(gen_n_list))    if gen_n_list  else float('nan')
-    gen_n_mean    = float(np.mean(gen_n_list))   if gen_n_list  else float('nan')
+    n_match_rate  = float(np.mean(n_match_list))  if n_match_list  else float('nan')
+    n_match1_rate = float(np.mean(n_match1_list)) if n_match1_list else float('nan')
+    n_match2_rate = float(np.mean(n_match2_list)) if n_match2_list else float('nan')
+    n_match3_rate = float(np.mean(n_match3_list)) if n_match3_list else float('nan')
+    gen_n_std     = float(np.std(gen_n_list))     if gen_n_list    else float('nan')
+    gen_n_mean    = float(np.mean(gen_n_list))    if gen_n_list    else float('nan')
 
     return {
         'n_samples':      len(rows),
@@ -156,7 +166,10 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
         'avg_face_diff':  round(avg_face_diff, 4),
         'node_count_kl':  round(node_kl,   4),
         'degree_kl':      round(degree_kl, 4),
-        'n_match_rate':   round(n_match_rate, 4),
+        'n_match_rate':   round(n_match_rate,  4),
+        'n_match1_rate':  round(n_match1_rate, 4),
+        'n_match2_rate':  round(n_match2_rate, 4),
+        'n_match3_rate':  round(n_match3_rate, 4),
         'gen_n_mean':     round(gen_n_mean, 2),
         'gen_n_std':      round(gen_n_std,  2),
         'samples':        samples_out,
@@ -174,7 +187,8 @@ def parse_args():
     p.add_argument('--temperature', type=float, default=1.0)
     p.add_argument('--batch_size',  type=int,   default=16)
     p.add_argument('--seed',        type=int,   default=42)
-    p.add_argument('--out',         default='')
+    p.add_argument('--out',         default='outputs/llm_graph_eval.jsonl')
+    p.add_argument('--out-theta2',  default='', help='θ₂输入用JSONL路径（空=不输出）')
     p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
     return p.parse_args()
 
@@ -214,16 +228,50 @@ def main():
     print(f'  Node-count KL  : {results["node_count_kl"]}')
     print(f'  Degree KL      : {results["degree_kl"]}')
     print(f'  valid gen      : {results["n_valid_gen"]}/{results["n_samples"]}')
-    print(f'  N match rate   : {results["n_match_rate"]:.1%}  (gen_N == gt_N)')
+    print(f'  N match (exact): {results["n_match_rate"]:.1%}')
+    print(f'  N match (±1)   : {results["n_match1_rate"]:.1%}')
+    print(f'  N match (±2)   : {results["n_match2_rate"]:.1%}')
+    print(f'  N match (±3)   : {results["n_match3_rate"]:.1%}')
     print(f'  gen N mean±std : {results["gen_n_mean"]} ± {results["gen_n_std"]}')
     print(f'{"─" * 40}')
 
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    samples = results.pop('samples')
 
-    # 每条样本写一行 jsonl
-    with open(args.out, 'w', encoding='utf-8') as f:
-        for s in results.pop('samples'):
-            f.write(json.dumps(s, ensure_ascii=False) + '\n')
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.out, 'w', encoding='utf-8') as f:
+            for s in samples:
+                f.write(json.dumps(s, ensure_ascii=False) + '\n')
+        print(f'样本结果保存至 {args.out}')
+
+    # θ₂ 输入 JSONL：每条包含 prompt / gen_adj / gen_n_nodes / gt_adj / gt_n_nodes
+    if args.out_theta2:
+        MAX_N = 40
+        Path(args.out_theta2).parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with open(args.out_theta2, 'w', encoding='utf-8') as f:
+            for s in samples:
+                if not s['gen_valid']:
+                    continue
+                n = s['gen_n_nodes']
+                adj = s['gen_adj']                          # list[list[int]], n×n
+                # 补齐到 MAX_N×MAX_N
+                adj_full = [[0] * MAX_N for _ in range(MAX_N)]
+                for i in range(n):
+                    for j in range(n):
+                        adj_full[i][j] = adj[i][j]
+                node_mask = [1] * n + [0] * (MAX_N - n)
+                rec = {
+                    'prompt':     s['prompt'],
+                    'n_nodes':    n,
+                    'adj_matrix': adj_full,
+                    'node_mask':  node_mask,
+                    'gt_n_nodes': s['gt_n_nodes'],
+                    'gt_adj':     s['gt_adj'],
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                written += 1
+        print(f'θ₂ 输入 JSONL 保存至 {args.out_theta2}  ({written} 条有效)')
     print(f'样本结果保存至 {args.out}')
 
     # 汇总指标单独保存
