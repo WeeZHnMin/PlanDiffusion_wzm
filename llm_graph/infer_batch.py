@@ -198,17 +198,12 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
             # edges_first：选第一个 edge 节点或 EOS
             elif ph == 'edges_first':
                 mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
-                degrees = node_degrees(run_adjs[b])
-                c4_ok   = all(d >= 2 for d in degrees)
-                if use_c4 and not c4_ok:
-                    for j in range(Ns[b]):
-                        if degrees[j] < 2:
-                            mask[NODE_START + j] = False
-                else:
-                    for j in range(Ns[b]):
-                        mask[NODE_START + j] = False
-                    if c4_ok or not use_c4:
-                        mask[EOS_ID] = False
+                for j in range(Ns[b]):
+                    mask[NODE_START + j] = False
+                if use_c4 and all(d >= 2 for d in node_degrees(run_adjs[b])):
+                    mask[EOS_ID] = False
+                elif not use_c4:
+                    mask[EOS_ID] = False
                 nid = _sample(logits, mask)
                 next_toks[b] = nid
                 if nid == EOS_ID:
