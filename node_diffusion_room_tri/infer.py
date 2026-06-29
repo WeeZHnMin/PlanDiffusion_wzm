@@ -263,13 +263,20 @@ def main():
                 skipped += 1
                 continue
 
-            raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
-            adj_raw    = np.array(rec["adj_matrix"], dtype=np.int32)[:n, :n]
+            adj_raw = np.array(rec["adj_matrix"], dtype=np.int32)[:n, :n]
             np.fill_diagonal(adj_raw, 0)
-            gt_node_types = [
-                (t if isinstance(t, list) else [t])
-                for t in rec["node_types"][:n]
-            ]
+            # GT 字段可选（θ₁ 直接输出的 JSONL 没有真实坐标和类型）
+            if "node_coords" in rec:
+                raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
+            else:
+                raw_coords = np.zeros((n, 2), dtype=np.float32)
+            if "node_types" in rec:
+                gt_node_types = [
+                    (t if isinstance(t, list) else [t])
+                    for t in rec["node_types"][:n]
+                ]
+            else:
+                gt_node_types = [["other"]] * n
 
             mask_np = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
             adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
