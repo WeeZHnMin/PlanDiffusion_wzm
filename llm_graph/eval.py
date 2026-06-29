@@ -64,7 +64,7 @@ def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> fl
 
 # ── 主评估循环 ────────────────────────────────────────────────────────────────
 
-def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False):
+def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False, use_c2=True):
     ged_list        = []
     face_diff_list  = []
     gt_node_counts  = Counter()
@@ -100,10 +100,11 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
             print(f'  {b_start + 1}/{len(rows)} done ...')
         else:
             gen_seqs = generate_batch(model, prefixes, device,
-                                      max_new_tokens=200, temperature=temperature)
+                                      max_new_tokens=200, temperature=temperature,
+                                      use_c2=use_c2)
 
         for gt, gen_seq in zip(gt_list, gen_seqs):
-            gen = parse_sequence(gen_seq)
+            gen = parse_sequence(gen_seq, count_actual_n=not use_c2)
 
             gt_node_counts[gt['n_nodes']] += 1
             for d in node_degrees(gt['adj']):
@@ -190,6 +191,7 @@ def parse_args():
     p.add_argument('--out',         default='outputs/llm_graph_eval.jsonl')
     p.add_argument('--out-theta2',  default='', help='θ₂输入用JSONL路径（空=不输出）')
     p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
+    p.add_argument('--no-c2',       action='store_true', help='关闭 C2：让模型自己决定 SEP 时机，用实际 parent 数推算 N')
     return p.parse_args()
 
 
@@ -220,7 +222,8 @@ def main():
     results = evaluate(model, rows, args.vocab, device,
                        temperature=args.temperature,
                        batch_size=args.batch_size,
-                       one_by_one=args.one_by_one)
+                       one_by_one=args.one_by_one,
+                       use_c2=not args.no_c2)
 
     print(f'\n{"─" * 40}')
     print(f'  avg_ged        : {results["avg_ged"]}')

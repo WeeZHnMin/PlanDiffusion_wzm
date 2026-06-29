@@ -56,108 +56,144 @@ def parse_args():
 def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1.0,
                    use_c1=True, use_c2=True, use_c3=True, use_c4=True, use_c5=True):
     """
-    对一批前缀并行自回归生成，带完整约束。
-    prefix_list : list of list[int]，各前缀长度可不同（动态 padding）
+    对一批前缀并行自回归生成，带完整约束，使用 KV cache 加速。
+    每步每个样本恰好生成一个 token，KV cache 始终对齐。
+    phases: N_tok → parents → force_sep → edges_first → edges_second → (循环)
+    prefix_list : list of list[int]，各前缀长度可不同（右 padding）
     返回        : list of list[int]，完整生成序列（含前缀）
     """
     B = len(prefix_list)
     NEG_INF = float('-inf')
-    # 从模型实际 vocab size 建 mask，避免与常量不一致
-    _raw = model.module if hasattr(model, 'module') else model
+    _raw   = model.module if hasattr(model, 'module') else model
     _VOCAB = _raw.config.vocab_size
+    MAX_LEN = max(len(p) for p in prefix_list) + max_new_tokens + 4
 
-    # 每条序列的完整 token 列表（生成过程中动态追加）
-    seqs         = [list(p) for p in prefix_list]
-    finished     = [False] * B
-    phases       = ['N_tok'] * B
-    Ns           = [0]    * B
-    parent_cnts  = [0]    * B
-    run_adjs     = [None] * B
+    # ── 右 padding buffer ─────────────────────────────────────────────────────
+    ids_buf  = torch.full((B, MAX_LEN), PAD_ID, dtype=torch.long, device=device)
+    attn_buf = torch.zeros((B, MAX_LEN),         dtype=torch.long, device=device)
+    seq_lens = []
+    for b, p in enumerate(prefix_list):
+        L = len(p)
+        ids_buf[b, :L]  = torch.tensor(p, dtype=torch.long, device=device)
+        attn_buf[b, :L] = 1
+        seq_lens.append(L)
 
-    def _build_batch(indices):
-        """将 indices 中的序列 left-pad 到同一长度，返回 (input_ids, attn_mask)。"""
-        max_len = max(len(seqs[b]) for b in indices)
-        ids, masks = [], []
-        for b in indices:
-            pad = max_len - len(seqs[b])
-            ids.append([PAD_ID] * pad + seqs[b])
-            masks.append([0] * pad + [1] * len(seqs[b]))
-        return (torch.tensor(ids,   dtype=torch.long, device=device),
-                torch.tensor(masks, dtype=torch.long, device=device))
+    seqs          = [list(p) for p in prefix_list]
+    finished      = [False] * B
+    # phases: N_tok | parents | force_sep | edges_first | edges_second
+    phases        = ['N_tok'] * B
+    Ns            = [0]    * B
+    parent_cnts   = [0]    * B
+    run_adjs      = [None] * B
+    pending_first = [None] * B   # edges_second 阶段：上一步选的第一个 edge 节点
 
     def _sample(logits, mask):
         logits = logits.clone()
         logits[mask] = NEG_INF
         return int(torch.multinomial(torch.softmax(logits, dim=-1), 1).item())
 
-    for _ in range(max_new_tokens):
+    def _append(b, tok):
+        pos = seq_lens[b]
+        ids_buf[b, pos]  = tok
+        attn_buf[b, pos] = 1
+        seq_lens[b]      = pos + 1
+        seqs[b].append(tok)
+
+    # ── 前缀一次性 forward → 初始 KV cache ───────────────────────────────────
+    max_pre = max(seq_lens)
+    out0    = model(
+        input_ids      = ids_buf[:, :max_pre],
+        attention_mask = attn_buf[:, :max_pre],
+        use_cache      = True,
+    )
+    past_kv = out0.past_key_values
+    # 各样本前缀长度不同，取各自最后一个真实 token 的 logits
+    init_logits = torch.stack([
+        out0.logits[b, seq_lens[b] - 1, :].float() for b in range(B)
+    ])   # [B, vocab]
+
+    # ── 生成循环：每步每样本恰好 1 token ─────────────────────────────────────
+    logits_all = init_logits
+    for step in range(max_new_tokens):
         active = [b for b in range(B) if not finished[b]]
         if not active:
             break
 
-        # ── 主批次 forward ─────────────────────────────────────────────────────
-        ids, attn = _build_batch(active)
-        logits_all = model(input_ids=ids, attention_mask=attn).logits[:, -1, :].float()
+        # ── 按 phase 决定每个样本的下一个 token ──────────────────────────────
+        next_toks = [None] * B   # 将要 append 的 token；finished 样本填 PAD
 
-        edge_second = []   # (active_pos, b, first_node_id) 需要第二次 forward 的边
-
-        for ai, b in enumerate(active):
-            logits = logits_all[ai]
+        for b in active:
+            logits = logits_all[b]
             if temperature != 1.0:
                 logits = logits / temperature
-
             ph = phases[b]
 
-            # ── N_tok 阶段 ───────────────────────────────────────────────────
+            # N_tok
             if ph == 'N_tok':
                 mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 mask[N_START: N_START + MAX_NODES] = False
                 if use_c5:
                     mask[N_START: N_START + 8] = True
                 nid = _sample(logits, mask)
-                Ns[b]       = nid - N_START + 1
-                run_adjs[b] = [[0] * Ns[b] for _ in range(Ns[b])]
-                phases[b]   = 'parents' if Ns[b] > 1 else 'edges'
+                Ns[b]          = nid - N_START + 1
+                run_adjs[b]    = [[0] * Ns[b] for _ in range(Ns[b])]
+                phases[b]      = 'parents' if Ns[b] > 1 else 'edges_first'
                 parent_cnts[b] = 0
-                seqs[b].append(nid)
+                next_toks[b]   = nid
 
-            # ── parents 阶段 ─────────────────────────────────────────────────
+            # parents
             elif ph == 'parents':
                 mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 if use_c1:
-                    for j in range(min(parent_cnts[b] + 1, Ns[b])):
+                    # C1：parent of node k 必须来自 [0, k-1]
+                    # use_c2=False 时不受 Ns[b] 上限约束，可超过预测 N
+                    max_p = parent_cnts[b] + 1 if not use_c2 else min(parent_cnts[b] + 1, Ns[b])
+                    for j in range(max_p):
                         mask[NODE_START + j] = False
                 else:
-                    for j in range(Ns[b]):
+                    cap = MAX_NODES if not use_c2 else Ns[b]
+                    for j in range(cap):
                         mask[NODE_START + j] = False
                 if not use_c2:
-                    mask[SEP_ID] = False
+                    mask[SEP_ID] = False   # 允许模型自己输出 SEP
                 nid = _sample(logits, mask)
-
-                if NODE_START <= nid < NODE_START + Ns[b]:
+                if NODE_START <= nid < NODE_START + MAX_NODES:
                     p = nid - NODE_START
                     k = parent_cnts[b] + 1
-                    if 0 <= k < Ns[b]:
+                    # 动态扩展邻接矩阵（use_c2=False 时节点数可超过 Ns[b]）
+                    if k >= len(run_adjs[b]):
+                        new_n = k + 1
+                        new_adj = [[0] * new_n for _ in range(new_n)]
+                        for r in range(len(run_adjs[b])):
+                            for c in range(len(run_adjs[b])):
+                                new_adj[r][c] = run_adjs[b][r][c]
+                        run_adjs[b] = new_adj
+                        Ns[b] = new_n
+                    if 0 <= p < k:
                         run_adjs[b][k][p] = run_adjs[b][p][k] = 1
                     parent_cnts[b] += 1
-                seqs[b].append(nid)
-
+                # 判断是否需要强制 SEP
                 if use_c2 and parent_cnts[b] == Ns[b] - 1:
-                    seqs[b].append(SEP_ID)
-                    phases[b] = 'edges'
-                elif parent_cnts[b] >= Ns[b]:
-                    seqs[b].append(SEP_ID)
-                    phases[b] = 'edges'
-                elif nid == SEP_ID:
-                    phases[b] = 'edges'
+                    phases[b] = 'force_sep'
+                elif (not use_c2 and nid == SEP_ID) or \
+                     (use_c2 and (parent_cnts[b] >= Ns[b] or nid == SEP_ID)):
+                    phases[b] = 'edges_first'
+                    if nid == SEP_ID:
+                        next_toks[b] = nid
+                        continue
+                next_toks[b] = nid
 
-            # ── edges 阶段（第一个 token）───────────────────────────────────
-            elif ph == 'edges':
+            # force_sep：强制输出 SEP，不采样
+            elif ph == 'force_sep':
+                phases[b]    = 'edges_first'
+                next_toks[b] = SEP_ID
+
+            # edges_first：选第一个 edge 节点或 EOS
+            elif ph == 'edges_first':
                 mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 degrees = node_degrees(run_adjs[b])
-                c4_ok = all(d >= 2 for d in degrees)
+                c4_ok   = all(d >= 2 for d in degrees)
                 if use_c4 and not c4_ok:
-                    # C4 未满足：强制只从度不足的节点里选，加速修复
                     for j in range(Ns[b]):
                         if degrees[j] < 2:
                             mask[NODE_START + j] = False
@@ -167,46 +203,52 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
                     if c4_ok or not use_c4:
                         mask[EOS_ID] = False
                 nid = _sample(logits, mask)
-
+                next_toks[b] = nid
                 if nid == EOS_ID:
-                    seqs[b].append(nid)
                     finished[b] = True
                 else:
-                    seqs[b].append(nid)           # 先追加第一个节点 token
-                    edge_second.append((b, nid))  # 标记需要第二次 forward
+                    pending_first[b] = nid - NODE_START
+                    phases[b]        = 'edges_second'
 
-        # ── edges 阶段：第二个 token 子批次 forward ────────────────────────
-        if edge_second:
-            sub_idx = [b for b, _ in edge_second]
-            ids2, attn2 = _build_batch(sub_idx)
-            logits2_all = model(input_ids=ids2, attention_mask=attn2).logits[:, -1, :].float()
-
-            for si, (b, first_tok) in enumerate(edge_second):
-                first  = first_tok - NODE_START
-                logits2 = logits2_all[si]
-                if temperature != 1.0:
-                    logits2 = logits2 / temperature
-
-                # C3：禁三角环
+            # edges_second：用 C3 约束选第二个节点
+            elif ph == 'edges_second':
+                first = pending_first[b]
                 mask2 = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 for j in range(Ns[b]):
                     skip_tri = use_c3 and has_triangle(run_adjs[b], first, j)
                     if j != first and not run_adjs[b][first][j] and not skip_tri:
                         mask2[NODE_START + j] = False
-
-                # fallback：全部会成环时接受三角环
-                if mask2.all():
+                if mask2.all():   # fallback：全是三角时放开 C3
                     for j in range(Ns[b]):
                         if j != first and not run_adjs[b][first][j]:
                             mask2[NODE_START + j] = False
-
                 if not mask2.all():
-                    sec_tok = _sample(logits2, mask2)
+                    sec_tok = _sample(logits, mask2)
                     sec = sec_tok - NODE_START
                     if 0 <= sec < Ns[b]:
                         run_adjs[b][first][sec] = run_adjs[b][sec][first] = 1
-                    seqs[b].append(sec_tok)
-                # else: first 已与所有节点相连，跳过
+                    next_toks[b] = sec_tok
+                else:
+                    next_toks[b] = PAD_ID   # first 已全连，跳过（罕见）
+                phases[b] = 'edges_first'
+
+        # ── 追加 token 并推进 KV cache ────────────────────────────────────────
+        for b in range(B):
+            tok = next_toks[b]
+            if tok is None:
+                tok = PAD_ID   # finished 样本填 PAD 保持 buffer 对齐
+            _append(b, tok)
+
+        cur_max  = max(seq_lens)
+        new_toks = ids_buf[:, cur_max - 1: cur_max]   # [B, 1]，刚追加的 token
+        out = model(
+            input_ids       = new_toks,
+            attention_mask  = attn_buf[:, :cur_max],
+            past_key_values = past_kv,
+            use_cache       = True,
+        )
+        past_kv    = out.past_key_values
+        logits_all = out.logits[:, -1, :].float()   # [B, vocab]
 
     return seqs
 

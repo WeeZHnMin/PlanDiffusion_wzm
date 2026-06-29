@@ -75,9 +75,11 @@ MODEL_CFG = dict(
 
 # ── 序列解析 ──────────────────────────────────────────────────────────────────
 
-def parse_sequence(tokens: list) -> dict:
-    """解析完整序列（含文本前缀），返回 n_nodes/parents/extra_edges/adj/valid。"""
-    result = dict(n_nodes=0, parents=[], extra_edges=[], adj=None, valid=False)
+def parse_sequence(tokens: list, count_actual_n: bool = False) -> dict:
+    """解析完整序列（含文本前缀），返回 n_nodes/parents/extra_edges/adj/valid。
+    count_actual_n=True 时：忽略 N_tok，用 SEP 前实际 parent 数推算 N（适合 use_c2=False）。
+    """
+    result = dict(n_nodes=0, n_tok=0, parents=[], extra_edges=[], adj=None, valid=False)
     try:
         i = 0
         while i < len(tokens) and tokens[i] != BOS_ID:
@@ -88,16 +90,28 @@ def parse_sequence(tokens: list) -> dict:
 
         if i >= len(tokens) or not (N_START <= tokens[i] < N_START + MAX_NODES):
             return result
-        N = tokens[i] - N_START + 1
-        result['n_nodes'] = N
+        N_tok = tokens[i] - N_START + 1
+        result['n_tok'] = N_tok
         i += 1
 
         parents = []
-        for _ in range(N - 1):
-            if i >= len(tokens) or not (NODE_START <= tokens[i] < NODE_START + N):
-                return result
-            parents.append(tokens[i] - NODE_START)
-            i += 1
+        if count_actual_n:
+            # 读 parent tokens 直到 SEP，不受 N_tok 约束
+            while i < len(tokens) and tokens[i] != SEP_ID:
+                if not (NODE_START <= tokens[i] < NODE_START + MAX_NODES):
+                    return result
+                parents.append(tokens[i] - NODE_START)
+                i += 1
+            N = len(parents) + 1   # 实际节点数
+        else:
+            N = N_tok
+            for _ in range(N - 1):
+                if i >= len(tokens) or not (NODE_START <= tokens[i] < NODE_START + N):
+                    return result
+                parents.append(tokens[i] - NODE_START)
+                i += 1
+
+        result['n_nodes'] = N
         result['parents'] = parents
 
         if i >= len(tokens) or tokens[i] != SEP_ID:
