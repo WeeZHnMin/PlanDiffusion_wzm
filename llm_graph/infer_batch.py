@@ -66,18 +66,21 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
     NEG_INF = float('-inf')
     _raw   = model.module if hasattr(model, 'module') else model
     _VOCAB = _raw.config.vocab_size
-    max_pre = max(len(p) for p in prefix_list)
-    MAX_LEN = max_pre + max_new_tokens + 4
+    pre_lens = [len(p) for p in prefix_list]
+    max_pre  = max(pre_lens)
+    MAX_LEN  = max_pre + max_new_tokens + 4
 
     # ── 左 padding buffer：所有前缀右对齐，生成 token 统一从 max_pre 开始追加 ──
     ids_buf  = torch.full((B, MAX_LEN), PAD_ID, dtype=torch.long, device=device)
     attn_buf = torch.zeros((B, MAX_LEN),         dtype=torch.long, device=device)
+    pos_buf  = torch.zeros((B, MAX_LEN),         dtype=torch.long, device=device)
     seq_lens = []
     for b, p in enumerate(prefix_list):
         L   = len(p)
         off = max_pre - L          # 左侧 padding 偏移
         ids_buf[b,  off: off + L] = torch.tensor(p, dtype=torch.long, device=device)
         attn_buf[b, off: off + L] = 1
+        pos_buf[b,  off: off + L] = torch.arange(L, dtype=torch.long, device=device)
         seq_lens.append(max_pre)   # 所有样本的"当前长度"统一为 max_pre
 
     seqs          = [list(p) for p in prefix_list]
@@ -102,10 +105,10 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
         seqs[b].append(tok)
 
     # ── 前缀一次性 forward → 初始 KV cache ───────────────────────────────────
-    max_pre = max(seq_lens)
     out0    = model(
         input_ids      = ids_buf[:, :max_pre],
         attention_mask = attn_buf[:, :max_pre],
+        position_ids   = pos_buf[:, :max_pre],
         use_cache      = True,
     )
     past_kv = out0.past_key_values
@@ -115,6 +118,9 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
     # ── 生成循环：每步每样本恰好 1 token ─────────────────────────────────────
     logits_all = init_logits
     for step in range(max_new_tokens):
+        # 每步新 token 的 position_id = 各样本实际前缀长 + 已生成步数
+        gen_pos = torch.tensor([[pre_lens[b] + step] for b in range(B)],
+                                dtype=torch.long, device=device)   # [B, 1]
         active = [b for b in range(B) if not finished[b]]
         if not active:
             break
@@ -245,6 +251,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
         out = model(
             input_ids       = new_toks,
             attention_mask  = attn_buf[:, :cur_max],
+            position_ids    = gen_pos,
             past_key_values = past_kv,
             use_cache       = True,
         )

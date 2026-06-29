@@ -33,13 +33,16 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
 
     def _build_batch(indices):
         max_len = max(len(seqs[b]) for b in indices)
-        ids, masks = [], []
+        ids, masks, pos_ids = [], [], []
         for b in indices:
-            pad = max_len - len(seqs[b])
+            L   = len(seqs[b])
+            pad = max_len - L
             ids.append([PAD_ID] * pad + seqs[b])
-            masks.append([0] * pad + [1] * len(seqs[b]))
-        return (torch.tensor(ids,   dtype=torch.long, device=device),
-                torch.tensor(masks, dtype=torch.long, device=device))
+            masks.append([0] * pad + [1] * L)
+            pos_ids.append([0] * pad + list(range(L)))
+        return (torch.tensor(ids,     dtype=torch.long, device=device),
+                torch.tensor(masks,   dtype=torch.long, device=device),
+                torch.tensor(pos_ids, dtype=torch.long, device=device))
 
     def _sample(logits, mask):
         logits = logits.clone()
@@ -51,8 +54,8 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
         if not active:
             break
 
-        ids, attn = _build_batch(active)
-        logits_all = model(input_ids=ids, attention_mask=attn).logits[:, -1, :].float()
+        ids, attn, pos = _build_batch(active)
+        logits_all = model(input_ids=ids, attention_mask=attn, position_ids=pos).logits[:, -1, :].float()
 
         edge_second = []
 
@@ -128,8 +131,8 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
 
         if edge_second:
             sub_idx = [b for b, _ in edge_second]
-            ids2, attn2 = _build_batch(sub_idx)
-            logits2_all = model(input_ids=ids2, attention_mask=attn2).logits[:, -1, :].float()
+            ids2, attn2, pos2 = _build_batch(sub_idx)
+            logits2_all = model(input_ids=ids2, attention_mask=attn2, position_ids=pos2).logits[:, -1, :].float()
 
             for si, (b, first_tok) in enumerate(edge_second):
                 first   = first_tok - NODE_START
