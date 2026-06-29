@@ -231,7 +231,6 @@ def main():
             if (line_no + 1) % 10000 == 0:
                 elapsed = time.perf_counter() - t0
                 total = len(tokens_list)
-                print(f"  {line_no+1} 张图 → {total} 条序列  ({elapsed:.1f}s)")
 
     print(f"\n共 {n_graphs} 张图（跳过 {n_skipped} 条 prompt >{MAX_TEXT_LEN}），增强后 {len(tokens_list)} 条，截断 {truncated} 条")
     print("打包保存...")
