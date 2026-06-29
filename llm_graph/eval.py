@@ -21,7 +21,7 @@ import torch
 
 from .infer_stage1 import (
     load_model, parse_sequence, node_degrees,
-    encode_text, BOS_ID,
+    encode_text, BOS_ID, generate,
 )
 from .infer_batch import generate_batch
 
@@ -64,7 +64,7 @@ def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> fl
 
 # ── 主评估循环 ────────────────────────────────────────────────────────────────
 
-def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16):
+def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False):
     ged_list        = []
     face_diff_list  = []
     gt_node_counts  = Counter()
@@ -90,8 +90,13 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16):
             gt_adj  = [list(row[:n]) for row in adj_raw[:n]]
             gt_list.append({'n_nodes': n, 'adj': gt_adj, 'prompt': prompt})
 
-        gen_seqs = generate_batch(model, prefixes, device,
-                                  max_new_tokens=200, temperature=temperature)
+        if one_by_one:
+            gen_seqs = [generate(model, p, device,
+                                 max_new_tokens=200, temperature=temperature)
+                        for p in prefixes]
+        else:
+            gen_seqs = generate_batch(model, prefixes, device,
+                                      max_new_tokens=200, temperature=temperature)
 
         for gt, gen_seq in zip(gt_list, gen_seqs):
             gen = parse_sequence(gen_seq)
@@ -168,6 +173,7 @@ def parse_args():
     p.add_argument('--batch_size',  type=int,   default=16)
     p.add_argument('--seed',        type=int,   default=42)
     p.add_argument('--out',         default='outputs/llm_graph_eval.jsonl')
+    p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
     return p.parse_args()
 
 
@@ -197,7 +203,8 @@ def main():
 
     results = evaluate(model, rows, args.vocab, device,
                        temperature=args.temperature,
-                       batch_size=args.batch_size)
+                       batch_size=args.batch_size,
+                       one_by_one=args.one_by_one)
 
     print(f'\n{"─" * 40}')
     print(f'  avg_ged        : {results["avg_ged"]}')

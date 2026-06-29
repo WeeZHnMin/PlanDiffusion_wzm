@@ -39,7 +39,7 @@ EOS_ID     = 10002
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data",          default="data/processed/graph_tree/text_graph_tree.npz")
-    p.add_argument("--save-dir",      default="checkpoints/llm_graph/stage2")
+    p.add_argument("--save-dir",      default="checkpoints/llm_graph")
     p.add_argument("--stage1-ckpt",   default=None,
                    help="Stage1 checkpoint 初始化权重")
     p.add_argument("--resume",        default=None)
