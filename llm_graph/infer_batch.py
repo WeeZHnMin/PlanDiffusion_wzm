@@ -145,22 +145,23 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
             elif ph == 'parents':
                 mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 if use_c1:
-                    # C1：parent of node k 必须来自 [0, k-1]
-                    # use_c2=False 时不受 Ns[b] 上限约束，可超过预测 N
-                    max_p = parent_cnts[b] + 1 if not use_c2 else min(parent_cnts[b] + 1, Ns[b])
+                    # C1：parent of node k 必须来自 [0, k-1]，最多到 MAX_NODES-1
+                    max_p = min(parent_cnts[b] + 1, MAX_NODES)
                     for j in range(max_p):
                         mask[NODE_START + j] = False
                 else:
-                    cap = MAX_NODES if not use_c2 else Ns[b]
-                    for j in range(cap):
+                    for j in range(MAX_NODES):
                         mask[NODE_START + j] = False
                 if not use_c2:
                     mask[SEP_ID] = False   # 允许模型自己输出 SEP
+                # 达到 MAX_NODES-1 个 parent 时强制 SEP（硬上限）
+                if parent_cnts[b] >= MAX_NODES - 1:
+                    mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
+                    mask[SEP_ID] = False
                 nid = _sample(logits, mask)
                 if NODE_START <= nid < NODE_START + MAX_NODES:
                     p = nid - NODE_START
                     k = parent_cnts[b] + 1
-                    # 动态扩展邻接矩阵（use_c2=False 时节点数可超过 Ns[b]）
                     if k >= len(run_adjs[b]):
                         new_n = k + 1
                         new_adj = [[0] * new_n for _ in range(new_n)]
@@ -172,7 +173,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
                     if 0 <= p < k:
                         run_adjs[b][k][p] = run_adjs[b][p][k] = 1
                     parent_cnts[b] += 1
-                # 判断是否需要强制 SEP
+                # 判断阶段转移
                 if use_c2 and parent_cnts[b] == Ns[b] - 1:
                     phases[b] = 'force_sep'
                 elif (not use_c2 and nid == SEP_ID) or \
