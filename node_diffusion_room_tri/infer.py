@@ -47,9 +47,16 @@ def ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
     ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
     B  = next(iter(cond_batched.values())).shape[0]
     x  = torch.randn(B, 2, MAX_NODES, device=device)
+
+    # 预计算一次 BERT，避免每个 diffusion step 重复跑
+    text_feat, text_mask = model.encode_text(
+        cond_batched["prompt_tokens"], cond_batched.get("prompt_mask"))
+    cond_no_text = {k: v for k, v in cond_batched.items()
+                    if k not in ("prompt_tokens", "prompt_mask")}
+
     for i, t in enumerate(ts):
         t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
-        eps  = model(x, t_tensor, **cond_batched)
+        eps  = model(x, t_tensor, text_feat=text_feat, text_mask=text_mask, **cond_no_text)
         ab_t = diffusion.alphas_bar[t]
         x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
         if i + 1 < len(ts):
@@ -67,9 +74,15 @@ def ddpm_sample(model, diffusion, cond_batched, device, timesteps=1000):
     diffusion._to(device)
     B = next(iter(cond_batched.values())).shape[0]
     x = torch.randn(B, 2, MAX_NODES, device=device)
+
+    text_feat, text_mask = model.encode_text(
+        cond_batched["prompt_tokens"], cond_batched.get("prompt_mask"))
+    cond_no_text = {k: v for k, v in cond_batched.items()
+                    if k not in ("prompt_tokens", "prompt_mask")}
+
     for t in reversed(range(timesteps)):
         t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
-        eps = model(x, t_tensor, **cond_batched)
+        eps = model(x, t_tensor, text_feat=text_feat, text_mask=text_mask, **cond_no_text)
         s1  = diffusion.sqrt_alphas_bar[t]
         s2  = diffusion.sqrt_one_minus_alphas_bar[t]
         x0  = (x - s2 * eps) / s1.clamp(min=1e-3)

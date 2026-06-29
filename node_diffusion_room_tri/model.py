@@ -254,8 +254,22 @@ class NodeDiffusionTransformer(nn.Module):
         pad_keys  = (1 - node_mask.to(dt)).unsqueeze(1)          # [B, 1, N]
         return torch.clamp(mask + pad_keys, 0, 1)
 
+    def encode_text(self, prompt_tokens, prompt_mask=None):
+        """预计算 BERT 文本特征，推理时在 diffusion 循环外调用一次。"""
+        bert_attn = prompt_mask if prompt_mask is not None \
+                    else (prompt_tokens != 0).long()
+        with torch.no_grad():
+            text_hidden = self.bert(
+                input_ids=prompt_tokens,
+                attention_mask=bert_attn,
+            ).last_hidden_state
+        text_feat = self.text_proj(text_hidden)
+        text_mask = (1 - bert_attn.float()).unsqueeze(1)
+        return text_feat, text_mask
+
     def forward(self, x, timesteps, node_mask,
                 prompt_tokens=None, prompt_mask=None,
+                text_feat=None, text_mask=None,
                 room_membership=None, adj_matrix=None, **kwargs):
         del kwargs
         B, _, N = x.shape
@@ -275,18 +289,17 @@ class NodeDiffusionTransformer(nn.Module):
             adj_mask = self._build_adj_mask(adj_matrix.to(device=x.device, dtype=dt),
                                             node_mask.to(dt))
         else:
-            adj_mask = pad_mask  # fallback：退化为与 global_attn 相同的 mask
+            adj_mask = pad_mask
 
-        if prompt_tokens is not None:
-            bert_attn = prompt_mask if prompt_mask is not None \
-                        else (prompt_tokens != 0).long()
-            with torch.no_grad():
-                text_hidden = self.bert(
-                    input_ids=prompt_tokens,
-                    attention_mask=bert_attn,
-                ).last_hidden_state
-            text_feat = self.text_proj(text_hidden).to(dt)
-            text_mask = (1 - bert_attn.float()).unsqueeze(1)
+        # 优先使用预计算的 text_feat（推理时避免每步重复跑 BERT）
+        if text_feat is not None:
+            text_feat = text_feat.to(dtype=dt)
+            if text_mask is not None:
+                text_mask = text_mask.to(dtype=dt)
+        elif prompt_tokens is not None:
+            text_feat, text_mask = self.encode_text(prompt_tokens, prompt_mask)
+            text_feat = text_feat.to(dt)
+            text_mask = text_mask.to(dt)
         else:
             text_feat = torch.zeros(B, 1, self.model_channels,
                                     device=node_emb.device, dtype=dt)
