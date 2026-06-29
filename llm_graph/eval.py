@@ -64,7 +64,7 @@ def kl_divergence(p_counts: Counter, q_counts: Counter, eps: float = 1e-8) -> fl
 
 # ── 主评估循环 ────────────────────────────────────────────────────────────────
 
-def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False, use_c5=True):
+def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_one=False):
     ged_list        = []
     face_diff_list  = []
     gt_node_counts  = Counter()
@@ -97,8 +97,7 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
             print(f'  {b_start + 1}/{len(rows)} done ...')
         else:
             gen_seqs = generate_batch(model, prefixes, device,
-                                      max_new_tokens=200, temperature=temperature,
-                                      use_c5=use_c5)
+                                      max_new_tokens=200, temperature=temperature)
 
         for gt, gen_seq in zip(gt_list, gen_seqs):
             gen = parse_sequence(gen_seq)
@@ -177,7 +176,6 @@ def parse_args():
     p.add_argument('--seed',        type=int,   default=42)
     p.add_argument('--out',         default='')
     p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
-    p.add_argument('--no-c5',       action='store_true', help='关闭C5约束（允许N<9）')
     return p.parse_args()
 
 
@@ -208,8 +206,7 @@ def main():
     results = evaluate(model, rows, args.vocab, device,
                        temperature=args.temperature,
                        batch_size=args.batch_size,
-                       one_by_one=args.one_by_one,
-                       use_c5=not args.no_c5)
+                       one_by_one=args.one_by_one)
 
     print(f'\n{"─" * 40}')
     print(f'  avg_ged        : {results["avg_ged"]}')
