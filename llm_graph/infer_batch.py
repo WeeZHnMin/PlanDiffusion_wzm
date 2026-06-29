@@ -66,17 +66,19 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
     NEG_INF = float('-inf')
     _raw   = model.module if hasattr(model, 'module') else model
     _VOCAB = _raw.config.vocab_size
-    MAX_LEN = max(len(p) for p in prefix_list) + max_new_tokens + 4
+    max_pre = max(len(p) for p in prefix_list)
+    MAX_LEN = max_pre + max_new_tokens + 4
 
-    # ── 右 padding buffer ─────────────────────────────────────────────────────
+    # ── 左 padding buffer：所有前缀右对齐，生成 token 统一从 max_pre 开始追加 ──
     ids_buf  = torch.full((B, MAX_LEN), PAD_ID, dtype=torch.long, device=device)
     attn_buf = torch.zeros((B, MAX_LEN),         dtype=torch.long, device=device)
     seq_lens = []
     for b, p in enumerate(prefix_list):
-        L = len(p)
-        ids_buf[b, :L]  = torch.tensor(p, dtype=torch.long, device=device)
-        attn_buf[b, :L] = 1
-        seq_lens.append(L)
+        L   = len(p)
+        off = max_pre - L          # 左侧 padding 偏移
+        ids_buf[b,  off: off + L] = torch.tensor(p, dtype=torch.long, device=device)
+        attn_buf[b, off: off + L] = 1
+        seq_lens.append(max_pre)   # 所有样本的"当前长度"统一为 max_pre
 
     seqs          = [list(p) for p in prefix_list]
     finished      = [False] * B
@@ -107,10 +109,8 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
         use_cache      = True,
     )
     past_kv = out0.past_key_values
-    # 各样本前缀长度不同，取各自最后一个真实 token 的 logits
-    init_logits = torch.stack([
-        out0.logits[b, seq_lens[b] - 1, :].float() for b in range(B)
-    ])   # [B, vocab]
+    # 左 padding 后所有样本最后一个真实 token 都在 max_pre-1 处
+    init_logits = out0.logits[:, -1, :].float()   # [B, vocab]
 
     # ── 生成循环：每步每样本恰好 1 token ─────────────────────────────────────
     logits_all = init_logits
