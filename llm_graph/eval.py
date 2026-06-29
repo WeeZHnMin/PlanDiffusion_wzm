@@ -76,8 +76,9 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
     gen_n_list      = []
     samples_out     = []
 
-    for b_start in range(0, len(rows), batch_size):
-        batch = rows[b_start: b_start + batch_size]
+    _bs = 1 if one_by_one else batch_size
+    for b_start in range(0, len(rows), _bs):
+        batch = rows[b_start: b_start + _bs]
 
         prefixes, gt_list = [], []
         for rec in batch:
@@ -91,9 +92,9 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
             gt_list.append({'n_nodes': n, 'adj': gt_adj, 'prompt': prompt})
 
         if one_by_one:
-            gen_seqs = [generate(model, p, device,
-                                 max_new_tokens=200, temperature=temperature)
-                        for p in prefixes]
+            gen_seqs = [generate(model, prefixes[0], device,
+                                 max_new_tokens=200, temperature=temperature)]
+            print(f'  {b_start + 1}/{len(rows)} done ...')
         else:
             gen_seqs = generate_batch(model, prefixes, device,
                                       max_new_tokens=200, temperature=temperature)
@@ -134,9 +135,10 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
 
             samples_out.append(sample)
 
-        done = min(b_start + batch_size, len(rows))
-        if done % 100 < batch_size or done == len(rows):
-            print(f'  {done}/{len(rows)} done ...')
+        if not one_by_one:
+            done = min(b_start + _bs, len(rows))
+            if done % 100 < _bs or done == len(rows):
+                print(f'  {done}/{len(rows)} done ...')
 
     avg_ged       = float(np.mean(ged_list))       if ged_list       else float('nan')
     avg_face_diff = float(np.mean(face_diff_list)) if face_diff_list else float('nan')
@@ -172,7 +174,7 @@ def parse_args():
     p.add_argument('--temperature', type=float, default=1.0)
     p.add_argument('--batch_size',  type=int,   default=16)
     p.add_argument('--seed',        type=int,   default=42)
-    p.add_argument('--out',         default='outputs/llm_graph_eval.jsonl')
+    p.add_argument('--out',         default='')
     p.add_argument('--one-by-one',  action='store_true', help='逐条推理（慢但稳定，默认批量）')
     return p.parse_args()
 
