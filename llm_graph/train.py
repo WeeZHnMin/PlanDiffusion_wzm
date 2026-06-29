@@ -27,6 +27,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from llm_graph.dataset import make_loader
 from llm_graph.metrics import compute_metrics
+from llm_graph.eval import evaluate as _eval_generate
 
 
 VOCAB_SIZE = 10084
@@ -38,7 +39,6 @@ EOS_ID     = 10002
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data",          default="data/processed/graph_tree/text_graph_tree.npz")
-    p.add_argument("--vocab",         default="llm_graph/vocab/vocab_config.json")
     p.add_argument("--save-dir",      default="checkpoints/llm_graph/stage2")
     p.add_argument("--stage1-ckpt",   default=None,
                    help="Stage1 checkpoint 初始化权重")
@@ -47,12 +47,19 @@ def parse_args():
                    help="续训新数据集时重置步数，只继承模型权重")
 
     p.add_argument("--batch-size",    type=int,   default=26)
-    p.add_argument("--epochs",        type=int,   default=20)
+    p.add_argument("--epochs",        type=int,   default=200)
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
     p.add_argument("--log-every",     type=int,   default=200)
     p.add_argument("--save-every",    type=int,   default=1_000)
+    p.add_argument("--val-data",      default="data/jsonl/val_graph_dataset_18k5.jsonl",
+                   help="验证集 JSONL；设为空字符串禁用验证")
+    p.add_argument("--val-interval",  type=int,   default=5_000, help="每隔多少步做一次验证")
+    p.add_argument("--val-n",         type=int,   default=512,   help="每次验证使用的样本数（0=全量）")
+    p.add_argument("--val-batch",     type=int,   default=24,    help="验证时生成的 batch size（无梯度，可大于训练 batch）")
+    p.add_argument("--vocab",         default="llm_graph/vocab/wp_tokenizer.json",
+                   help="词表文件，验证时用于编码文本")
 
     p.add_argument("--hidden-size",       type=int, default=512)
     p.add_argument("--num-layers",        type=int, default=8)
@@ -61,6 +68,19 @@ def parse_args():
     p.add_argument("--max-pos-emb",       type=int, default=384)
     p.add_argument("--seed",              type=int, default=42)
     return p.parse_args()
+
+
+def run_val(model, val_rows, val_n, vocab, batch_size, device, seed=0):
+    """从 JSONL rows 中随机抽 val_n 条（seed 随每次调用变化），运行生成评估。"""
+    rng  = np.random.default_rng(seed)
+    n    = min(val_n, len(val_rows)) if val_n > 0 else len(val_rows)
+    idxs = rng.choice(len(val_rows), size=n, replace=False).tolist()
+    rows = [val_rows[i] for i in idxs]
+    print(f'    val 抽样: {n} 条 (seed={seed})')
+    model.eval()
+    res = _eval_generate(model, rows, vocab, device, batch_size=batch_size)
+    model.train()
+    return res['avg_face_diff'], res['n_match_rate'], res['avg_ged']
 
 
 def make_labels(tokens, text_lens, pad_id):
@@ -94,6 +114,15 @@ def main():
           f'steps/epoch={steps_per_epoch}  '
           f'epochs={args.epochs}  '
           f'total_steps={total_steps}')
+
+    val_rows = []
+    if args.val_data and Path(args.val_data).exists():
+        with open(args.val_data, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    val_rows.append(json.loads(line))
+        print(f'验证集: {len(val_rows)} 条  val_n={args.val_n}  val_interval={args.val_interval}')
 
     cfg = LlamaConfig(
         vocab_size=VOCAB_SIZE,
@@ -137,8 +166,9 @@ def main():
     log_file = open(log_path, 'w', encoding='utf-8', buffering=1)
     print(f'日志: {log_path}')
 
-    start_step = 0
-    best_loss  = float('inf')
+    start_step    = 0
+    best_loss     = float('inf')
+    best_val_loss = float('inf')
     running    = {'loss': 0.0, 'acc_all': 0.0, 'acc_N': 0.0,
                   'acc_parent': 0.0, 'acc_edge': 0.0}
     save_win_loss  = 0.0
@@ -156,8 +186,9 @@ def main():
             scaler.load_state_dict(ckpt['scaler'])
             if 'scheduler' in ckpt:
                 scheduler.load_state_dict(ckpt['scheduler'])
-            start_step = ckpt['step'] + 1
-            best_loss  = ckpt.get('best_loss', float('inf'))
+            start_step    = ckpt['step'] + 1
+            best_loss     = ckpt.get('best_loss',     float('inf'))
+            best_val_loss = ckpt.get('best_val_loss', float('inf'))
             print(f'resumed from step {start_step} / {total_steps}  '
                   f'({start_step/steps_per_epoch:.1f} epochs done)')
 
@@ -184,9 +215,21 @@ def main():
             logits = out.logits
             loss   = loss_fn(logits.reshape(-1, VOCAB_SIZE), y.reshape(-1))
 
+        if not torch.isfinite(loss):
+            print(f'  [warn] step {step}: non-finite loss {loss.item():.4f}, skipping batch')
+            opt.zero_grad()
+            scaler.update()
+            continue
+
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
-        nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        if not torch.isfinite(grad_norm):
+            print(f'  [warn] step {step}: non-finite grad_norm {grad_norm:.4f}, skipping update')
+            opt.zero_grad()
+            scaler.update()
+            continue
+
         scaler.step(opt)
         scaler.update()
         scheduler.step()
@@ -227,6 +270,31 @@ def main():
                 'lr': round(lr_now, 8), 'elapsed': round(elapsed, 1),
             }, ensure_ascii=False) + '\n')
 
+        if val_rows and args.val_interval > 0 and step % args.val_interval == 0 and step > 0:
+            t_val = time.perf_counter()
+            face_diff, n_match, avg_ged = run_val(
+                model, val_rows, args.val_n, args.vocab, args.val_batch, device, seed=step)
+            elapsed_val = time.perf_counter() - t_val
+            is_best_val = face_diff < best_val_loss
+            if is_best_val:
+                best_val_loss = face_diff
+            print(f'  [val] step={step}  face_diff={face_diff:.4f}  ged={avg_ged:.4f}'
+                  f'  n_match={n_match:.3f}  best_face_diff={best_val_loss:.4f}'
+                  f'  ({elapsed_val:.1f}s){"  ★" if is_best_val else ""}')
+            log_file.write(json.dumps({
+                'step': step, 'val_face_diff': round(face_diff, 4),
+                'val_ged': round(avg_ged, 4), 'val_n_match': round(n_match, 4),
+                'best_val_face_diff': round(best_val_loss, 4),
+            }, ensure_ascii=False) + '\n')
+            if is_best_val:
+                raw = model.module if hasattr(model, 'module') else model
+                torch.save({
+                    'model': raw.state_dict(), 'opt': opt.state_dict(),
+                    'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
+                    'step': step, 'best_loss': best_loss, 'best_val_loss': best_val_loss,
+                }, save_dir / 'best.pt')
+                print(f'  best.pt saved → step={step} face_diff={best_val_loss:.4f}')
+
         if step % args.save_every == 0 and step > 0:
             win_avg = save_win_loss / max(save_win_steps, 1)
             save_win_loss = save_win_steps = 0
@@ -234,10 +302,10 @@ def main():
             ckpt = {
                 'model': raw.state_dict(), 'opt': opt.state_dict(),
                 'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
-                'step': step, 'best_loss': best_loss,
+                'step': step, 'best_loss': best_loss, 'best_val_loss': best_val_loss,
             }
             torch.save(ckpt, save_dir / 'latest.pt')
-            if win_avg < best_loss:
+            if not val_rows and win_avg < best_loss:
                 best_loss = win_avg
                 ckpt['best_loss'] = best_loss
                 torch.save(ckpt, save_dir / 'best.pt')

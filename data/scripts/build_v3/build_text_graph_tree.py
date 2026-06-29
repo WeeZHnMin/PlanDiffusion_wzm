@@ -26,7 +26,7 @@
   data/processed/graph_tree/vocab_config.json
 
 用法：
-  python -m data.scripts.build_v2.build_text_graph_tree
+  python -m data.scripts.build_v3.build_text_graph_tree --augment 3
 """
 
 from __future__ import annotations

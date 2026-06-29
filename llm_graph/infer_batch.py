@@ -62,6 +62,9 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
     """
     B = len(prefix_list)
     NEG_INF = float('-inf')
+    # 从模型实际 vocab size 建 mask，避免与常量不一致
+    _raw = model.module if hasattr(model, 'module') else model
+    _VOCAB = _raw.config.vocab_size
 
     # 每条序列的完整 token 列表（生成过程中动态追加）
     seqs         = [list(p) for p in prefix_list]
@@ -107,7 +110,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
 
             # ── N_tok 阶段 ───────────────────────────────────────────────────
             if ph == 'N_tok':
-                mask = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
+                mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 mask[N_START: N_START + MAX_NODES] = False
                 if use_c5:
                     mask[N_START: N_START + 8] = True
@@ -120,7 +123,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
 
             # ── parents 阶段 ─────────────────────────────────────────────────
             elif ph == 'parents':
-                mask = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
+                mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 if use_c1:
                     for j in range(min(parent_cnts[b] + 1, Ns[b])):
                         mask[NODE_START + j] = False
@@ -150,7 +153,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
 
             # ── edges 阶段（第一个 token）───────────────────────────────────
             elif ph == 'edges':
-                mask = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
+                mask = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 for j in range(Ns[b]):
                     mask[NODE_START + j] = False
                 if use_c4 and all(d >= 2 for d in node_degrees(run_adjs[b])):
@@ -179,7 +182,7 @@ def generate_batch(model, prefix_list, device, max_new_tokens=200, temperature=1
                     logits2 = logits2 / temperature
 
                 # C3：禁三角环
-                mask2 = torch.ones(VOCAB_SIZE, dtype=torch.bool, device=device)
+                mask2 = torch.ones(_VOCAB, dtype=torch.bool, device=device)
                 for j in range(Ns[b]):
                     skip_tri = use_c3 and has_triangle(run_adjs[b], first, j)
                     if j != first and not run_adjs[b][first][j] and not skip_tri:
