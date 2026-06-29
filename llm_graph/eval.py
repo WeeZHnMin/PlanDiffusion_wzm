@@ -114,6 +114,7 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
                 'prompt':      gt['prompt'],
                 'gt_n_nodes':  gt['n_nodes'],
                 'gt_adj':      gt['adj'],
+                'gen_tokens':  gen_seq,
                 'gen_valid':   gen['valid'],
                 'gen_n_nodes': gen['n_nodes'] if gen['valid'] else None,
                 'gen_adj':     gen['adj']     if gen['valid'] else None,
