@@ -24,10 +24,12 @@ def main():
 
     # 复制 config / tokenizer 文件
     for fname in os.listdir(args.bert):
+        src_path = os.path.join(args.bert, fname)
+        if os.path.isdir(src_path):
+            continue
         if fname.endswith('.bin') or fname.endswith('.pt'):
             continue
-        shutil.copy(os.path.join(args.bert, fname),
-                    os.path.join(args.dst,  fname))
+        shutil.copy(src_path, os.path.join(args.dst, fname))
     print(f"已复制 config/tokenizer 文件到 {args.dst}")
 
     # 提取 bert.* 权重，去掉 bert. 前缀
