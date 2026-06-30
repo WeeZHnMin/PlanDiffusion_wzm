@@ -89,14 +89,18 @@ class TextTower(nn.Module):
 # ── InfoNCE loss ──────────────────────────────────────────────────────────────
 
 def info_nce(text_emb, graph_emb, tau=0.07):
-    """Symmetric InfoNCE over a batch."""
+    """Symmetric InfoNCE; returns (loss, acc_t2g, acc_g2t)."""
     t = F.normalize(text_emb,  dim=-1)
     g = F.normalize(graph_emb, dim=-1)
     logits = torch.matmul(t, g.T) / tau          # (B, B)
     labels = torch.arange(t.shape[0], device=t.device)
-    loss_t = F.cross_entropy(logits,   labels)   # text  → graph
-    loss_g = F.cross_entropy(logits.T, labels)   # graph → text
-    return (loss_t + loss_g) / 2.0
+    loss_t = F.cross_entropy(logits,   labels)
+    loss_g = F.cross_entropy(logits.T, labels)
+    loss   = (loss_t + loss_g) / 2.0
+    with torch.no_grad():
+        acc_t = (logits.argmax(dim=1) == labels).float().mean().item()
+        acc_g = (logits.argmax(dim=0) == labels).float().mean().item()
+    return loss, acc_t, acc_g
 
 
 # ── Full alignment model ──────────────────────────────────────────────────────
@@ -112,5 +116,5 @@ class AlignModel(nn.Module):
     def forward(self, input_ids, attention_mask, coords, adj, mask):
         t = self.text_tower(input_ids, attention_mask)
         g = self.graph_tower(coords, adj, mask)
-        loss = info_nce(t, g, self.tau)
-        return loss, t, g
+        loss, acc_t, acc_g = info_nce(t, g, self.tau)
+        return loss, acc_t, acc_g, t, g

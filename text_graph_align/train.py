@@ -14,7 +14,6 @@ import time
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
 
 from .dataset import AlignDataset
 from .model   import AlignModel
@@ -68,14 +67,16 @@ def main():
     print(f"Trainable params: {sum(p.numel() for p in trainable):,}")
 
     opt    = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=1e-2)
-    scaler = GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
     log_path = os.path.join(args.save, 'train_log.jsonl')
     log_f    = open(log_path, 'a')
 
-    step      = 0
-    t0        = time.time()
-    loss_accum = 0.0
+    step        = 0
+    t0          = time.time()
+    loss_accum  = 0.0
+    acc_t_accum = 0.0
+    acc_g_accum = 0.0
 
     while step < args.steps:
         for batch in loader:
@@ -94,8 +95,8 @@ def main():
             mask  = batch['mask'].to(device)
 
             opt.zero_grad()
-            with autocast():
-                loss, _, _ = model(ids, amask, coords, adj, mask)
+            with torch.amp.autocast('cuda'):
+                loss, acc_t, acc_g, _, _ = model(ids, amask, coords, adj, mask)
 
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -103,19 +104,28 @@ def main():
             scaler.step(opt)
             scaler.update()
 
-            loss_accum += loss.item()
-            step       += 1
+            loss_accum  += loss.item()
+            acc_t_accum += acc_t
+            acc_g_accum += acc_g
+            step        += 1
 
             if step % args.log_every == 0:
-                avg_loss = loss_accum / args.log_every
-                elapsed  = time.time() - t0
-                rec = {'step': step, 'loss': avg_loss, 'lr': lr,
-                       'elapsed_s': round(elapsed, 1)}
-                print(f"step {step:6d}  loss {avg_loss:.4f}  lr {lr:.2e}  "
-                      f"elapsed {elapsed/60:.1f}m")
+                avg_loss  = loss_accum  / args.log_every
+                avg_acc_t = acc_t_accum / args.log_every
+                avg_acc_g = acc_g_accum / args.log_every
+                elapsed   = time.time() - t0
+                rec = {'step': step, 'loss': avg_loss,
+                       'acc_t2g': round(avg_acc_t, 4),
+                       'acc_g2t': round(avg_acc_g, 4),
+                       'lr': lr, 'elapsed_s': round(elapsed, 1)}
+                print(f"step {step:6d}  loss {avg_loss:.4f}  "
+                      f"acc_t2g {avg_acc_t:.2%}  acc_g2t {avg_acc_g:.2%}  "
+                      f"lr {lr:.2e}  {elapsed/60:.1f}m")
                 log_f.write(json.dumps(rec) + '\n')
                 log_f.flush()
-                loss_accum = 0.0
+                loss_accum  = 0.0
+                acc_t_accum = 0.0
+                acc_g_accum = 0.0
 
             if step % 5000 == 0 or step == args.steps:
                 ckpt = os.path.join(args.save, f'align_step{step:06d}.pt')
