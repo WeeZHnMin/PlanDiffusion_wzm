@@ -127,7 +127,7 @@ def main():
                 acc_t_accum = 0.0
                 acc_g_accum = 0.0
 
-            if step % 5000 == 0 or step == args.steps:
+            if step % 500 == 0 or step == args.steps:
                 ckpt = os.path.join(args.save, f'align_step{step:06d}.pt')
                 torch.save({
                     'step':       step,
