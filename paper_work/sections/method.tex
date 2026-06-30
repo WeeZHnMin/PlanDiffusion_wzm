@@ -8,29 +8,28 @@
 我们将平面图表示为带属性的图 $\mathcal{G} = (\mathcal{V}, \mathcal{E})$，
 其中 $\mathcal{V}$ 为节点集合（房间多边形的角点），
 $\mathcal{E}$ 为边集合（相邻角点间的连接关系）。
-每个节点 $v_i$ 附带二维坐标 $\mathbf{c}_i \in \mathbb{R}^2$ 和
-组合类型标签 $y_i \in \{1, \ldots, 32\}$，
+每个节点 $v_i$ 附带二维坐标 $\mathbf{c}_i \in \mathbb{R}^2$，
 令 $\mathbf{X} = [\mathbf{c}_1, \ldots, \mathbf{c}_N]^\top \in \mathbb{R}^{N \times 2}$，
 邻接矩阵 $\mathbf{A} \in \{0,1\}^{N \times N}$。
+半边遍历在 $(\mathbf{X}, \mathbf{A})$ 上提取所有有界面 $\mathcal{F} = \{f_k\}$，
+每个面对应一个房间多边形，其房间类型 $r_k$ 由视觉语言模型（VLM）标注。
 
-目标是学习联合分布 $p(\mathbf{A}, \mathbf{X}, \mathbf{y} \mid \mathcal{T})$，
-我们将其分解为三个串联子问题：
+生成任务分解为三个串联阶段：
 \begin{equation}
-    p(\mathbf{A},\mathbf{X},\mathbf{y} \mid \mathcal{T})
-    = \underbrace{p_{\theta_1}(\mathbf{A} \mid \mathcal{T})}_{\text{图拓扑生成}}
-    \cdot
+    \underbrace{p_{\theta_1}(\mathbf{A} \mid \mathcal{T})}_{\text{图拓扑生成}}
+    \;\to\;
     \underbrace{p_{\theta_2}(\mathbf{X} \mid \mathbf{A}, \mathcal{T})}_{\text{坐标扩散}}
-    \cdot
-    \underbrace{p_{\theta_3}(\mathbf{y} \mid \mathbf{X}, \mathbf{A}, \mathcal{T})}_{\text{类型预测}}
+    \;\to\;
+    \underbrace{r_k = \mathrm{VLM}\!\left(\mathrm{render}(\mathbf{X},\mathbf{A}),\, f_k,\, \mathcal{T}\right)}_{\text{VLM 面类型标注}}
     \label{eq:factorize}
 \end{equation}
 （1）\textbf{图拓扑生成}：自回归建模 $p_{\theta_1}(\mathbf{A} \mid \mathcal{T})$，
 输出图的连接结构与节点数量；
 （2）\textbf{节点坐标扩散}：以 $(\mathbf{A}, \mathcal{T})$ 为条件，
 通过 DDPM 建模 $p_{\theta_2}(\mathbf{X} \mid \mathbf{A}, \mathcal{T})$；
-（3）\textbf{节点类型预测}：以生成坐标 $\mathbf{X}$、图结构 $\mathbf{A}$ 和文本 $\mathcal{T}$ 为条件，
-独立分类器建模 $p_{\theta_3}(\mathbf{y} \mid \mathbf{X}, \mathbf{A}, \mathcal{T})$。
-三个模型完全解耦训练，推理时串联执行。
+（3）\textbf{VLM 面类型标注}：将渲染平面图与各面节点编号发送至 VLM，
+直接在面粒度输出房间类型 $r_k$，无需训练专用分类器。
+三个阶段完全解耦，推理时串联执行。
 
 % -----------------------------------------------------------------------------
 \subsection{数据集}
@@ -271,10 +270,10 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     \centering
     \includegraphics[width=0.90\linewidth]{figures/node_diffusion_arch.pdf}
     \caption{
-        NodeDiffusionTransformer 架构图。
+        NodeDiffusionTransformer（三流）架构图。
         输入的加噪坐标 $\mathbf{x}_t$ 经坐标投影与时间步嵌入相加，
-        构成节点初始隐向量；拼接文本嵌入后经 6 层双流注意力编码器处理；
-        最终节点特征经 Coordinate Head 预测坐标噪声
+        构成节点初始隐向量；经 6 层三流注意力编码器处理后，
+        节点特征经 Coordinate Head 预测坐标噪声
         $\hat{\boldsymbol{\epsilon}}_{\mathrm{coord}}$。
     }
     \label{fig:arch}
@@ -289,19 +288,23 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
 \end{equation}
 其中 $\gamma(t)$ 为正弦时间步编码，$W_c \in \mathbb{R}^{d \times 2}$，$d=384$。
 
-\paragraph{双流注意力层}
-每层包含两条并行注意力流，输出残差相加后经 FFN 处理：
+\paragraph{三流注意力层}
+平面图节点同时存在三种几何关系：
+直接相邻的局部边约束、共处同一房间面的中观面约束、以及全局布局感知。
+为此，每个编码器层并联三条独立自注意力流，输出直接相加后经残差连接与 FFN 处理：
 \begin{equation}
     \mathbf{h}_i^{(\ell+1)} = \mathbf{h}_i^{(\ell)}
-    + \mathrm{Dropout}\!\left(\mathrm{AdjAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)})\right)_{\!i}
-    + \mathrm{Dropout}\!\left(\mathrm{GlobalAttn}(\mathbf{H}_{\mathrm{full}}^{(\ell)})\right)_{\!i}
-    \label{eq:dual_attn}
+    + \mathrm{Dropout}\!\Bigl(
+        \mathrm{AdjAttn}\bigl(\mathbf{H}^{(\ell)}\bigr)
+      + \mathrm{RoomAttn}\bigl(\mathbf{H}^{(\ell)}\bigr)
+      + \mathrm{GlobalAttn}\bigl(\mathbf{H}^{(\ell)}\bigr)
+    \Bigr)_{\!i}
+    \label{eq:tri_attn}
 \end{equation}
 
 \begin{itemize}
     \item \textbf{邻接局部注意力 $\mathrm{AdjAttn}$}：
-    仅对节点序列 $\mathbf{H}_{\mathrm{node}}$ 计算，
-    注意力掩码由邻接矩阵决定：
+    掩码由邻接矩阵决定，每个节点仅能关注直连邻居（含自身）：
     \begin{equation}
         M_{ij}^{\mathrm{adj}} =
         \begin{cases}
@@ -310,26 +313,32 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
         \end{cases}
         \label{eq:adj_mask}
     \end{equation}
-    每个节点仅能关注直连邻居，使相邻节点之间的坐标特征得以局部交换。
+    使共边节点在扩散过程中持续交换坐标信息，维持局部几何一致性。
+
+    \item \textbf{面结构注意力 $\mathrm{RoomAttn}$}：
+    以节点的环成员关系（room membership）为掩码——
+    令 $\mathbf{M}_{\mathrm{rm}} \in \{0,1\}^{N \times R}$ 为节点-环归属矩阵，
+    则两节点 $i,j$ 可互相关注当且仅当 $(\mathbf{M}_{\mathrm{rm}}\mathbf{M}_{\mathrm{rm}}^\top)_{ij} > 0$，
+    即二者共属至少一个房间面。
+    该流使同一房间的所有角点在不感知其他房间节点的前提下相互协调，
+    弥补了 $\mathrm{AdjAttn}$ 仅覆盖一跳邻居的局限。
 
     \item \textbf{全局注意力 $\mathrm{GlobalAttn}$}：
-    对节点序列 $\mathbf{H}_{\mathrm{node}}$ 做无掩码的全局自注意力，
-    使每个节点能感知全局布局信息。
+    仅屏蔽 padding 节点，其余节点两两可见，
+    使每个节点在更新坐标时能感知整体布局分布。
 \end{itemize}
 
 \noindent
 \textbf{文本条件注入（$\mathrm{CrossAttn}$）}：
-除上述两条自注意力流外，每层还包含一个独立的交叉注意力模块，
-以节点隐向量为 $Q$、文本特征为 $K{=}V$，
-将文本语义注入节点表示：
+每层在三流自注意力之后、FFN 之前执行一次交叉注意力，
+以节点隐向量为 $Q$、文本特征为 $K{=}V$，将文本语义注入节点表示：
 \begin{equation}
     \mathbf{h}_i^{(\ell)} \leftarrow \mathbf{h}_i^{(\ell)}
-    + \mathrm{Dropout}\!\left(\mathrm{CrossAttn}(\mathbf{H}_{\mathrm{node}}^{(\ell)},\, \mathbf{H}_{\mathrm{text}})\right)_{\!i}
+    + \mathrm{Dropout}\!\left(\mathrm{CrossAttn}(\mathbf{H}^{(\ell)},\, \mathbf{H}_{\mathrm{text}})\right)_{\!i}
     \label{eq:cross_attn}
 \end{equation}
 文本特征 $\mathbf{H}_{\mathrm{text}}$ 由冻结的 BERT-base-uncased 编码后经线性投影（$768\to d$）得到，
-在推理全程保持不变。CrossAttn 在双流自注意力之后、FFN 之前执行，
-使最终节点表示同时融合局部几何约束、全局布局信息与文本语义。
+推理全程保持不变。
 
 共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$，约 15M 参数。
 
@@ -373,81 +382,73 @@ grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 从 $\mathbf{x}_T \sim \mathcal{N}(\mathbf{0},\mathbf{I})$ 出发，逐步去噪得到 $\hat{\mathbf{X}} = \mathbf{x}_0$。
 
 % -----------------------------------------------------------------------------
-\subsection{节点类型预测}
-\label{subsec:type_classifier}
+\subsection{轮廓条件变体：PlanDiffusion-bnd（四流）}
+\label{subsec:node_diffusion_bnd}
 
-\subsubsection{解耦设计动机}
+\paragraph{动机}
+PlanDiffusion 的主线设计（三流，§\ref{subsec:node_diffusion}）仅以文本和邻接图为条件，
+不依赖任何几何先验，是真正意义上的纯文本驱动生成。
+然而，ChatHouseDiffusion~\cite{qin2025chathousediffusion} 等现有方法
+以建筑外轮廓（outline）作为额外输入条件，为扩散过程提供了强空间约束。
+在条件信息量不对等的情况下，直接比较 IoU 并不公平。
 
-节点类型 $y_i \in \{1,\ldots,32\}$ 为离散标签，
-在扩散完成、获得干净坐标 $\hat{\mathbf{X}}$ 后，
-可将类型预测视为以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件的独立分类任务。
-这一解耦设计避免了离散扩散或嵌入空间最近邻查找的复杂性，
-且使类型分类器可在真实坐标（$T=0$）上以强监督充分训练，
-不受扩散噪声干扰。
+为此，本文引入 \textbf{PlanDiffusion-bnd}：
+在三流架构基础上，以顶点图的外轮廓节点作为条件，
+新增第四条注意力流 $\mathrm{BndAttn}$，与 ChatHouseDiffusion 实现等价的几何约束。
 
-\subsubsection{模型结构}
+\paragraph{外轮廓节点}
+给定平面图 $(\mathbf{X}, \mathbf{A})$，
+通过半边遍历找出面积最大的无界面（outer face），
+其顶点集合即为外轮廓节点（is\_boundary$=1$）。
+在整个扩散过程中，轮廓节点的坐标 $\mathbf{x}^{\mathrm{bnd}}$ \textbf{保持固定、不施加噪声}，
+仅内部节点参与去噪；轮廓节点嵌入不携带时间步信息，始终作为静态空间参考。
 
-\textbf{NodeTypeClassifier} 与 NodeDiffusionTransformer 结构同构——
-均采用双流 EncoderLayer（邻接局部注意力 + 全局注意力），
-文本条件化方式亦完全相同：输入文本由冻结的 BERT-base-uncased 编码，
-经线性投影（$768 \to d$）后通过每层独立的交叉注意力注入节点特征。
-两者权重完全不共享，训练亦完全分离。
-两者的对比结构如图~\ref{fig:type_arch} 所示，关键差异如下：
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{figures/type_classifier_arch.pdf}
-    \caption{NodeDiffusionTransformer 与 NodeTypeClassifier 结构对比。
-    两者均采用同构的双流编码器设计，文本条件化方式相同，
-    但输入端、超参数与输出头不同，权重完全独立。}
-    \label{fig:type_arch}
-\end{figure}
-
-\begin{itemize}
-    \item \textbf{无时间步嵌入}：输入始终为干净坐标（$t=0$），节点初始隐向量为：
-    \begin{equation}
-        \mathbf{h}_i^{(0)} = W_c\,\mathbf{x}_0^{(i)},
-        \quad W_c \in \mathbb{R}^{d \times 2}
-        \label{eq:type_node_init}
-    \end{equation}
-
-    \item \textbf{超参数不同}：NodeTypeClassifier 为 $d=384$，4 层，6 头，dropout $=0.4$；
-    NodeDiffusionTransformer 为 $d=384$，6 层，6 头，dropout $=0.1$。
-
-    \item \textbf{类型预测头}：替换坐标头，对每个节点输出 33 维 logit
-    （0 为 padding，1--32 为有效类型）：
-    \begin{equation}
-        \hat{\mathbf{z}}_i = \mathrm{Linear}(d{\to}33)\;\circ\;\mathrm{ReLU}\;\circ\;\mathrm{Linear}(d{\to}d)\;\circ\;\mathrm{LayerNorm}\left(\mathbf{h}_i^{(L)}\right)
-        \label{eq:type_head}
-    \end{equation}
-\end{itemize}
-
-\subsubsection{训练目标}
-
-采用交叉熵损失，padding 节点（$y_i = 0$）不计入：
+\paragraph{四流注意力层}
+在三流基础上新增轮廓注意力流：
 \begin{equation}
-    \mathcal{L}_{\mathrm{type}}
-    = -\frac{1}{\sum_i m_i}
-      \sum_{i} m_i \log \frac{\exp(\hat{z}_{i,y_i})}{\sum_{k=1}^{32}\exp(\hat{z}_{i,k})}
-    \label{eq:loss_type}
+    \mathbf{h}_i^{(\ell+1)} = \mathbf{h}_i^{(\ell)}
+    + \mathrm{Dropout}\!\Bigl(
+        \mathrm{AdjAttn}
+      + \mathrm{RoomAttn}
+      + \mathrm{GlobalAttn}
+      + \mathrm{BndAttn}
+    \Bigr)_{\!i}^{(\ell)}
+    \label{eq:quad_attn}
 \end{equation}
-评估指标为有效节点上的分类准确率：
-\begin{equation}
-    \mathrm{Acc} = \frac{\displaystyle\sum_i m_i \cdot \mathbf{1}[\arg\max_k \hat{z}_{i,k} = y_i]}{\displaystyle\sum_i m_i}
-\end{equation}
+其中 $\mathrm{BndAttn}$ 的 Key/Value 仅来自轮廓节点列（内部节点列被屏蔽），
+使所有节点（含轮廓节点自身）在每层均能查询建筑外轮廓的空间分布，
+从而以轮廓为锚点约束内部节点的去噪轨迹。
 
-优化器为 AdamW~\cite{loshchilov2019adamw}（lr $= 10^{-4}$，weight decay $= 10^{-4}$），
-grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
-训练数据由原始图通过随机节点重排增强 ${\times}12$。
+\paragraph{与 ChatHouseDiffusion 的对应关系}
+ChatHouseDiffusion 以像素级轮廓 mask 约束 U-Net 的生成区域；
+PlanDiffusion-bnd 以轮廓节点坐标固定 + $\mathrm{BndAttn}$ 注入几何约束，
+两者均将建筑外轮廓作为强条件，但生成空间分别为像素图和矢量节点坐标。
+在相同数据集（PlanText-150K）上训练后，两者具备可比性，
+见实验 §\ref{subsec:main_results} 表~\ref{tab:bnd_comparison}。
 
-\subsubsection{推理：直接分类}
+% -----------------------------------------------------------------------------
+\subsection{面房间类型标注}
+\label{subsec:face_type_llm}
 
-在推理阶段，NodeTypeClassifier 接收扩散生成的坐标 $\hat{\mathbf{X}}$ 作为输入，
-输出每个节点的类型标签：
-\begin{equation}
-    \hat{y}_i = \arg\max_{k \in \{1,\ldots,32\}} \hat{z}_{i,k}
-    \label{eq:type_infer}
-\end{equation}
+\todo{原 NodeTypeClassifier（32类 combo type 节点分类器）方案已放弃，
+改为基于视觉大语言模型（VLM）的面级房间类型标注，本节待完善。}
+
+坐标扩散完成后，经半边遍历提取所有有界面 $\{f_k\}$，
+每个面对应一个房间多边形。
+与原方案在节点粒度预测 32 种组合类型不同，
+本文直接在面粒度进行房间类型分类：
+以平面图渲染图像与各面的节点编号列表为输入，
+调用视觉语言模型（VLM）对每个面输出房间类型标签
+（bathroom / bedroom / living\_room / kitchen / corridor / dining\_room / other）。
+
+\paragraph{VLM 标注流程}
+将 $\theta_2$ 生成的节点坐标渲染为平面图图像，
+同时将各面的节点集合描述为结构化文本（``Room $k$: nodes $[i_1, i_2, \ldots]$''），
+拼接文本描述 $\mathcal{T}$ 后，以图文多模态输入调用 MiMo-V2.5 VLM，
+要求其以 JSON 格式输出每个面的房间类型。
+若解析失败则最多重试 $R$ 次。
+
+\todo{报告端到端面类型分类准确率（与真实面类型对比）及最终 IoU 结果。}
 
 % -----------------------------------------------------------------------------
 \subsection{推理流程}
@@ -464,26 +465,13 @@ grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 出发执行 1000 步逆扩散，得到节点坐标 $\hat{\mathbf{X}}$。
 
 \noindent
-（3）\textbf{节点类型预测}：以 $(\hat{\mathbf{X}}, \mathbf{A}, \mathcal{T})$ 为条件，
-NodeTypeClassifier 输出每个节点的组合类型 $\hat{y}_i \in \{1,\ldots,32\}$，
-并将其解码为该节点所属的房间类型集合。
-
-\noindent
-（4）\textbf{面提取与房间类型投票}：
+（3）\textbf{面提取与 VLM 房间类型标注}：
 以半边遍历（half-edge traversal）在平面图 $(\hat{\mathbf{X}}, \mathbf{A})$ 上提取所有有界面，
 每个面对应一个房间多边形。
-对每个面 $f_k$，采用特异性评分决定其房间类型：
-\begin{equation}
-    r_k = \arg\max_{t}\; \frac{\mathrm{fc}_k(t)}{\mathrm{ec}_k(t) + 1}
-    \label{eq:vote}
-\end{equation}
-其中 $\mathrm{fc}_k(t)$ 为面内含类型 $t$ 的节点数，
-$\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数；
-分母 $+1$ 起平滑作用，使集中分布在面内的类型得分更高。
-同分时按固定优先序
-（bathroom $>$ bedroom $>$ living\_room $>$ kitchen $>$ corridor $>$ dining\_room $>$ other）
-取最靠前者。
-最终输出各面的房间类型 $\{r_k\}$ 与对应多边形，即为完整的矢量平面图。
+将渲染图像与各面节点编号列表发送至 VLM（MiMo-V2.5），
+由其直接输出每个面的房间类型 $r_k$，
+最终得到各面的房间类型 $\{r_k\}$ 与对应多边形，即完整矢量平面图。
+\todo{原节点类型投票机制（特异性评分）已废弃，VLM 标注流程待补充完善。}
 
 \paragraph{最小度约束}
 \begin{itemize}
@@ -531,14 +519,11 @@ $\mathrm{ec}_k(t)$ 为面外一跳邻居中含类型 $t$ 的节点数；
     \STATE $\mathbf{x}_{t-1} \leftarrow \boldsymbol{\mu}_\theta + \sqrt{\tilde{\beta}_t}\,\boldsymbol{\varepsilon}\cdot\mathbf{1}[t>0],\quad \boldsymbol{\varepsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$
 \ENDFOR
 \STATE $\hat{\mathbf{X}} \leftarrow \mathbf{x}_{0}$ \COMMENT{$t=0$ 时 $\boldsymbol{\varepsilon}$ 项为零，直接取均值}
-\STATE \textbf{// Step 3: 节点类型预测}
-\STATE $\hat{\mathbf{z}} = f_{\theta_3}(\hat{\mathbf{X}},\, \mathbf{A},\, \mathbf{m},\, \mathcal{T})$
-\STATE $\hat{y}_i = \arg\max_{k \in \{1,\ldots,32\}} \hat{z}_{i,k},\quad \forall\, i$
-\STATE \textbf{// Step 4: 面提取与房间类型投票}
+\STATE \textbf{// Step 3: 面提取与 VLM 房间类型标注}
 \STATE $\mathcal{F} \leftarrow \textsc{FindFaces}(\hat{\mathbf{X}},\, \mathbf{A})$ \COMMENT{半边遍历，排除最大无界面}
+\STATE $\mathrm{img} \leftarrow \textsc{Render}(\hat{\mathbf{X}},\, \mathbf{A})$ \COMMENT{渲染平面图图像}
 \FOR{每个面 $f_k \in \mathcal{F}$}
-    \STATE $\mathrm{score}(t) \leftarrow \dfrac{|\{i \in f_k : t \in \hat{y}_i\}|}{|\{j \notin f_k : j \in \mathcal{N}(f_k),\, t \in \hat{y}_j\}| + 1},\quad \forall\, t$
-    \STATE $r_k \leftarrow \arg\max_{t}\, \mathrm{score}(t)$，同分时按固定优先序取最前者
+    \STATE $r_k \leftarrow \mathrm{VLM}\!\left(\mathrm{img},\; \{i : i \in f_k\},\; \mathcal{T}\right)$ \COMMENT{MiMo-V2.5，JSON 输出，失败重试 $R$ 次}
 \ENDFOR
 \RETURN 房间多边形 $\mathcal{F}$，各面房间类型 $\{r_k\}$
 \end{algorithmic}

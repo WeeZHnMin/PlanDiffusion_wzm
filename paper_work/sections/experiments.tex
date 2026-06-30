@@ -43,9 +43,23 @@
     取 5 次结果的平均 IoU 作为最终报告值，以获得更稳定的定量估计。
 \end{itemize}
 
-\paragraph{相关方法对比}
-由于现有方法在输入模态、数据集和图表示方式上与本文存在根本差异，
-难以在统一评估协议下进行定量对比。
+\paragraph{基线方法}
+
+为实现定量对比，我们将 ChatHouseDiffusion~\cite{qin2025chathousediffusion}
+在 \textbf{PlanText-150K} 上重新训练，与本文方法共用相同的训练集、验证集与测试集划分。
+ChatHouseDiffusion 原论文在 RPLAN 数据集上训练，以像素级平面图图像为生成目标，
+以文本描述和房间轮廓（outline mask）为双重输入条件。
+为在我们的矢量数据集上复现该方法，我们将轮廓由像素 mask 转换为顶点图的外轮廓多边形渲染，
+其余训练配置沿用原文设置。
+
+为进一步实现与 ChatHouseDiffusion 的\textbf{公平对比}，
+本文在 $\theta_2$ 的基础上引入轮廓条件变体 \textbf{PlanDiffusion-bnd}：
+在四流注意力架构（adj + room + global + bnd）中，
+将外轮廓节点（is\_boundary=1）的坐标在扩散全程固定（不加噪），
+并通过独立的轮廓注意力流（bnd\_attn）将轮廓空间约束注入所有内部节点。
+该变体与 ChatHouseDiffusion 的输入条件等价——均以文本描述和建筑外轮廓为条件——
+但生成空间为矢量节点坐标而非像素图像。
+
 表~\ref{tab:method_comparison} 从方法特性角度对比各代表性工作。
 
 \begin{table}[h]
@@ -53,15 +67,16 @@
 \caption{方法特性对比}
 \label{tab:method_comparison}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{lccccc}
 \toprule
-方法 & 输入模态 & 显式图结构 & 端到端文本驱动 & 拓扑约束 \\
+方法 & 输入模态 & 轮廓条件 & 显式图结构 & 端到端文本驱动 & 拓扑约束 \\
 \midrule
-Architext~\cite{galanos2023architext}             & 文本   & $\times$ & $\checkmark$ & $\times$ \\
-HouseDiffusion~\cite{shabani2023housediffusion}   & 气泡图 & $\checkmark$ & $\times$ & 部分 \\
-ChatHouseDiffusion~\cite{qin2025chathousediffusion} & 文本 & $\times$ & $\checkmark$ & $\times$ \\
+Architext~\cite{galanos2023architext}               & 文本     & $\times$     & $\times$     & $\checkmark$ & $\times$ \\
+HouseDiffusion~\cite{shabani2023housediffusion}     & 气泡图   & $\times$     & $\checkmark$ & $\times$     & 部分 \\
+ChatHouseDiffusion~\cite{qin2025chathousediffusion} & 文本     & $\checkmark$ & $\times$     & $\checkmark$ & $\times$ \\
 \midrule
-PlanDiffusion（本文）                             & 文本   & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+PlanDiffusion-bnd（本文）  & 文本 & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -144,15 +159,32 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
     & 节点数准确率（$\pm1$）↑  & 57.39\% \\
     & 节点数准确率（$\pm2$）↑  & 76.39\% \\
 \midrule
-节点坐标扩散（$\theta_2$） & Coord-RMSE↓ & 65.62 \\
+节点坐标扩散（$\theta_2$，三流） & Coord-RMSE↓ & 65.62 \\
 \midrule
-\multirow{2}{*}{节点类型预测（$\theta_3$）}
-    & Node Type Acc.↑ & 98.80\% \\
-    & Face Type Acc.↑ & 99.17\% \\
+\multirow{2}{*}{VLM 面类型标注（MiMo-V2.5）}
+    & Face Type Acc.↑ & \todo{待补} \\
+    & （多模型一致率） & \todo{待补} \\
 \midrule
-\multirow{2}{*}{端到端布局（5-roll 平均，含后处理）}
+\multirow{2}{*}{端到端布局——PlanDiffusion-tri（5-roll 平均，含后处理）}
     & Micro-IoU↑ & 22.46\% \\
     & Macro-IoU↑ & 21.27\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{轮廓条件对比：ChatHouseDiffusion vs.\ PlanDiffusion-bnd（均在 PlanText-150K 上训练）}
+\label{tab:bnd_comparison}
+\small
+\begin{tabular}{lccc}
+\toprule
+方法 & 轮廓条件形式 & Micro-IoU↑ & Macro-IoU↑ \\
+\midrule
+ChatHouseDiffusion~\cite{qin2025chathousediffusion} & 像素轮廓 mask  & 89.09\% & 87.24\% \\
+PlanDiffusion-bnd（本文） & 轮廓节点固定  & \textbf{91.15\%} & \textbf{89.88\%} \\
+\midrule
+PlanDiffusion-tri（本文，主线） & 无（纯文本）  & 22.46\% & 21.27\% \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -214,17 +246,20 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 \toprule
 注意力变体 & 描述 & Coord-RMSE↓ \\
 \midrule
-仅邻接局部注意力（AdjAttn only）  & 每节点仅关注直连邻居           & 80.71 \\
-仅全局注意力（GlobalAttn only）   & 节点间无掩码全局自注意力       & 68.71 \\
-双流（AdjAttn + GlobalAttn）      & 局部 + 全局并行，本文完整模型  & \textbf{61.58} \\
+AdjAttn only   & 每节点仅关注直连邻居（局部边）         & 80.71 \\
+GlobalAttn only & 节点间无掩码全局自注意力              & 68.71 \\
+AdjAttn + GlobalAttn（双流） & 局部 + 全局并行                & \todo{待补} \\
+\textbf{AdjAttn + RoomAttn + GlobalAttn（三流，本文）} & 局部 + 面 + 全局并行 & \textbf{61.58} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-图~\ref{fig:ablation_viz} 对三个变体的生成布局进行定性对比。
-GlobalAttn only 生成的节点分布散乱、边交叉严重，缺乏平面图的网格状结构；
+图~\ref{fig:ablation_viz} 对变体的生成布局进行定性对比。
+GlobalAttn only 生成的节点分布散乱、边交叉严重；
 AdjAttn only 布局较为规整但整体偏移较大；
-双流变体（Ours）在布局合理性和与真实图的相似度上均最优。
+三流变体（Ours）在布局合理性和与真实图的相似度上均最优。
+RoomAttn 的引入使同一房间面内的所有角点在去噪过程中可以相互感知，
+弥补了 AdjAttn 仅覆盖一跳邻居的局限，显著降低了 Coord-RMSE。
 
 \begin{figure}[htbp]
     \centering

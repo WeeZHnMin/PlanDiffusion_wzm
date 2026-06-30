@@ -42,9 +42,13 @@ ChatHouseDiffusion~\cite{qin2025chathousediffusion} 进一步引入 prompt 引�
     \item 构建了 PlanText-150K 数据集，
     通过 MiMo-V2.5 VLM 自动标注并经人工抽查校正提供高质量自然语言描述，
     是目前规模最大的带文本标注的住宅平面图数据集之一；
-    \item 设计了双流注意力去噪网络（NodeDiffusionTransformer），
-    同时利用邻接局部注意力与文本全局注意力实现图结构与语义的联合条件化，
-    在给定图结构条件下高精度恢复节点坐标。
+    \item 设计了三流注意力去噪网络（NodeDiffusionTransformer），
+    并联邻接局部注意力（AdjAttn）、面结构注意力（RoomAttn）与全局注意力（GlobalAttn），
+    分别捕捉节点的局部边约束、房间面约束与全局布局信息，
+    在纯文本条件下高精度恢复节点坐标；
+    并在此基础上扩展四流轮廓条件变体（PlanDiffusion-bnd），
+    以外轮廓节点固定 + BndAttn 提供等价于 ChatHouseDiffusion 轮廓输入的几何约束，
+    实现公平定量对比。
 \end{itemize}
 
 \begin{figure}[t]
