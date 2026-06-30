@@ -191,7 +191,7 @@ def main():
     # ── 推理 ──────────────────────────────────────────────────────────────────
     with torch.no_grad():
         for i, rec in enumerate(records):
-            print(f'  DDIM {args.ddim_steps}步  样本{i}...', flush=True)
+            print(f'  DDPM 1000步  样本{i}...', flush=True)
             room_mb = torch.from_numpy(rec['room_mb_np'][None]).float().to(device)
             adj     = torch.from_numpy(rec['adj_np'][None]).float().to(device)
             mask    = torch.from_numpy(rec['mask_np'][None]).float().to(device)
