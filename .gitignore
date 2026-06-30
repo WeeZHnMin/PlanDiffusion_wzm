@@ -73,4 +73,5 @@ data/convert_rs/target/
 
 tools/
 caption_floorplans_mimo.py
+api_keys.py
 plandiff.bundle
