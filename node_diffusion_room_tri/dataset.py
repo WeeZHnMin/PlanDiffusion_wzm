@@ -85,7 +85,8 @@ def load_node_data(npz_path_or_dataset, batch_size, shuffle=True, sampler=None,
     if sampler is not None:
         shuffle = False
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
-                        sampler=sampler, num_workers=2, drop_last=True)
+                        sampler=sampler, num_workers=4, drop_last=True,
+                        pin_memory=True, persistent_workers=True)
     epoch = 0
     while True:
         if hasattr(sampler, 'set_epoch'):
