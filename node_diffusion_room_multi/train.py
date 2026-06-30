@@ -46,9 +46,18 @@ def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
     ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
     B  = next(iter(cond_batched.values())).shape[0]
     x  = torch.randn(B, 2, MAX_NODES, device=device)
+
+    # 预计算 BERT 文本特征，避免 200 步循环内反复前向传播
+    text_feat, text_mask = model.encode_text(
+        cond_batched['prompt_tokens'], cond_batched.get('prompt_mask'))
+    extra = {k: v for k, v in cond_batched.items()
+             if k not in ('prompt_tokens', 'prompt_mask')}
+    extra['text_feat'] = text_feat
+    extra['text_mask'] = text_mask
+
     for i, t in enumerate(ts):
         t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
-        eps  = model(x, t_tensor, **cond_batched)
+        eps  = model(x, t_tensor, **extra)
         ab_t = diffusion.alphas_bar[t]
         x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
         if i + 1 < len(ts):

@@ -178,7 +178,7 @@ class GlobalRoomAttnStream(nn.Module):
         # 先屏蔽 padding key（在环循环外处理，避免重复计算）
         if pad_mask is not None:
             # pad_mask [B, 1, N] → unsqueeze → [B, 1, 1, N]，广播到 [B, H, N, N]
-            base_scores = base_scores - pad_mask.unsqueeze(2) * 1e9
+            base_scores = base_scores - pad_mask.unsqueeze(2) * 1e4
 
         R = room_membership.shape[2]  # MAX_ROOMS
 
@@ -192,7 +192,7 @@ class GlobalRoomAttnStream(nn.Module):
                 continue
 
             # 屏蔽不属于环 k 的 Key 列：(1 - mem_k)[B,N] → [B,1,1,N]
-            col_mask = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e9
+            col_mask = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e4
             scores_k = base_scores - col_mask  # [B, H, N, N]
 
             attn_k = F.softmax(scores_k.float(), dim=-1).to(Q.dtype)
