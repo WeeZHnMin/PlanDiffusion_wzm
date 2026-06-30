@@ -307,6 +307,11 @@ def main(argv=None, defaults=None):
 
         t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
 
+        # 20% 概率丢弃结构条件，强迫模型利用文本信息
+        if random.random() < 0.20:
+            cond['adj_matrix']      = torch.zeros_like(cond['adj_matrix'])
+            cond['room_membership'] = torch.zeros_like(cond['room_membership'])
+
         opt.zero_grad()
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
