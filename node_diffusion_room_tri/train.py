@@ -32,6 +32,7 @@ from transformers import BertTokenizer
 from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
+from .eval_iou import coords_to_polys_by_type, compute_iou, center_at_origin
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
@@ -65,7 +66,7 @@ def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
     return x   # [B, 2, MAX_NODES]
 
 
-# ── 验证函数（MSE）────────────────────────────────────────────────────────────
+# ── 验证函数（IoU）───────────────────────────────────────────────────────────
 
 def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file):
     raw_model = model.module if hasattr(model, 'module') else model
@@ -82,6 +83,16 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         adj_raw    = np.array(rec["adj_matrix"], dtype=np.int32)[:n, :n]
         np.fill_diagonal(adj_raw, 0)
 
+        gt_node_types = [
+            (t if isinstance(t, list) else [t])
+            for t in rec["node_types"][:n]
+        ]
+        gt_centered = center_at_origin(raw_coords, np.ones(n, dtype=np.float32))
+        adj_list    = adj_raw.tolist()
+        gt_polys    = coords_to_polys_by_type(gt_centered, adj_list, gt_node_types, n)
+        if not gt_polys:
+            continue
+
         mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
         adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
         adj_pad[:n, :n] = adj_raw.astype(np.float32)
@@ -94,13 +105,13 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         ptok = np.array(enc["input_ids"],      dtype=np.int64)
         pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
-        gt_centered = raw_coords - raw_coords.mean(axis=0)
         prepared.append({
             "mask_np": mask_np, "adj_pad": adj_pad, "membership": membership,
-            "ptok": ptok, "pmsk": pmsk, "n": n, "gt_centered": gt_centered,
+            "ptok": ptok, "pmsk": pmsk, "n": n,
+            "adj_list": adj_list, "gt_polys": gt_polys, "gt_node_types": gt_node_types,
         })
 
-    all_mse = []
+    micro_list, macro_list = [], []
     BS = args.val_batch
     t0 = time.perf_counter()
     for bi in range(0, len(prepared), BS):
@@ -115,21 +126,28 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         }
         pred_xy = _ddim_sample(raw_model, diffusion, cond_b, device, args.ddim_steps)
         for j in range(B):
-            s = chunk[j]
-            n = s["n"]
-            pred_np = pred_xy[j].cpu().numpy().T[:n]          # [n, 2]
-            pred_cen = pred_np - pred_np.mean(axis=0)
-            mse = float(np.mean((pred_cen - s["gt_centered"]) ** 2))
-            all_mse.append(mse)
+            s       = chunk[j]
+            n       = s["n"]
+            pred_np = pred_xy[j].cpu().numpy().T          # [MAX_NODES, 2]
+            pred_cen = center_at_origin(pred_np, s["mask_np"])
+            pred_polys = coords_to_polys_by_type(
+                pred_cen[:n], s["adj_list"], s["gt_node_types"], n)
+            micro, macro = compute_iou(s["gt_polys"], pred_polys)
+            micro_list.append(micro)
+            macro_list.append(macro)
 
-    avg_mse = float(np.mean(all_mse)) if all_mse else float('inf')
-    elapsed = time.perf_counter() - t0
-    print(f"[val step {step:6d}] n={len(all_mse)} | val_mse={avg_mse:.4f} | {elapsed:.1f}s")
-    log_file.write(json.dumps({'step': step, 'val_mse': round(avg_mse, 4),
+    micro_iou = float(np.mean(micro_list)) if micro_list else 0.0
+    macro_iou = float(np.mean(macro_list)) if macro_list else 0.0
+    elapsed   = time.perf_counter() - t0
+    print(f"[val step {step:6d}] n={len(micro_list)} | "
+          f"micro_iou={micro_iou:.4f}  macro_iou={macro_iou:.4f} | {elapsed:.1f}s")
+    log_file.write(json.dumps({'step': step,
+                               'micro_iou': round(micro_iou, 4),
+                               'macro_iou': round(macro_iou, 4),
                                'elapsed_val': round(elapsed, 1)}) + '\n')
 
     raw_model.train()
-    return avg_mse
+    return micro_iou
 
 
 # ── 训练入口 ──────────────────────────────────────────────────────────────────
@@ -279,7 +297,7 @@ def main(argv=None, defaults=None):
 
     model.train()
     running_loss = running_rmse = 0.0
-    best_val_mse = float('inf')
+    best_val_iou = 0.0
     t0 = time.perf_counter()
 
     for step in range(start_step, args.total_steps):
@@ -329,16 +347,16 @@ def main(argv=None, defaults=None):
         if is_master and val_records and step > 0 and step % args.val_interval == 0:
             mse = _run_val(model, diffusion, val_tokenizer, val_records,
                            args, device, step, log_file)
-            if mse < best_val_mse:
-                best_val_mse = mse
+            if mse > best_val_iou:
+                best_val_iou = mse
                 raw_model = model.module if use_ddp else model
                 best_path = save_dir / "best.pt"
                 torch.save({
                     "model": raw_model.state_dict(), "opt": opt.state_dict(),
                     "scaler": scaler.state_dict(), "step": step,
-                    "val_mse": mse,
+                    "micro_iou": mse,
                 }, best_path)
-                print(f"  best model saved (val_mse={mse:.4f}) -> {best_path}")
+                print(f"  best model saved (micro_iou={mse:.4f}) -> {best_path}")
 
     if is_master:
         ckpt_path = save_dir / "latest.pt"
