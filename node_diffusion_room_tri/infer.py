@@ -162,6 +162,62 @@ def snap_nodes(coords, adj, n, threshold_ratio=0.02):
     return coords, adj
 
 
+# ── 边交叉点插入节点 ──────────────────────────────────────────────────────────
+
+def _seg_intersect(p1, p2, p3, p4):
+    """返回线段 (p1,p2) 与 (p3,p4) 的严格内部交点，无则返回 None。"""
+    x1, y1 = p1;  x2, y2 = p2
+    x3, y3 = p3;  x4, y4 = p4
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-10:
+        return None
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+    if 1e-8 < t < 1 - 1e-8 and 1e-8 < u < 1 - 1e-8:
+        return [x1 + t * (x2 - x1), y1 + t * (y2 - y1)]
+    return None
+
+
+def insert_crossing_nodes(coords, adj, n):
+    """
+    找所有边交叉点，在交叉处插入新节点，断开两条原边，新增四条边。
+    迭代直到无新交叉为止。返回 (coords, adj, n)。
+    """
+    changed = True
+    while changed:
+        changed = False
+        edges = [(i, j) for i in range(n) for j in range(i + 1, n) if adj[i][j]]
+        for ei in range(len(edges)):
+            a, b = edges[ei]
+            for ej in range(ei + 1, len(edges)):
+                c, d = edges[ej]
+                if a == c or a == d or b == c or b == d:
+                    continue  # 共享端点，不算交叉
+                pt = _seg_intersect(coords[a], coords[b], coords[c], coords[d])
+                if pt is None:
+                    continue
+                # 插入新节点
+                k = n
+                coords = coords + [pt]
+                new_adj = [[0] * (n + 1) for _ in range(n + 1)]
+                for i in range(n):
+                    for j in range(n):
+                        new_adj[i][j] = adj[i][j]
+                new_adj[a][b] = new_adj[b][a] = 0
+                new_adj[c][d] = new_adj[d][c] = 0
+                new_adj[a][k] = new_adj[k][a] = 1
+                new_adj[b][k] = new_adj[k][b] = 1
+                new_adj[c][k] = new_adj[k][c] = 1
+                new_adj[d][k] = new_adj[k][d] = 1
+                adj = new_adj
+                n += 1
+                changed = True
+                break
+            if changed:
+                break
+    return coords, adj, n
+
+
 # ── 节点连接图渲染 ────────────────────────────────────────────────────────────
 
 def render_graph(coords, adj, n, img_size=768, margin=48, node_r=18):
@@ -352,7 +408,8 @@ def main():
                 coords_j = pred_centered[:n_j].tolist()
                 adj_j    = chunk[j]["adj_list"]
                 coords_j, adj_j = snap_nodes(coords_j, adj_j, n_j)
-                all_pred.append((coords_j, adj_j))
+                coords_j, adj_j, n_j = insert_crossing_nodes(coords_j, adj_j, n_j)
+                all_pred.append((coords_j, adj_j, n_j))
 
             done = min(bi + VB, len(prepared))
             print(f"  [{done}/{len(prepared)}]  {time.time() - t0:.1f}s", flush=True)
@@ -366,10 +423,10 @@ def main():
         img_dir.mkdir(parents=True, exist_ok=True)
 
     with open(out_path, "w", encoding="utf-8") as f:
-        for idx, (s, (pred_coords, pred_adj)) in enumerate(zip(prepared, all_pred)):
+        for idx, (s, (pred_coords, pred_adj, pred_n)) in enumerate(zip(prepared, all_pred)):
             f.write(json.dumps({
                 "prompt":           s["prompt"],
-                "n_nodes":          s["n"],
+                "n_nodes":          pred_n,
                 "adj_matrix":       pred_adj,
                 "gt_node_coords":   s["gt_coords"],
                 "gt_node_types":    s["gt_types"],
@@ -377,7 +434,7 @@ def main():
             }, ensure_ascii=False) + "\n")
 
             if img_dir:
-                img = render_graph(pred_coords, pred_adj, s["n"],
+                img = render_graph(pred_coords, pred_adj, pred_n,
                                    img_size=args.img_size)
                 img.save(img_dir / f"{idx:05d}.png")
 

@@ -243,7 +243,7 @@ def render_semantic(coords, adj, faces, face_types, img_size=IMG_SIZE):
         chat_type = OUR2CHAT.get(room_type, "Storage")
         type_id = CHAT_TYPE2ID.get(chat_type, 0)
         pts = [to_px(*coords[i]) for i in face]
-        draw.polygon(pts, fill=int(type_id * 15))
+        draw.polygon(pts, fill=type_id)
     return img
 
 

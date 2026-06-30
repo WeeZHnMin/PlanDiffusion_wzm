@@ -61,7 +61,7 @@ class Trainer(object):
         train_num_workers=8,
         mode="train",
         inject_step=25,
-        val_size=200,
+        val_size=224,
     ):
         super().__init__()
 
@@ -135,10 +135,11 @@ class Trainer(object):
                 onehot=onehot,
             )
 
-            # val_size=None 跑全量测试集，否则只取前 val_size 条
+            # val_size=None 跑全量测试集，否则随机抽取 val_size 条
             from torch.utils.data import Subset
             if val_size is not None and val_size < len(self.val_ds):
-                val_ds_eff = Subset(self.val_ds, list(range(val_size)))
+                indices = torch.randperm(len(self.val_ds))[:val_size].tolist()
+                val_ds_eff = Subset(self.val_ds, indices)
             else:
                 val_ds_eff = self.val_ds
             val_dl = DataLoader(
