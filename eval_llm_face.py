@@ -258,6 +258,10 @@ def main():
             prompt   = build_prompt(prompt_text, rings, ring_adj, n)
 
             try:
+                if n_done == 0:
+                    print("\n=== 发给 MiMo 的 prompt ===")
+                    print(prompt)
+                    print("=== prompt 结束 ===\n")
                 response  = call_mimo(prompt, client, thinking=not args.no_thinking)
                 if n_done == 0:
                     print("\n=== 第一条原始回答 ===")
