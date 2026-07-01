@@ -257,6 +257,10 @@ def main():
 
             try:
                 response  = call_mimo(prompt, client, thinking=not args.no_thinking)
+                if n_done == 0:
+                    print("\n=== 第一条原始回答 ===")
+                    print(response)
+                    print("===================\n")
                 predicted = parse_response(response, len(rings))
             except Exception as e:
                 print(f"  [ERROR] sample {n_done}: {e}")
