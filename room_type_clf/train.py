@@ -1,12 +1,18 @@
 """
 训练 RoomTypeClassifier：文本 + 邻接图 → 节点房间类型分类。
 
-用法：
+--train / --val 均支持 .jsonl 或 .npz，按后缀自动识别。
+
+用法（jsonl）：
   python -m room_type_clf.train \
-      --train_jsonl data/jsonl/final_graph_dataset_v3.jsonl \
-      --val_jsonl   data/jsonl/val_graph_dataset_18k5.jsonl \
-      --bert        models/bert-base-uncased \
-      --save_dir    checkpoints/room_type_clf
+      --train data/jsonl/final_graph_dataset_v3.jsonl \
+      --val   data/jsonl/val_graph_dataset_18k5.jsonl
+
+用法（npz）：
+  python -m room_type_clf.train \
+      --train data/processed/room_type_clf/train.npz \
+      --val   data/processed/room_type_clf/val.npz \
+      --no_text
 """
 
 import argparse
@@ -25,12 +31,10 @@ from .model import RoomTypeClassifier
 
 def build_parser():
     p = argparse.ArgumentParser()
-    p.add_argument('--train_jsonl',  default='data/jsonl/final_graph_dataset_v3.jsonl')
-    p.add_argument('--val_jsonl',    default='data/jsonl/val_graph_dataset_18k5.jsonl')
-    p.add_argument('--train_npz',    default='',
-                   help='预处理好的训练 npz，与 train_jsonl 二选一')
-    p.add_argument('--val_npz',      default='',
-                   help='预处理好的验证 npz，与 val_jsonl 二选一')
+    p.add_argument('--train', required=True,
+                   help='训练集路径，.jsonl 或 .npz')
+    p.add_argument('--val',   required=True,
+                   help='验证集路径，.jsonl 或 .npz')
     p.add_argument('--bert',         default='models/bert-base-uncased')
     p.add_argument('--save_dir',     default='checkpoints/room_type_clf')
     p.add_argument('--batch_size',   type=int,   default=512)
@@ -48,6 +52,15 @@ def build_parser():
     p.add_argument('--no_text',      action='store_true',
                    help='禁用文本编码器（baseline 实验）')
     return p
+
+
+def _load_dataset(path, bert_name, batch_size, shuffle, type_vocab=None):
+    """按文件后缀自动选择 jsonl / npz 加载方式。"""
+    if path.endswith('.npz'):
+        return load_npz_data(path, batch_size, shuffle=shuffle)
+    else:
+        return load_data(path, bert_name, batch_size, shuffle=shuffle,
+                         type_vocab=type_vocab)
 
 
 VAL_SAMPLES = 4096
@@ -97,31 +110,27 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 数据
-    if args.train_npz:
-        # npz 模式：词表从 npz 同名 vocab.json 读取
-        vocab_path = Path(args.train_npz).with_suffix('.vocab.json')
+    # 词表
+    if args.train.endswith('.npz'):
+        vocab_path = Path(args.train).with_suffix('.vocab.json')
         with open(vocab_path, encoding='utf-8') as f:
             type_vocab = json.load(f)
         print(f'词表大小: {len(type_vocab)}  (from {vocab_path})')
-        train_ds, train_loader = load_npz_data(
-            args.train_npz, args.batch_size, shuffle=True)
-        val_npz = args.val_npz or str(Path(args.train_npz).parent / 'val.npz')
-        _, val_loader = load_npz_data(val_npz, batch_size=64, shuffle=False)
     else:
-        # jsonl 模式
         print('构建类型词表...')
-        type_vocab = build_type_vocab(args.train_jsonl)
+        type_vocab = build_type_vocab(args.train)
         vocab_path = save_dir / 'type_vocab.json'
         with open(vocab_path, 'w', encoding='utf-8') as f:
             json.dump(type_vocab, f, ensure_ascii=False, indent=2)
         print(f'词表大小: {len(type_vocab)}  已保存 -> {vocab_path}')
-        train_ds, train_loader = load_data(
-            args.train_jsonl, args.bert, args.batch_size,
-            shuffle=True, type_vocab=type_vocab)
-        _, val_loader = load_data(
-            args.val_jsonl, args.bert, batch_size=64,
-            shuffle=False, type_vocab=type_vocab)
+
+    # 数据
+    train_ds, train_loader = _load_dataset(
+        args.train, args.bert, args.batch_size, shuffle=True,
+        type_vocab=type_vocab)
+    _, val_loader = _load_dataset(
+        args.val, args.bert, batch_size=64, shuffle=False,
+        type_vocab=type_vocab)
 
     # 模型
     use_text = not args.no_text
@@ -134,7 +143,6 @@ def main():
         use_text       = use_text,
     ).to(device)
 
-    # 损失函数：ignore_index=-1 跳过 padding 节点
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
 
     no_decay = {'bias', 'norm', 'LayerNorm'}
@@ -159,7 +167,6 @@ def main():
     log_file = open(log_path, 'a', encoding='utf-8', buffering=1)
     print(f'日志: {log_path}')
 
-    # 无限循环 loader
     def inf_loader():
         while True:
             yield from train_loader
@@ -191,9 +198,9 @@ def main():
         opt.step()
 
         with torch.no_grad():
-            valid   = (labels >= 0)
-            preds   = logits.argmax(dim=-1)
-            acc     = (preds[valid] == labels[valid]).float().mean().item()
+            valid = (labels >= 0)
+            preds = logits.argmax(dim=-1)
+            acc   = (preds[valid] == labels[valid]).float().mean().item()
 
         running_loss += loss.item()
         running_acc  += acc
@@ -231,7 +238,6 @@ def main():
                             'type_vocab': type_vocab}, save_dir / 'best.pt')
                 print(f'  best saved (val_acc={val_acc:.4f})')
 
-    # 最终保存
     torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
                 'step': args.total_steps, 'type_vocab': type_vocab},
                save_dir / 'latest.pt')
