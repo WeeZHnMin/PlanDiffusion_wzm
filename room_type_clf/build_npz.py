@@ -33,9 +33,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from pathlib import Path as _Path
+
+import numpy as np
 from transformers import BertModel, BertTokenizer
 
 from .dataset import load_combo_vocab, COMBO_VOCAB_PATH, MAX_NODES, MAX_TEXT_LEN
+
+ALIGN_VOCAB_PATH = str(_Path(__file__).parent.parent / 'text_graph_align' / 'vocab')
 from .model import _assign_room_membership_single, MAX_ROOMS
 
 
@@ -111,13 +116,15 @@ def run_bert(unique_input_ids, unique_attn_mask, bert_name, bert_batch=64, gpu=N
 
 # ── 处理单个 jsonl ─────────────────────────────────────────────────────────────
 
-def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
-                  augment=1, rng=None):
+def process_jsonl(jsonl_path, tokenizer, align_tokenizer=None,
+                  max_samples=0, n_workers=1, augment=1, rng=None):
     """
     返回:
-      arrays        : dict，不含文本特征（文本由 BERT 单独处理）
-      unique_ids    : [n_unique, T] int32  去重后的 input_ids
-      unique_mask   : [n_unique, T] int32  去重后的 attention_mask
+      arrays          : dict，不含文本特征（文本由 BERT 单独处理）
+      unique_ids      : [n_unique, T] int32  BERT token IDs（供 BERT 推理）
+      unique_mask     : [n_unique, T] int32  BERT attention_mask
+      align_unique_ids: [n_unique, T] int32  自定义词表 token IDs（供从零训练文本编码器）
+                        若 align_tokenizer 为 None 则与 unique_ids 相同
     """
     if rng is None:
         rng = random.Random(42)
@@ -128,9 +135,10 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
     n_nodes_list = []
     text_idx_list = []
 
-    prompt_to_uid = {}   # prompt_str → unique_idx
+    prompt_to_uid    = {}   # prompt_str → unique_idx
     unique_ids_list  = []
     unique_mask_list = []
+    align_ids_list   = []   # 自定义词表 token IDs
 
     n_graphs = n_skipped = 0
     t0 = time.perf_counter()
@@ -158,6 +166,8 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
             if prompt not in prompt_to_uid:
                 uid = len(unique_ids_list)
                 prompt_to_uid[prompt] = uid
+
+                # BERT token IDs
                 padded   = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
                 attn_msk = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
                 tlen = len(enc['input_ids'])
@@ -165,6 +175,19 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
                 attn_msk[:tlen] = enc['attention_mask']
                 unique_ids_list.append(padded)
                 unique_mask_list.append(attn_msk)
+
+                # 自定义词表 token IDs
+                if align_tokenizer is not None:
+                    a_enc  = align_tokenizer(prompt, add_special_tokens=True)
+                    a_ids  = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
+                    a_mask = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
+                    alen   = min(len(a_enc['input_ids']), MAX_TEXT_LEN)
+                    a_ids[:alen]  = a_enc['input_ids'][:alen]
+                    a_mask[:alen] = a_enc['attention_mask'][:alen]
+                    align_ids_list.append(a_ids)
+                else:
+                    align_ids_list.append(padded)
+
             uid = prompt_to_uid[prompt]
 
             # 邻接矩阵
@@ -229,9 +252,10 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
         type_labels     = np.stack(labels_list, axis=0),
         text_idx        = np.array(text_idx_list, dtype=np.int32),
     )
-    unique_ids  = np.stack(unique_ids_list,  axis=0)  # [n_unique, T]
-    unique_mask = np.stack(unique_mask_list, axis=0)  # [n_unique, T]
-    return arrays, unique_ids, unique_mask
+    unique_ids   = np.stack(unique_ids_list,  axis=0)  # [n_unique, T]  BERT IDs
+    unique_mask  = np.stack(unique_mask_list, axis=0)  # [n_unique, T]
+    align_ids    = np.stack(align_ids_list,   axis=0)  # [n_unique, T]  自定义词表 IDs
+    return arrays, unique_ids, unique_mask, align_ids
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -240,7 +264,10 @@ def main():
     args      = parse_args()
     rng       = random.Random(args.seed)
     n_workers = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
-    tokenizer = BertTokenizer.from_pretrained(args.bert)
+    tokenizer       = BertTokenizer.from_pretrained(args.bert)
+    align_tokenizer = BertTokenizer.from_pretrained(ALIGN_VOCAB_PATH)
+    print(f"BERT tokenizer: {args.bert}  (vocab {tokenizer.vocab_size})")
+    print(f"Align tokenizer: {ALIGN_VOCAB_PATH}  (vocab {align_tokenizer.vocab_size})")
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,14 +278,16 @@ def main():
     # ── 训练集 ────────────────────────────────────────────────────────────────
     t0 = time.perf_counter()
     print(f"\n处理训练集: {args.jsonl}  (augment={args.augment})")
-    arrays, uid_ids, uid_mask = process_jsonl(
-        args.jsonl, tokenizer, args.max_samples, n_workers, args.augment, rng)
+    arrays, uid_ids, uid_mask, align_ids = process_jsonl(
+        args.jsonl, tokenizer, align_tokenizer,
+        args.max_samples, n_workers, args.augment, rng)
 
     print("\n运行 BERT 推理（训练集）...")
     text_hidden = run_bert(uid_ids, uid_mask, args.bert, args.bert_batch, args.gpu)
 
-    arrays['text_attn_mask']  = uid_mask.astype(bool)   # [n_unique, T] bool
-    arrays['text_input_ids']  = uid_ids.astype(np.int32) # [n_unique, T] int32
+    arrays['text_attn_mask']       = uid_mask.astype(bool)     # [n_unique, T] BERT mask（room_type_clf用）
+    arrays['text_input_ids']       = align_ids.astype(np.int32) # [n_unique, T] 自定义词表 IDs
+    arrays['text_input_attn_mask'] = (align_ids > 0).astype(bool) # [n_unique, T] align mask
 
     # text_hidden 单独存 npy（不压缩，BERT特征压缩率低且耗时）
     text_hidden_path = out_path.with_suffix('.text_hidden.npy')
@@ -276,14 +305,15 @@ def main():
             val_path = out_path.parent / 'val.npz'
         t0 = time.perf_counter()
         print(f"\n处理验证集: {args.val_jsonl}  (augment=1)")
-        val_arrays, val_uid_ids, val_uid_mask = process_jsonl(
-            args.val_jsonl, tokenizer, 0, n_workers, augment=1)
+        val_arrays, val_uid_ids, val_uid_mask, val_align_ids = process_jsonl(
+            args.val_jsonl, tokenizer, align_tokenizer, 0, n_workers, augment=1)
 
         print("\n运行 BERT 推理（验证集）...")
         val_text = run_bert(val_uid_ids, val_uid_mask, args.bert, args.bert_batch, args.gpu)
 
-        val_arrays['text_attn_mask'] = val_uid_mask.astype(bool)
-        val_arrays['text_input_ids'] = val_uid_ids.astype(np.int32)
+        val_arrays['text_attn_mask']       = val_uid_mask.astype(bool)
+        val_arrays['text_input_ids']       = val_align_ids.astype(np.int32)
+        val_arrays['text_input_attn_mask'] = (val_align_ids > 0).astype(bool)
 
         val_text_path = val_path.with_suffix('.text_hidden.npy')
         np.save(val_text_path, val_text)

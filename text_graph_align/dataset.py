@@ -25,8 +25,8 @@ class AlignDataset(Dataset):
         self.adj_matrix      = data['adj_matrix'].astype(np.float32)
         self.room_membership = data['room_membership'].astype(np.float32)
         self.text_idx        = data['text_idx'].astype(np.int64)
-        self.text_input_ids  = data['text_input_ids'].astype(np.int64)   # [U, T]
-        self.text_attn_mask  = data['text_attn_mask'].astype(np.float32) # [U, T]
+        self.text_input_ids  = data['text_input_ids'].astype(np.int64)        # [U, T]
+        self.text_attn_mask  = data['text_input_attn_mask'].astype(np.float32) # [U, T]
         print(f"AlignDataset: {len(self.node_mask)} 条  "
               f"unique_prompts={len(self.text_input_ids)}  {npz_path}")
 
