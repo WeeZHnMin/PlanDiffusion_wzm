@@ -59,7 +59,7 @@ def _compute_room_membership(args_tuple):
 
 # ── 处理单个 jsonl ─────────────────────────────────────────────────────────────
 
-def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0):
+def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1):
     other_id = type_vocab.get('__other__', len(type_vocab) - 1)
 
     mask_list   = []
@@ -137,7 +137,6 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0):
     adj_arr  = np.stack(adj_list, axis=0)
     mask_arr = np.stack(mask_list, axis=0)
 
-    n_workers = args_workers if args_workers > 0 else max(1, cpu_count() - 1)
     tasks     = [(i, adj_arr[i], int(n_nodes_list[i])) for i in range(total)]
     membership_out = np.zeros((total, MAX_NODES, MAX_ROOMS), dtype=np.float32)
 
@@ -159,31 +158,21 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0):
     )
 
 
-# ── 全局变量供 worker 使用 ────────────────────────────────────────────────────
-args_workers = 0
-
-
 def main():
-    global args_workers
     args = parse_args()
-    args_workers = args.workers
+    n_workers = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 词表：扫描训练集（+验证集）
+    # 词表：先扫描训练集，再合并验证集里出现的新类型
     print("构建类型词表...")
-    paths_for_vocab = [args.jsonl]
-    if args.val_jsonl:
-        paths_for_vocab.append(args.val_jsonl)
-    # 合并扫描
     from .dataset import build_type_vocab as _build
     type_vocab = _build(args.jsonl)
     if args.val_jsonl:
-        extra = _build(args.val_jsonl)
-        for k, _ in extra.items():
+        for k in _build(args.val_jsonl):
             if k not in type_vocab:
                 type_vocab[k] = len(type_vocab)
     print(f"词表大小: {len(type_vocab)}")
@@ -196,7 +185,7 @@ def main():
     # 构建训练集
     t0 = time.perf_counter()
     print(f"\n处理训练集: {args.jsonl}")
-    arrays = process_jsonl(args.jsonl, tokenizer, type_vocab, args.max_samples)
+    arrays = process_jsonl(args.jsonl, tokenizer, type_vocab, args.max_samples, n_workers)
     np.savez_compressed(out_path, **arrays)
     print(f"训练集 -> {out_path}  ({time.perf_counter()-t0:.1f}s)")
     _print_stats(arrays)
@@ -208,7 +197,7 @@ def main():
             val_path = out_path.parent / 'val.npz'
         t0 = time.perf_counter()
         print(f"\n处理验证集: {args.val_jsonl}")
-        val_arrays = process_jsonl(args.val_jsonl, tokenizer, type_vocab, 0)
+        val_arrays = process_jsonl(args.val_jsonl, tokenizer, type_vocab, 0, n_workers)
         np.savez_compressed(val_path, **val_arrays)
         print(f"验证集 -> {val_path}  ({time.perf_counter()-t0:.1f}s)")
         _print_stats(val_arrays)
