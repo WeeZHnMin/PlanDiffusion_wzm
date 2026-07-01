@@ -1,11 +1,9 @@
 """
 TextGraphAlign: CLIP 风格对比预训练
 
-GraphEncoder  : 四流注意力 → mean pool → MLP投影头 → L2归一化
-TextEncoder   : 预计算 BERT hidden → text_proj → mean pool → MLP投影头 → L2归一化
-TextGraphAlign: 上述两个编码器 + 可学习温度 logit_scale
-
-损失: 对称 InfoNCE (CLIP loss)
+GraphEncoder : 四流注意力 → mean pool → MLP投影头 → L2归一化
+TextEncoder  : 从零训练的 Transformer，输入 token IDs → mean pool → MLP投影头 → L2归一化
+TextGraphAlign: 两编码器 + 可学习温度 logit_scale，对称 InfoNCE
 """
 
 import math
@@ -20,13 +18,12 @@ import torch.nn.functional as F
 MAX_ROOMS = 20
 
 
-# ── Room Membership 分配（build_npz 复用） ─────────────────────────────────────
+# ── Room Membership 分配 ──────────────────────────────────────────────────────
 
 def _assign_room_membership_single(adj, n):
     seen       = set()
     next_rid   = 0
     membership = np.zeros((n, MAX_ROOMS), dtype=np.int32)
-
     for u in range(n):
         for v in range(u + 1, n):
             if not adj[u, v]:
@@ -62,11 +59,10 @@ def _assign_room_membership_single(adj, n):
             for node in cycle:
                 membership[node, next_rid] = 1
             next_rid += 1
-
     return membership
 
 
-# ── 基础模块 ──────────────────────────────────────────────────────────────────
+# ── 图编码器基础模块 ──────────────────────────────────────────────────────────
 
 def _attention(q, k, v, d_k, mask=None, dropout=None):
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
@@ -100,7 +96,6 @@ class MultiHeadAttention(nn.Module):
 
 
 class GlobalRoomAttnStream(nn.Module):
-    """按环分组的注意力，环内独立 softmax。"""
     def __init__(self, heads, d_model, dropout=0.1):
         super().__init__()
         self.d_k      = d_model // heads
@@ -127,11 +122,11 @@ class GlobalRoomAttnStream(nn.Module):
             mem_k = room_membership[:, :, k]
             if mem_k.sum() == 0:
                 continue
-            col_mask = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e4
-            scores_k = base_scores - col_mask
-            attn_k   = F.softmax(scores_k.float(), dim=-1).to(Q.dtype)
-            attn_k   = self.dropout(attn_k)
-            out_k    = torch.matmul(attn_k, V)
+            col_mask    = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e4
+            scores_k    = base_scores - col_mask
+            attn_k      = F.softmax(scores_k.float(), dim=-1).to(Q.dtype)
+            attn_k      = self.dropout(attn_k)
+            out_k       = torch.matmul(attn_k, V)
             node_mask_k = mem_k.unsqueeze(1).unsqueeze(3)
             out_accum   = out_accum   + out_k * node_mask_k
             room_counts = room_counts + node_mask_k
@@ -143,16 +138,18 @@ class GlobalRoomAttnStream(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, d_model, dropout=0.1):
         super().__init__()
-        self.linear1 = nn.Linear(d_model, d_model * 2)
-        self.linear2 = nn.Linear(d_model * 2, d_model)
-        self.dropout = nn.Dropout(dropout)
+        self.net = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+        )
 
     def forward(self, x):
-        return self.linear2(self.dropout(F.relu(self.linear1(x))))
+        return self.net(x)
 
 
 class GraphEncoderLayer(nn.Module):
-    """四流自注意力 + FFN。"""
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
         self.norm1            = nn.LayerNorm(d_model)
@@ -180,16 +177,6 @@ class GraphEncoderLayer(nn.Module):
 # ── 图编码器 ──────────────────────────────────────────────────────────────────
 
 class GraphEncoder(nn.Module):
-    """
-    node_mask / adj_matrix / room_membership → graph embedding [B, d_embed]
-
-    流程:
-      共享 node_token → 四流注意力层
-      → mean pool (仅有效节点)
-      → 2-layer MLP 投影头
-      → L2 归一化
-    """
-
     def __init__(self, d_model=256, num_layers=4, num_heads=4,
                  d_embed=256, dropout=0.1):
         super().__init__()
@@ -208,66 +195,66 @@ class GraphEncoder(nn.Module):
         dt = torch.float32
         nm = node_mask.to(dt)
         rm = room_membership.to(dt)
-
         room_nn  = torch.bmm(rm, rm.transpose(1, 2))
         room_msk = (room_nn == 0).to(dt)
         pad_keys = (1 - nm).unsqueeze(1)
         room_msk = torch.clamp(room_msk + pad_keys, 0, 1)
-        pad_mask = pad_keys
-
         am  = adj_matrix.to(dt)
         eye = torch.eye(am.shape[1], device=am.device, dtype=dt).unsqueeze(0)
-        adj_msk = 1 - (am + eye).clamp(0, 1)
-        adj_msk = torch.clamp(adj_msk + pad_keys, 0, 1)
-
-        return room_msk, pad_mask, adj_msk
+        adj_msk = torch.clamp(1 - (am + eye).clamp(0, 1) + pad_keys, 0, 1)
+        return room_msk, pad_keys, adj_msk
 
     def forward(self, node_mask, adj_matrix, room_membership):
         B, N = node_mask.shape
         seq  = self.node_token.expand(B, N, -1).clone()
-
         room_msk, pad_mask, adj_msk = self._build_masks(
             adj_matrix, room_membership, node_mask)
-
         for layer in self.layers:
             seq = layer(seq, room_msk, room_membership.float(), pad_mask, adj_msk)
-
         nm     = node_mask.float().unsqueeze(-1)
         pooled = (seq * nm).sum(dim=1) / nm.sum(dim=1).clamp(min=1)
         return F.normalize(self.proj(pooled), dim=-1)
 
 
-# ── 文本编码器 ────────────────────────────────────────────────────────────────
+# ── 文本编码器（从零训练）────────────────────────────────────────────────────
 
 class TextEncoder(nn.Module):
     """
-    预计算 BERT hidden [B, T, 768] → text embedding [B, d_embed]
-
-    流程:
-      text_proj Linear(768, d_model)
-      → mean pool 有效 token
-      → 2-layer MLP 投影头
-      → L2 归一化
+    从零训练的 Transformer 文本编码器。
+    输入: input_ids [B, T] + attn_mask [B, T]（1=有效）
+    输出: L2归一化 embedding [B, d_embed]
     """
 
-    def __init__(self, d_model=256, d_embed=256):
+    def __init__(self, vocab_size=10000, d_model=256, num_layers=4,
+                 num_heads=4, max_len=192, d_embed=256, dropout=0.1):
         super().__init__()
-        self.text_proj = nn.Linear(768, d_model)
+        self.tok_emb = nn.Embedding(vocab_size, d_model, padding_idx=0)
+        self.pos_emb = nn.Embedding(max_len, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=num_heads,
+            dim_feedforward=d_model * 2, dropout=dropout,
+            batch_first=True, norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.proj = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_embed),
         )
+        self.register_buffer('pos_ids', torch.arange(max_len).unsqueeze(0))
 
-    def forward(self, text_hidden, text_attn_mask):
+    def forward(self, input_ids, attn_mask):
         """
-        text_hidden    : [B, T, 768] float32
-        text_attn_mask : [B, T]      float32  1=有效
+        input_ids : [B, T] int64
+        attn_mask : [B, T] float32  1=有效 token
         """
-        feat   = self.text_proj(text_hidden)
-        tm     = text_attn_mask.float().unsqueeze(-1)
-        pooled = (feat * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)
+        T   = input_ids.size(1)
+        x   = self.tok_emb(input_ids) + self.pos_emb(self.pos_ids[:, :T])
+        pad = (attn_mask == 0)                    # [B, T] bool, True=padding
+        x   = self.transformer(x, src_key_padding_mask=pad)
+        tm  = attn_mask.float().unsqueeze(-1)
+        pooled = (x * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)
         return F.normalize(self.proj(pooled), dim=-1)
 
 
@@ -292,37 +279,40 @@ def clip_loss(graph_emb, text_emb, logit_scale):
 
 class TextGraphAlign(nn.Module):
     """
-    CLIP 风格文本-图对比预训练模型。
+    CLIP 风格文本-图对比预训练。文本编码器从零训练。
 
     forward 输入:
       node_mask      [B, N]
       adj_matrix     [B, N, N]
       room_membership[B, N, MAX_ROOMS]
-      text_hidden    [B, T, 768]
-      text_attn_mask [B, T]
+      input_ids      [B, T]   int64
+      attn_mask      [B, T]   float32  1=有效
 
     forward 返回: (loss, acc_g2t, acc_t2g)
     """
 
-    def __init__(self, d_model=256, num_layers=4, num_heads=4,
-                 d_embed=256, dropout=0.1):
+    def __init__(self, vocab_size=10000, d_model=256, num_layers=4, num_heads=4,
+                 max_len=192, d_embed=256, dropout=0.1):
         super().__init__()
         self.graph_enc   = GraphEncoder(d_model, num_layers, num_heads, d_embed, dropout)
-        self.text_enc    = TextEncoder(d_model, d_embed)
+        self.text_enc    = TextEncoder(vocab_size, d_model, num_layers, num_heads,
+                                       max_len, d_embed, dropout)
         self.logit_scale = nn.Parameter(torch.log(torch.tensor(1.0 / 0.07)))
 
-        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"TextGraphAlign: {trainable:,} trainable params  "
-              f"d_model={d_model}  d_embed={d_embed}  layers={num_layers}")
+        g_params = sum(p.numel() for p in self.graph_enc.parameters())
+        t_params = sum(p.numel() for p in self.text_enc.parameters())
+        print(f"TextGraphAlign  graph_enc={g_params/1e6:.2f}M  "
+              f"text_enc={t_params/1e6:.2f}M  "
+              f"total={(g_params+t_params)/1e6:.2f}M  "
+              f"d_model={d_model}  layers={num_layers}")
 
     def encode_graph(self, node_mask, adj_matrix, room_membership):
         return self.graph_enc(node_mask, adj_matrix, room_membership)
 
-    def encode_text(self, text_hidden, text_attn_mask):
-        return self.text_enc(text_hidden, text_attn_mask)
+    def encode_text(self, input_ids, attn_mask):
+        return self.text_enc(input_ids, attn_mask)
 
-    def forward(self, node_mask, adj_matrix, room_membership,
-                text_hidden, text_attn_mask):
+    def forward(self, node_mask, adj_matrix, room_membership, input_ids, attn_mask):
         g = self.graph_enc(node_mask, adj_matrix, room_membership)
-        t = self.text_enc(text_hidden, text_attn_mask)
+        t = self.text_enc(input_ids, attn_mask)
         return clip_loss(g, t, self.logit_scale)

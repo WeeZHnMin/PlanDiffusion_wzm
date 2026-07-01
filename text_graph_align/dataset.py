@@ -1,8 +1,15 @@
 """
-AlignDataset: 读取 room_type_clf build_npz 生成的 npz 格式。
+AlignDataset: 读取 room_type_clf build_npz 生成的 npz。
 
-复用 room_type_clf 数据集（已预计算 BERT text_hidden），
-训练时只需跑 text_proj，不再调用 BERT。
+npz 中需包含：
+  text_input_ids  [U, T] int32   去重后的 token IDs
+  text_attn_mask  [U, T] bool    1=有效 token
+  text_idx        [N,]   int32   每条样本对应的 unique 索引
+  node_mask       [N, 40]
+  adj_matrix      [N, 40, 40]
+  room_membership [N, 40, MAX_ROOMS]
+
+文本编码器从零训练，不再依赖预计算 BERT。
 """
 
 import numpy as np
@@ -18,12 +25,10 @@ class AlignDataset(Dataset):
         self.adj_matrix      = data['adj_matrix'].astype(np.float32)
         self.room_membership = data['room_membership'].astype(np.float32)
         self.text_idx        = data['text_idx'].astype(np.int64)
-        self.text_attn_mask  = data['text_attn_mask']           # [U, T] bool
-
-        text_hidden_path = npz_path.replace('.npz', '.text_hidden.npy')
-        self.text_hidden = np.load(text_hidden_path)            # [U, T, 768] fp16
+        self.text_input_ids  = data['text_input_ids'].astype(np.int64)   # [U, T]
+        self.text_attn_mask  = data['text_attn_mask'].astype(np.float32) # [U, T]
         print(f"AlignDataset: {len(self.node_mask)} 条  "
-              f"unique_prompts={len(self.text_hidden)}  {npz_path}")
+              f"unique_prompts={len(self.text_input_ids)}  {npz_path}")
 
     def __len__(self):
         return len(self.node_mask)
@@ -34,10 +39,8 @@ class AlignDataset(Dataset):
             'node_mask':       torch.from_numpy(self.node_mask[idx]),
             'adj_matrix':      torch.from_numpy(self.adj_matrix[idx]),
             'room_membership': torch.from_numpy(self.room_membership[idx]),
-            'text_hidden':     torch.from_numpy(
-                                   self.text_hidden[uid].astype(np.float32)),
-            'text_attn_mask':  torch.from_numpy(
-                                   self.text_attn_mask[uid].astype(np.float32)),
+            'input_ids':       torch.from_numpy(self.text_input_ids[uid]),
+            'attn_mask':       torch.from_numpy(self.text_attn_mask[uid]),
         }
 
 

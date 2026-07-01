@@ -257,7 +257,8 @@ def main():
     print("\n运行 BERT 推理（训练集）...")
     text_hidden = run_bert(uid_ids, uid_mask, args.bert, args.bert_batch, args.gpu)
 
-    arrays['text_attn_mask'] = uid_mask.astype(bool)  # [n_unique, T] bool
+    arrays['text_attn_mask']  = uid_mask.astype(bool)   # [n_unique, T] bool
+    arrays['text_input_ids']  = uid_ids.astype(np.int32) # [n_unique, T] int32
 
     # text_hidden 单独存 npy（不压缩，BERT特征压缩率低且耗时）
     text_hidden_path = out_path.with_suffix('.text_hidden.npy')
@@ -282,6 +283,7 @@ def main():
         val_text = run_bert(val_uid_ids, val_uid_mask, args.bert, args.bert_batch, args.gpu)
 
         val_arrays['text_attn_mask'] = val_uid_mask.astype(bool)
+        val_arrays['text_input_ids'] = val_uid_ids.astype(np.int32)
 
         val_text_path = val_path.with_suffix('.text_hidden.npy')
         np.save(val_text_path, val_text)

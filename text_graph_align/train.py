@@ -1,5 +1,5 @@
 """
-训练 TextGraphAlign (CLIP 对比预训练)。
+训练 TextGraphAlign (CLIP 对比预训练，文本编码器从零训练)。
 
 先用 room_type_clf/build_npz.py 构建 npz，再训练：
   python -m room_type_clf.build_npz \\
@@ -31,24 +31,26 @@ VAL_SAMPLES = 4096
 
 def build_parser():
     p = argparse.ArgumentParser()
-    p.add_argument('--train',         required=True, help='训练集 npz')
-    p.add_argument('--val',           default='',   help='验证集 npz（可选）')
-    p.add_argument('--save',          default='checkpoints/align')
-    p.add_argument('--gpu',           type=int,   default=0)
-    p.add_argument('--batch',         type=int,   default=256)
-    p.add_argument('--lr',            type=float, default=1e-4)
-    p.add_argument('--weight_decay',  type=float, default=1e-2)
-    p.add_argument('--warmup',        type=int,   default=500)
-    p.add_argument('--steps',         type=int,   default=30000)
-    p.add_argument('--log_every',     type=int,   default=100)
-    p.add_argument('--save_every',    type=int,   default=2000)
-    p.add_argument('--val_every',     type=int,   default=2000)
-    p.add_argument('--d_model',       type=int,   default=256)
-    p.add_argument('--num_layers',    type=int,   default=4)
-    p.add_argument('--num_heads',     type=int,   default=4)
-    p.add_argument('--d_embed',       type=int,   default=256)
-    p.add_argument('--workers',       type=int,   default=4)
-    p.add_argument('--resume',        default='')
+    p.add_argument('--train',        required=True)
+    p.add_argument('--val',          default='')
+    p.add_argument('--save',         default='checkpoints/align')
+    p.add_argument('--gpu',          type=int,   default=0)
+    p.add_argument('--batch',        type=int,   default=256)
+    p.add_argument('--lr',           type=float, default=1e-4)
+    p.add_argument('--weight_decay', type=float, default=1e-2)
+    p.add_argument('--warmup',       type=int,   default=500)
+    p.add_argument('--steps',        type=int,   default=30000)
+    p.add_argument('--log_every',    type=int,   default=100)
+    p.add_argument('--save_every',   type=int,   default=2000)
+    p.add_argument('--val_every',    type=int,   default=2000)
+    p.add_argument('--d_model',      type=int,   default=256)
+    p.add_argument('--num_layers',   type=int,   default=4)
+    p.add_argument('--num_heads',    type=int,   default=4)
+    p.add_argument('--d_embed',      type=int,   default=256)
+    p.add_argument('--vocab_size',   type=int,   default=10000)
+    p.add_argument('--max_len',      type=int,   default=192)
+    p.add_argument('--workers',      type=int,   default=4)
+    p.add_argument('--resume',       default='')
     return p
 
 
@@ -64,14 +66,13 @@ def run_val(model, val_loader, device):
     total_loss = total_g2t = total_t2g = n_samples = n_batches = 0
     with torch.no_grad():
         for batch in val_loader:
-            node_mask   = batch['node_mask'].to(device)
-            adj         = batch['adj_matrix'].to(device)
-            membership  = batch['room_membership'].to(device)
-            text_hidden = batch['text_hidden'].to(device)
-            text_amask  = batch['text_attn_mask'].to(device)
-
+            node_mask  = batch['node_mask'].to(device)
+            adj        = batch['adj_matrix'].to(device)
+            membership = batch['room_membership'].to(device)
+            input_ids  = batch['input_ids'].to(device)
+            attn_mask  = batch['attn_mask'].to(device)
             loss, acc_g2t, acc_t2g = model(
-                node_mask, adj, membership, text_hidden, text_amask)
+                node_mask, adj, membership, input_ids, attn_mask)
             total_loss += loss.item()
             total_g2t  += acc_g2t
             total_t2g  += acc_t2g
@@ -101,9 +102,11 @@ def main():
                                         shuffle=False, num_workers=args.workers)
 
     model = TextGraphAlign(
+        vocab_size = args.vocab_size,
         d_model    = args.d_model,
         num_layers = args.num_layers,
         num_heads  = args.num_heads,
+        max_len    = args.max_len,
         d_embed    = args.d_embed,
     ).to(device)
 
@@ -119,8 +122,7 @@ def main():
         start_step = ckpt['step'] + 1
         print(f"resumed from step {start_step}")
 
-    log_path = save_dir / 'log.jsonl'
-    log_f    = open(log_path, 'a', encoding='utf-8', buffering=1)
+    log_f = open(save_dir / 'log.jsonl', 'a', encoding='utf-8', buffering=1)
 
     def inf_loader():
         while True:
@@ -136,17 +138,17 @@ def main():
         for pg in opt.param_groups:
             pg['lr'] = lr
 
-        batch       = next(data_iter)
-        node_mask   = batch['node_mask'].to(device)
-        adj         = batch['adj_matrix'].to(device)
-        membership  = batch['room_membership'].to(device)
-        text_hidden = batch['text_hidden'].to(device)
-        text_amask  = batch['text_attn_mask'].to(device)
+        batch      = next(data_iter)
+        node_mask  = batch['node_mask'].to(device)
+        adj        = batch['adj_matrix'].to(device)
+        membership = batch['room_membership'].to(device)
+        input_ids  = batch['input_ids'].to(device)
+        attn_mask  = batch['attn_mask'].to(device)
 
         opt.zero_grad()
         with torch.amp.autocast('cuda'):
             loss, acc_g2t, acc_t2g = model(
-                node_mask, adj, membership, text_hidden, text_amask)
+                node_mask, adj, membership, input_ids, attn_mask)
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
@@ -159,7 +161,7 @@ def main():
         t2g_acc  += acc_t2g
 
         if (step + 1) % args.log_every == 0:
-            n   = args.log_every
+            n        = args.log_every
             avg_loss = loss_acc / n
             avg_g2t  = g2t_acc  / n
             avg_t2g  = t2g_acc  / n
@@ -169,7 +171,7 @@ def main():
                   f"g2t {avg_g2t:.2%} | t2g {avg_t2g:.2%} | "
                   f"tau {tau:.4f} | lr {lr:.2e} | {elapsed:.1f}s")
             log_f.write(json.dumps({
-                'step': step + 1, 'loss': round(avg_loss, 4),
+                'step': step+1, 'loss': round(avg_loss, 4),
                 'acc_g2t': round(avg_g2t, 4), 'acc_t2g': round(avg_t2g, 4),
                 'tau': round(tau, 4), 'lr': lr, 'elapsed': round(elapsed, 1),
             }) + '\n')
@@ -188,7 +190,7 @@ def main():
             v_loss, v_g2t, v_t2g = run_val(model, val_loader, device)
             print(f"  [val] loss {v_loss:.4f} | g2t {v_g2t:.2%} | t2g {v_t2g:.2%}")
             log_f.write(json.dumps({
-                'step': step + 1,
+                'step': step+1,
                 'val_loss': round(v_loss, 4),
                 'val_acc_g2t': round(v_g2t, 4),
                 'val_acc_t2g': round(v_t2g, 4),
