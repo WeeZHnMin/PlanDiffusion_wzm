@@ -50,9 +50,12 @@ def build_parser():
     return p
 
 
+VAL_SAMPLES = 4096
+
+
 def run_val(model, val_loader, criterion, device):
     model.eval()
-    total_loss = total_correct = total_nodes = 0
+    total_loss = total_correct = total_nodes = n_samples = n_batches = 0
     with torch.no_grad():
         for batch in val_loader:
             node_mask  = batch['node_mask'].to(device)
@@ -67,15 +70,19 @@ def run_val(model, val_loader, criterion, device):
 
             loss = criterion(logits.view(B * N, C), labels.view(B * N))
 
-            valid       = (labels >= 0)
-            preds       = logits.argmax(dim=-1)
+            valid         = (labels >= 0)
+            preds         = logits.argmax(dim=-1)
             total_correct += (preds[valid] == labels[valid]).sum().item()
             total_nodes   += valid.sum().item()
             total_loss    += loss.item()
+            n_samples     += B
+            n_batches     += 1
+            if n_samples >= VAL_SAMPLES:
+                break
 
     model.train()
     acc  = total_correct / max(total_nodes, 1)
-    loss = total_loss / max(len(val_loader), 1)
+    loss = total_loss / max(n_batches, 1)
     return loss, acc
 
 
