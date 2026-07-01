@@ -25,10 +25,12 @@ COMBO_VOCAB_PATH = str(Path(__file__).parent / 'type_combo_vocab_old.json')
 
 
 def load_combo_vocab(path=COMBO_VOCAB_PATH):
-    """返回 (num_types, combo_to_id)。num_types = N_TYPES（最大 combo_id）。"""
+    """返回 (num_types, combo_to_id)。
+    combo_id 范围 1~N_TYPES，num_types = N_TYPES+1 使索引 0~N_TYPES 均合法。
+    """
     with open(path, encoding='utf-8') as f:
         v = json.load(f)
-    return v['N_TYPES'], v['combo_to_id']
+    return v['N_TYPES'] + 1, v['combo_to_id']
 
 
 class RoomTypeDataset(Dataset):
