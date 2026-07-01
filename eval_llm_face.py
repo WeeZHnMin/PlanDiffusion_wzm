@@ -182,7 +182,9 @@ def call_mimo(prompt, client, thinking=True, max_retries=3):
             msg = resp.choices[0].message
             content   = (msg.content or "").strip()
             reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
-            return content or reasoning   # 优先 content，fallback reasoning
+            if not content and not reasoning:
+                print(f"  [WARN] 空响应  usage={resp.usage}  finish={resp.choices[0].finish_reason}")
+            return content or reasoning
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
