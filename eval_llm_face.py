@@ -180,9 +180,12 @@ def call_mimo(prompt, client, thinking=True, max_retries=3):
             content   = (msg.content or "").strip()
             reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
             if not content and not reasoning:
-                print(f"  [WARN] 空响应  usage={resp.usage}  finish={resp.choices[0].finish_reason}")
+                print(f"  [WARN] 空响应  finish={resp.choices[0].finish_reason}")
             return content or reasoning
         except Exception as e:
+            err_str = str(e)
+            if "401" in err_str or "invalid_key" in err_str.lower():
+                raise RuntimeError(f"API key 无效，停止运行: {e}") from e
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -269,8 +272,10 @@ def main():
                     print("===================\n")
                 predicted = parse_response(response, len(rings))
             except Exception as e:
-                print(f"  [ERROR] sample {n_done}: {e}")
+                print(f"  [ERROR] sample {n_done+n_skip}: {e}")
                 n_skip += 1
+                if "API key 无效" in str(e):
+                    break
                 continue
 
             # 统计：漏答算错
