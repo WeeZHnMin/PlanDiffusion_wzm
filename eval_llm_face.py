@@ -179,7 +179,10 @@ def call_mimo(prompt, client, thinking=True, max_retries=3):
                 max_tokens=512,
                 **extra,
             )
-            return resp.choices[0].message.content or ""
+            msg = resp.choices[0].message
+            content   = (msg.content or "").strip()
+            reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
+            return content or reasoning   # 优先 content，fallback reasoning
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
