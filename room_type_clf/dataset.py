@@ -1,13 +1,8 @@
 """
-RoomTypeDataset: 读取 build_npz.py 生成的 npz 文件。
+RoomTypeDataset: 读取 build_npz.py 生成的 npz。
 
-字段：
-  node_mask       [N, 40]            float32
-  adj_matrix      [N, 40, 40]        float32
-  room_membership [N, 40, MAX_ROOMS] float32
-  prompt_tokens   [N, 192]           int64
-  prompt_mask     [N, 192]           float32
-  type_labels     [N, 40]            int64   padding=-1
+text_hidden / text_attn_mask 按 text_idx 索引，去重存储。
+训练时只过 text_proj，不再调用 BERT。
 """
 
 import json
@@ -25,9 +20,7 @@ COMBO_VOCAB_PATH = str(Path(__file__).parent / 'type_combo_vocab_old.json')
 
 
 def load_combo_vocab(path=COMBO_VOCAB_PATH):
-    """返回 (num_types, combo_to_id)。
-    combo_id 范围 1~N_TYPES，num_types = N_TYPES+1 使索引 0~N_TYPES 均合法。
-    """
+    """返回 (num_types, combo_to_id)。num_types = N_TYPES+1，使 ID 1~N_TYPES 均合法。"""
     with open(path, encoding='utf-8') as f:
         v = json.load(f)
     return v['N_TYPES'] + 1, v['combo_to_id']
@@ -36,25 +29,30 @@ def load_combo_vocab(path=COMBO_VOCAB_PATH):
 class RoomTypeDataset(Dataset):
     def __init__(self, npz_path):
         data = np.load(npz_path)
-        self.node_mask       = data['node_mask'].astype(np.float32)
-        self.adj_matrix      = data['adj_matrix'].astype(np.float32)
-        self.room_membership = data['room_membership'].astype(np.float32)
-        self.prompt_tokens   = data['prompt_tokens'].astype(np.int64)
-        self.prompt_mask     = data['prompt_mask'].astype(np.float32)
-        self.type_labels     = data['type_labels'].astype(np.int64)
-        print(f"RoomTypeDataset: {len(self.node_mask)} 条  {npz_path}")
+        self.node_mask       = data['node_mask'].astype(np.float32)      # [N, 40]
+        self.adj_matrix      = data['adj_matrix'].astype(np.float32)     # [N, 40, 40]
+        self.room_membership = data['room_membership'].astype(np.float32) # [N, 40, R]
+        self.type_labels     = data['type_labels'].astype(np.int64)      # [N, 40]
+        self.text_idx        = data['text_idx'].astype(np.int64)         # [N]
+        self.text_hidden     = data['text_hidden']                       # [U, T, 768] fp16
+        self.text_attn_mask  = data['text_attn_mask']                    # [U, T] bool
+        print(f"RoomTypeDataset: {len(self.node_mask)} 条  "
+              f"unique_prompts={len(self.text_hidden)}  {npz_path}")
 
     def __len__(self):
         return len(self.node_mask)
 
     def __getitem__(self, idx):
+        uid = self.text_idx[idx]
         return {
             'node_mask':       torch.from_numpy(self.node_mask[idx]),
             'adj_matrix':      torch.from_numpy(self.adj_matrix[idx]),
             'room_membership': torch.from_numpy(self.room_membership[idx]),
-            'prompt_tokens':   torch.from_numpy(self.prompt_tokens[idx]),
-            'prompt_mask':     torch.from_numpy(self.prompt_mask[idx]),
             'type_labels':     torch.from_numpy(self.type_labels[idx]),
+            'text_hidden':     torch.from_numpy(
+                                   self.text_hidden[uid].astype(np.float32)),   # [T, 768]
+            'text_attn_mask':  torch.from_numpy(
+                                   self.text_attn_mask[uid].astype(np.float32)), # [T]
         }
 
 

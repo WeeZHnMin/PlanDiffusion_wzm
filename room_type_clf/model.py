@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BertModel
+
 
 MAX_ROOMS = 20
 
@@ -202,7 +202,7 @@ class RoomTypeClassifier(nn.Module):
     """
 
     def __init__(self, num_types, model_channels=256, num_layers=4, num_heads=4,
-                 dropout=0.1, bert_name='models/bert-base-uncased', use_text=True):
+                 dropout=0.1, use_text=True):
         super().__init__()
         self.model_channels = model_channels
         self.num_types      = num_types
@@ -211,12 +211,9 @@ class RoomTypeClassifier(nn.Module):
         # 节点初始特征：共享可学习 token
         self.node_token = nn.Parameter(torch.randn(1, 1, model_channels) * 0.02)
 
-        # BERT 文本编码器（冻结，仅 use_text=True 时加载）
+        # text_proj：将预计算的 BERT hidden [768] 投影到 model_channels
         if use_text:
-            self.bert = BertModel.from_pretrained(bert_name)
-            for p in self.bert.parameters():
-                p.requires_grad = False
-            self.text_proj = nn.Linear(self.bert.config.hidden_size, model_channels)
+            self.text_proj = nn.Linear(768, model_channels)
 
         # 四流 Encoder
         self.layers = nn.ModuleList(
@@ -252,42 +249,31 @@ class RoomTypeClassifier(nn.Module):
         pad_keys  = (1 - node_mask.to(dt)).unsqueeze(1)
         return torch.clamp(mask + pad_keys, 0, 1)
 
-    def encode_text(self, prompt_tokens, prompt_mask=None):
-        bert_attn = prompt_mask if prompt_mask is not None \
-                    else (prompt_tokens != 0).long()
-        with torch.no_grad():
-            text_hidden = self.bert(
-                input_ids=prompt_tokens,
-                attention_mask=bert_attn.long(),
-            ).last_hidden_state
-        text_feat = self.text_proj(text_hidden)
-        text_mask = (1 - bert_attn.float()).unsqueeze(1)
-        return text_feat, text_mask
-
     def forward(self, node_mask, adj_matrix, room_membership,
-                prompt_tokens=None, prompt_mask=None):
+                text_hidden=None, text_attn_mask=None):
+        """
+        text_hidden    : [B, T, 768] float32  预计算的 BERT last_hidden_state
+        text_attn_mask : [B, T]      float32  1=有效 token
+        """
         B, N = node_mask.shape
         dt   = torch.float32
 
-        # 节点初始特征：所有节点相同，靠图结构区分
         seq = self.node_token.expand(B, N, -1).clone()
 
-        # mask 构造
         room_membership = room_membership.to(dtype=dt)
         node_mask_f     = node_mask.to(dtype=dt)
         room_mask, pad_mask = self._build_room_mask(room_membership, node_mask_f)
         adj_mask            = self._build_adj_mask(adj_matrix.to(dtype=dt), node_mask_f)
 
-        # 文本编码（仅 use_text=True 时执行）
-        if self.use_text and prompt_tokens is not None:
-            text_feat, text_mask = self.encode_text(prompt_tokens, prompt_mask)
+        # text_proj：只跑一个线性层
+        if self.use_text and text_hidden is not None:
+            text_feat = self.text_proj(text_hidden)                  # [B, T, d]
+            text_mask = (1 - text_attn_mask).unsqueeze(1)            # [B, 1, T]  1=masked
         else:
             text_feat, text_mask = None, None
 
-        # 四流编码
         for layer in self.layers:
             seq = layer(seq, room_mask, room_membership, text_feat, text_mask,
                         pad_mask, adj_mask)
 
-        # 分类
         return self.type_head(seq)   # [B, N, num_types]

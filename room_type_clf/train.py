@@ -33,7 +33,6 @@ def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--train',         required=True, help='训练集 npz')
     p.add_argument('--val',           required=True, help='验证集 npz')
-    p.add_argument('--bert',          default='models/bert-base-uncased')
     p.add_argument('--save_dir',      default='checkpoints/room_type_clf')
     p.add_argument('--batch_size',    type=int,   default=512)
     p.add_argument('--lr',            type=float, default=3e-4)
@@ -57,14 +56,14 @@ def run_val(model, val_loader, criterion, device):
     total_loss = total_correct = total_nodes = n_samples = n_batches = 0
     with torch.no_grad():
         for batch in val_loader:
-            node_mask  = batch['node_mask'].to(device)
-            adj        = batch['adj_matrix'].to(device)
-            membership = batch['room_membership'].to(device)
-            ptok       = batch['prompt_tokens'].to(device)
-            pmsk       = batch['prompt_mask'].to(device)
-            labels     = batch['type_labels'].to(device)
+            node_mask   = batch['node_mask'].to(device)
+            adj         = batch['adj_matrix'].to(device)
+            membership  = batch['room_membership'].to(device)
+            text_hidden = batch['text_hidden'].to(device)
+            text_amask  = batch['text_attn_mask'].to(device)
+            labels      = batch['type_labels'].to(device)
 
-            logits = model(node_mask, adj, membership, ptok, pmsk)  # [B, N, C]
+            logits = model(node_mask, adj, membership, text_hidden, text_amask)  # [B, N, C]
             B, N, C = logits.shape
             loss = criterion(logits.view(B * N, C), labels.view(B * N))
 
@@ -101,13 +100,12 @@ def main():
     train_ds, train_loader = load_data(args.train, args.batch_size, shuffle=True)
     _,        val_loader   = load_data(args.val,   batch_size=64,   shuffle=False)
 
-    # 模型
+    # 模型（BERT 已在 build_npz 预计算，不再加载）
     model = RoomTypeClassifier(
         num_types      = num_types,
         model_channels = args.model_channels,
         num_layers     = args.num_layers,
         num_heads      = args.num_heads,
-        bert_name      = args.bert,
         use_text       = not args.no_text,
     ).to(device)
 
@@ -148,14 +146,14 @@ def main():
     for step in range(start_step, args.total_steps):
         batch = next(data_iter)
 
-        node_mask  = batch['node_mask'].to(device)
-        adj        = batch['adj_matrix'].to(device)
-        membership = batch['room_membership'].to(device)
-        ptok       = batch['prompt_tokens'].to(device)
-        pmsk       = batch['prompt_mask'].to(device)
-        labels     = batch['type_labels'].to(device)
+        node_mask   = batch['node_mask'].to(device)
+        adj         = batch['adj_matrix'].to(device)
+        membership  = batch['room_membership'].to(device)
+        text_hidden = batch['text_hidden'].to(device)
+        text_amask  = batch['text_attn_mask'].to(device)
+        labels      = batch['type_labels'].to(device)
 
-        logits = model(node_mask, adj, membership, ptok, pmsk)  # [B, N, C]
+        logits = model(node_mask, adj, membership, text_hidden, text_amask)  # [B, N, C]
         B, N, C = logits.shape
         loss = criterion(logits.view(B * N, C), labels.view(B * N))
 
