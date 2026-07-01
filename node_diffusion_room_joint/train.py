@@ -296,7 +296,7 @@ def main(argv=None, defaults=None):
                               large_node_threshold=args.large_node_threshold)
 
     model.train()
-    running_loss = running_rmse = 0.0
+    running_loss = running_coord = running_centroid = running_rmse = 0.0
     best_val_iou = 0.0
     t0 = time.perf_counter()
 
@@ -309,7 +309,7 @@ def main(argv=None, defaults=None):
 
         opt.zero_grad()
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
+            loss, coord_loss, centroid_loss, coord_rmse = diffusion.training_losses(model, x, t, cond, step=step)
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
@@ -317,20 +317,26 @@ def main(argv=None, defaults=None):
         scaler.step(opt)
         scaler.update()
 
-        running_loss += loss.item()
-        running_rmse += coord_rmse
+        running_loss     += loss.item()
+        running_coord    += coord_loss.item()
+        running_centroid += centroid_loss.item()
+        running_rmse     += coord_rmse
 
         if is_master and step % args.log_interval == 0 and step > 0:
-            n        = args.log_interval
-            avg_loss = running_loss / n
-            avg_rmse = running_rmse / n
-            running_loss = running_rmse = 0.0
+            n            = args.log_interval
+            avg_loss     = running_loss     / n
+            avg_coord    = running_coord    / n
+            avg_centroid = running_centroid / n
+            avg_rmse     = running_rmse     / n
+            running_loss = running_coord = running_centroid = running_rmse = 0.0
             elapsed  = time.perf_counter() - t0
             t0       = time.perf_counter()
 
-            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | {elapsed:.1f}s")
+            print(f"step {step:6d} | loss {avg_loss:.4f} | coord {avg_coord:.4f} | centroid {avg_centroid:.4f} | rmse {avg_rmse:.2f} px | {elapsed:.1f}s")
             log_file.write(json.dumps({
                 'step': step, 'loss': round(avg_loss, 4),
+                'coord_loss': round(avg_coord, 4),
+                'centroid_loss': round(avg_centroid, 4),
                 'coord_rmse': round(avg_rmse, 2),
                 'elapsed': round(elapsed, 1),
             }) + '\n')

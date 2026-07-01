@@ -1,16 +1,17 @@
 """
 eval_llm_face.py
 
-给定文本描述 + 邻接图，提取环结构和环间邻接关系，让 MiMo 预测每个环的房间类型，
+给定文本描述 + 邻接图，提取环结构和环间邻接关系，让豆包 LLM 预测每个环的房间类型，
 计算与 ground truth 的准确率。
 
 用法:
     python eval_llm_face.py \
         --jsonl data/jsonl/val_graph_dataset_18k5.jsonl \
         --n_samples 200 \
-        --output results/llm_face_eval.jsonl
+        --output results/llm_face_eval.jsonl \
+        --api-key YOUR_ARK_KEY
 
-API key 从环境变量 MIMO_API_KEY 读取，或通过 --api-key 传入。
+API key 从环境变量 ARK_API_KEY 读取，或通过 --api-key 传入。
 """
 
 import argparse
@@ -35,12 +36,11 @@ BASE_TYPES = {
     6: "dining_room",
     7: "other",
 }
-TYPE_NAMES   = set(BASE_TYPES.values())
-COMBO_VOCAB  = Path("room_type_clf/type_combo_vocab_old.json")
-MAX_ROOMS    = 20
-MIMO_BASE    = "https://api.xiaomimimo.com/v1"
-MIMO_MODEL   = "mimo-v2.5"
-SYSTEM_MSG   = "You are MiMo, an AI assistant developed by Xiaomi."
+TYPE_NAMES    = set(BASE_TYPES.values())
+COMBO_VOCAB   = Path("room_type_clf/type_combo_vocab_old.json")
+MAX_ROOMS     = 20
+DOUBAO_BASE   = "https://ark.cn-beijing.volces.com/api/v3"
+DOUBAO_MODEL  = "doubao-seed-2-0-pro-260215"
 
 
 # ── 环提取 ────────────────────────────────────────────────────────────────────
@@ -161,30 +161,27 @@ def build_prompt(text_desc, rings, ring_adj, n_nodes):
     return "\n".join(lines)
 
 
-# ── MiMo 调用 ─────────────────────────────────────────────────────────────────
+# ── 豆包调用 ──────────────────────────────────────────────────────────────────
 
-def call_mimo(prompt, client, thinking=True, max_retries=3):
-    extra = {} if thinking else {"extra_body": {"enable_thinking": False}}
+def call_doubao(prompt, client, max_retries=3):
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
-                model=MIMO_MODEL,
+                model=DOUBAO_MODEL,
                 messages=[
-                    {"role": "system", "content": SYSTEM_MSG},
-                    {"role": "user",   "content": prompt},
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
-                **extra,
+                extra_body={"thinking": {"type": "disabled"}},
             )
-            msg = resp.choices[0].message
-            content   = (msg.content or "").strip()
-            reasoning = (getattr(msg, "reasoning_content", None) or "").strip()
-            if not content and not reasoning:
+            msg     = resp.choices[0].message
+            content = (msg.content or "").strip()
+            if not content:
                 print(f"  [WARN] 空响应  finish={resp.choices[0].finish_reason}")
-            return content or reasoning
+            return content
         except Exception as e:
             err_str = str(e)
-            if "401" in err_str or "invalid_key" in err_str.lower():
+            if "401" in err_str or "invalid" in err_str.lower() or "Authenticate" in err_str:
                 raise RuntimeError(f"API key 无效，停止运行: {e}") from e
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
@@ -196,12 +193,19 @@ def call_mimo(prompt, client, thinking=True, max_retries=3):
 
 def parse_response(response, n_rings):
     predicted = [None] * n_rings
-    pattern   = re.compile(r'Ring\s+(\d+)\s*:\s*([a-z_]+)', re.IGNORECASE)
-    for m in pattern.finditer(response):
-        rid  = int(m.group(1))
+    # 只从 ANSWER: 之后截取，避免推理段误命中
+    answer_start = response.upper().find("ANSWER:")
+    text = response[answer_start:] if answer_start != -1 else response
+    pattern = re.compile(r'Ring\s+(\d+)\s*:\s*([a-z_]+)', re.IGNORECASE)
+    for m in pattern.finditer(text):
+        rid   = int(m.group(1))
         rtype = m.group(2).lower().strip()
         if rid < n_rings:
             predicted[rid] = rtype if rtype in TYPE_NAMES else "other"
+    n_parsed = sum(1 for p in predicted if p is not None)
+    if n_parsed == 0:
+        print(f"  [WARN] 未解析到任何环类型，answer_start={answer_start}")
+        print(f"  response tail: {response[-300:]!r}")
     return predicted
 
 
@@ -209,23 +213,26 @@ def parse_response(response, n_rings):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--jsonl",      default="data/jsonl/val_graph_dataset_18k5.jsonl")
-    p.add_argument("--n_samples",  type=int, default=200)
-    p.add_argument("--output",     default="results/llm_face_eval.jsonl")
-    p.add_argument("--api-key",    default="")
-    p.add_argument("--sleep",       type=float, default=0.5, help="API 调用间隔（秒）")
-    p.add_argument("--no_thinking", action="store_true",    help="关闭 MiMo 思考模式")
+    p.add_argument("--jsonl",     default="data/jsonl/val_graph_dataset_18k5.jsonl")
+    p.add_argument("--n_samples", type=int, default=200)
+    p.add_argument("--output",    default="results/llm_face_eval.jsonl")
+    p.add_argument("--api-key",   default="")
+    p.add_argument("--sleep",     type=float, default=0.5, help="API 调用间隔（秒）")
+    p.add_argument("--model",     default=DOUBAO_MODEL, help="豆包模型名")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    api_key = args.api_key or os.getenv("MIMO_API_KEY", "")
+    api_key = args.api_key or os.getenv("ARK_API_KEY", "")
     if not api_key:
-        raise SystemExit("未提供 API key，请设置 MIMO_API_KEY 或使用 --api-key")
+        raise SystemExit("未提供 API key，请设置 ARK_API_KEY 或使用 --api-key")
 
-    client     = OpenAI(api_key=api_key, base_url=MIMO_BASE, timeout=60.0)
+    global DOUBAO_MODEL
+    DOUBAO_MODEL = args.model
+
+    client = OpenAI(api_key=api_key, base_url=DOUBAO_BASE, timeout=60.0)
     id_to_bases = load_combo_vocab()
 
     out_path = Path(args.output)
@@ -262,20 +269,26 @@ def main():
 
             try:
                 if n_done == 0:
-                    print("\n=== 发给 MiMo 的 prompt ===")
+                    print("\n=== 发给豆包的 prompt ===")
                     print(prompt)
                     print("=== prompt 结束 ===\n")
-                response  = call_mimo(prompt, client, thinking=not args.no_thinking)
+                response = call_doubao(prompt, client)
                 if n_done == 0:
                     print("\n=== 第一条原始回答 ===")
                     print(response)
                     print("===================\n")
                 predicted = parse_response(response, len(rings))
+                if n_done == 0:
+                    print(f"=== 解析结果 ===")
+                    for i, (g, p) in enumerate(zip(gt, predicted)):
+                        mark = "✓" if g == p else "✗"
+                        print(f"  Ring {i}: gt={g}  pred={p}  {mark}")
+                    print()
             except Exception as e:
-                print(f"  [ERROR] sample {n_done+n_skip}: {e}")
-                n_skip += 1
+                print(f"  [ERROR] sample {n_done+n_skip+1}: {e}")
                 if "API key 无效" in str(e):
                     break
+                n_skip += 1
                 continue
 
             # 统计：漏答算错
