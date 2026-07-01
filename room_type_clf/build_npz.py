@@ -52,6 +52,8 @@ def parse_args():
     p.add_argument("--workers",     type=int, default=0)
     p.add_argument("--bert_batch",  type=int, default=64,
                    help="BERT 推理批次大小")
+    p.add_argument("--gpu",         type=int, default=None,
+                   help="指定 GPU 编号，默认自动选择")
     p.add_argument("--max_samples", type=int, default=0)
     return p.parse_args()
 
@@ -78,9 +80,12 @@ def _compute_room_membership(args_tuple):
 
 # ── BERT 批量推理 ─────────────────────────────────────────────────────────────
 
-def run_bert(unique_input_ids, unique_attn_mask, bert_name, bert_batch=64):
+def run_bert(unique_input_ids, unique_attn_mask, bert_name, bert_batch=64, gpu=None):
     """对去重后的 unique prompts 跑 BERT，返回 fp16 last_hidden_state。"""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if gpu is not None:
+        device = torch.device(f'cuda:{gpu}')
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"BERT 推理设备: {device}  unique 条数: {len(unique_input_ids)}")
 
     bert = BertModel.from_pretrained(bert_name).to(device).eval()
@@ -250,7 +255,7 @@ def main():
         args.jsonl, tokenizer, args.max_samples, n_workers, args.augment, rng)
 
     print("\n运行 BERT 推理（训练集）...")
-    text_hidden = run_bert(uid_ids, uid_mask, args.bert, args.bert_batch)
+    text_hidden = run_bert(uid_ids, uid_mask, args.bert, args.bert_batch, args.gpu)
 
     arrays['text_attn_mask'] = uid_mask.astype(bool)  # [n_unique, T] bool
 
@@ -274,7 +279,7 @@ def main():
             args.val_jsonl, tokenizer, 0, n_workers, augment=1)
 
         print("\n运行 BERT 推理（验证集）...")
-        val_text = run_bert(val_uid_ids, val_uid_mask, args.bert, args.bert_batch)
+        val_text = run_bert(val_uid_ids, val_uid_mask, args.bert, args.bert_batch, args.gpu)
 
         val_arrays['text_attn_mask'] = val_uid_mask.astype(bool)
 
