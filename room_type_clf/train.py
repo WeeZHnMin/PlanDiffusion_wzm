@@ -1,18 +1,16 @@
 """
-训练 RoomTypeClassifier：文本 + 邻接图 → 节点房间类型分类。
+训练 RoomTypeClassifier。
 
---train / --val 均支持 .jsonl 或 .npz，按后缀自动识别。
+先用 build_npz.py 预处理数据，再训练：
+  python -m room_type_clf.build_npz \\
+      --jsonl     data/jsonl/final_graph_dataset_v3.jsonl \\
+      --val_jsonl data/jsonl/val_graph_dataset_18k5.jsonl \\
+      --augment 4 --output data/processed/room_type_clf/train.npz
 
-用法（jsonl）：
-  python -m room_type_clf.train \
-      --train data/jsonl/final_graph_dataset_v3.jsonl \
-      --val   data/jsonl/val_graph_dataset_18k5.jsonl
-
-用法（npz）：
-  python -m room_type_clf.train \
-      --train data/processed/room_type_clf/train.npz \
-      --val   data/processed/room_type_clf/val.npz \
-      --no_text
+  python -m room_type_clf.train \\
+      --train data/processed/room_type_clf/train.npz \\
+      --val   data/processed/room_type_clf/val.npz \\
+      --no_text --gpu 3
 """
 
 import argparse
@@ -25,44 +23,33 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 
-from .dataset import load_data, load_npz_data, load_combo_vocab
+from .dataset import load_data, load_combo_vocab
 from .model import RoomTypeClassifier
+
+VAL_SAMPLES = 4096
 
 
 def build_parser():
     p = argparse.ArgumentParser()
-    p.add_argument('--train', required=True,
-                   help='训练集路径，.jsonl 或 .npz')
-    p.add_argument('--val',   required=True,
-                   help='验证集路径，.jsonl 或 .npz')
-    p.add_argument('--bert',         default='models/bert-base-uncased')
-    p.add_argument('--save_dir',     default='checkpoints/room_type_clf')
-    p.add_argument('--batch_size',   type=int,   default=512)
-    p.add_argument('--lr',           type=float, default=3e-4)
-    p.add_argument('--weight_decay', type=float, default=1e-4)
-    p.add_argument('--total_steps',  type=int,   default=50000)
-    p.add_argument('--log_interval', type=int,   default=100)
-    p.add_argument('--save_interval',type=int,   default=1000)
-    p.add_argument('--val_interval', type=int,   default=1000)
-    p.add_argument('--model_channels',type=int,  default=256)
-    p.add_argument('--num_layers',   type=int,   default=4)
-    p.add_argument('--num_heads',    type=int,   default=4)
-    p.add_argument('--gpu',          type=int,   default=None)
-    p.add_argument('--resume',       default='')
-    p.add_argument('--no_text',      action='store_true',
+    p.add_argument('--train',         required=True, help='训练集 npz')
+    p.add_argument('--val',           required=True, help='验证集 npz')
+    p.add_argument('--bert',          default='models/bert-base-uncased')
+    p.add_argument('--save_dir',      default='checkpoints/room_type_clf')
+    p.add_argument('--batch_size',    type=int,   default=512)
+    p.add_argument('--lr',            type=float, default=3e-4)
+    p.add_argument('--weight_decay',  type=float, default=1e-4)
+    p.add_argument('--total_steps',   type=int,   default=50000)
+    p.add_argument('--log_interval',  type=int,   default=100)
+    p.add_argument('--save_interval', type=int,   default=1000)
+    p.add_argument('--val_interval',  type=int,   default=1000)
+    p.add_argument('--model_channels',type=int,   default=256)
+    p.add_argument('--num_layers',    type=int,   default=4)
+    p.add_argument('--num_heads',     type=int,   default=4)
+    p.add_argument('--gpu',           type=int,   default=None)
+    p.add_argument('--resume',        default='')
+    p.add_argument('--no_text',       action='store_true',
                    help='禁用文本编码器（baseline 实验）')
     return p
-
-
-def _load_dataset(path, bert_name, batch_size, shuffle):
-    """按文件后缀自动选择 jsonl / npz 加载方式。"""
-    if path.endswith('.npz'):
-        return load_npz_data(path, batch_size, shuffle=shuffle)
-    else:
-        return load_data(path, bert_name, batch_size, shuffle=shuffle)
-
-
-VAL_SAMPLES = 4096
 
 
 def run_val(model, val_loader, criterion, device):
@@ -75,11 +62,10 @@ def run_val(model, val_loader, criterion, device):
             membership = batch['room_membership'].to(device)
             ptok       = batch['prompt_tokens'].to(device)
             pmsk       = batch['prompt_mask'].to(device)
-            labels     = batch['type_labels'].to(device)   # [B, N]  -1=ignore
+            labels     = batch['type_labels'].to(device)
 
             logits = model(node_mask, adj, membership, ptok, pmsk)  # [B, N, C]
             B, N, C = logits.shape
-
             loss = criterion(logits.view(B * N, C), labels.view(B * N))
 
             valid         = (labels >= 0)
@@ -93,9 +79,7 @@ def run_val(model, val_loader, criterion, device):
                 break
 
     model.train()
-    acc  = total_correct / max(total_nodes, 1)
-    loss = total_loss / max(n_batches, 1)
-    return loss, acc
+    return total_loss / max(n_batches, 1), total_correct / max(total_nodes, 1)
 
 
 def main():
@@ -109,25 +93,22 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 词表：固定使用组合类型词表
+    # 词表
     num_types, _ = load_combo_vocab()
     print(f'组合类型数: {num_types}')
 
     # 数据
-    train_ds, train_loader = _load_dataset(
-        args.train, args.bert, args.batch_size, shuffle=True)
-    _, val_loader = _load_dataset(
-        args.val, args.bert, batch_size=64, shuffle=False)
+    train_ds, train_loader = load_data(args.train, args.batch_size, shuffle=True)
+    _,        val_loader   = load_data(args.val,   batch_size=64,   shuffle=False)
 
     # 模型
-    use_text = not args.no_text
     model = RoomTypeClassifier(
         num_types      = num_types,
         model_channels = args.model_channels,
         num_layers     = args.num_layers,
         num_heads      = args.num_heads,
         bert_name      = args.bert,
-        use_text       = use_text,
+        use_text       = not args.no_text,
     ).to(device)
 
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
@@ -176,7 +157,6 @@ def main():
 
         logits = model(node_mask, adj, membership, ptok, pmsk)  # [B, N, C]
         B, N, C = logits.shape
-
         loss = criterion(logits.view(B * N, C), labels.view(B * N))
 
         opt.zero_grad()
@@ -193,12 +173,11 @@ def main():
         running_acc  += acc
 
         if step % args.log_interval == 0 and step > 0:
-            n        = args.log_interval
-            avg_loss = running_loss / n
-            avg_acc  = running_acc  / n
+            avg_loss = running_loss / args.log_interval
+            avg_acc  = running_acc  / args.log_interval
             running_loss = running_acc = 0.0
-            elapsed  = time.perf_counter() - t0
-            t0       = time.perf_counter()
+            elapsed = time.perf_counter() - t0
+            t0 = time.perf_counter()
             print(f'step {step:6d} | loss {avg_loss:.4f} | acc {avg_acc:.4f} | {elapsed:.1f}s')
             log_file.write(json.dumps({
                 'step': step, 'loss': round(avg_loss, 4),
@@ -206,10 +185,9 @@ def main():
             }) + '\n')
 
         if step % args.save_interval == 0 and step > 0:
-            ckpt_path = save_dir / 'latest.pt'
             torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
-                        'step': step}, ckpt_path)
-            print(f'  saved -> {ckpt_path}')
+                        'step': step}, save_dir / 'latest.pt')
+            print(f'  saved -> {save_dir}/latest.pt')
 
         if step % args.val_interval == 0 and step > 0:
             val_loss, val_acc = run_val(model, val_loader, criterion, device)

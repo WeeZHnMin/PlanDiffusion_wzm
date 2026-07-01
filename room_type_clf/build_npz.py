@@ -33,7 +33,8 @@ from pathlib import Path
 import numpy as np
 from transformers import BertTokenizer
 
-from .dataset import load_combo_vocab, COMBO_VOCAB_PATH, MAX_NODES, MAX_TEXT_LEN
+from .dataset import load_combo_vocab, MAX_NODES, MAX_TEXT_LEN
+from .dataset import COMBO_VOCAB_PATH
 from .model import _assign_room_membership_single, MAX_ROOMS
 
 
