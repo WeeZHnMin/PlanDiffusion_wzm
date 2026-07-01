@@ -2,7 +2,7 @@
   "backend": "tokenizers",
   "cls_token": "[CLS]",
   "do_lower_case": false,
-  "extra_special_tokens": [
+  "additional_special_tokens": [
     "living_room",
     "dining_room"
   ],
