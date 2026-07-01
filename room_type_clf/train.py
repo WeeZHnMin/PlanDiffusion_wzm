@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 
-from .dataset import load_data, load_npz_data, build_type_vocab
+from .dataset import load_data, load_npz_data, load_combo_vocab
 from .model import RoomTypeClassifier
 
 
@@ -54,13 +54,12 @@ def build_parser():
     return p
 
 
-def _load_dataset(path, bert_name, batch_size, shuffle, type_vocab=None):
+def _load_dataset(path, bert_name, batch_size, shuffle):
     """按文件后缀自动选择 jsonl / npz 加载方式。"""
     if path.endswith('.npz'):
         return load_npz_data(path, batch_size, shuffle=shuffle)
     else:
-        return load_data(path, bert_name, batch_size, shuffle=shuffle,
-                         type_vocab=type_vocab)
+        return load_data(path, bert_name, batch_size, shuffle=shuffle)
 
 
 VAL_SAMPLES = 4096
@@ -110,32 +109,20 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 词表
-    if args.train.endswith('.npz'):
-        vocab_path = Path(args.train).with_suffix('.vocab.json')
-        with open(vocab_path, encoding='utf-8') as f:
-            type_vocab = json.load(f)
-        print(f'词表大小: {len(type_vocab)}  (from {vocab_path})')
-    else:
-        print('构建类型词表...')
-        type_vocab = build_type_vocab(args.train)
-        vocab_path = save_dir / 'type_vocab.json'
-        with open(vocab_path, 'w', encoding='utf-8') as f:
-            json.dump(type_vocab, f, ensure_ascii=False, indent=2)
-        print(f'词表大小: {len(type_vocab)}  已保存 -> {vocab_path}')
+    # 词表：固定使用组合类型词表
+    num_types, _ = load_combo_vocab()
+    print(f'组合类型数: {num_types}')
 
     # 数据
     train_ds, train_loader = _load_dataset(
-        args.train, args.bert, args.batch_size, shuffle=True,
-        type_vocab=type_vocab)
+        args.train, args.bert, args.batch_size, shuffle=True)
     _, val_loader = _load_dataset(
-        args.val, args.bert, batch_size=64, shuffle=False,
-        type_vocab=type_vocab)
+        args.val, args.bert, batch_size=64, shuffle=False)
 
     # 模型
     use_text = not args.no_text
     model = RoomTypeClassifier(
-        num_types      = len(type_vocab),
+        num_types      = num_types,
         model_channels = args.model_channels,
         num_layers     = args.num_layers,
         num_heads      = args.num_heads,
@@ -221,7 +208,7 @@ def main():
         if step % args.save_interval == 0 and step > 0:
             ckpt_path = save_dir / 'latest.pt'
             torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
-                        'step': step, 'type_vocab': type_vocab}, ckpt_path)
+                        'step': step}, ckpt_path)
             print(f'  saved -> {ckpt_path}')
 
         if step % args.val_interval == 0 and step > 0:
@@ -234,13 +221,11 @@ def main():
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
-                            'step': step, 'val_acc': val_acc,
-                            'type_vocab': type_vocab}, save_dir / 'best.pt')
+                            'step': step, 'val_acc': val_acc}, save_dir / 'best.pt')
                 print(f'  best saved (val_acc={val_acc:.4f})')
 
     torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
-                'step': args.total_steps, 'type_vocab': type_vocab},
-               save_dir / 'latest.pt')
+                'step': args.total_steps}, save_dir / 'latest.pt')
     log_file.close()
     print('done.')
 

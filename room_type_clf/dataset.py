@@ -23,49 +23,29 @@ MAX_NODES    = 40
 MAX_TEXT_LEN = 192
 
 
-def build_type_vocab(jsonl_path):
-    """扫描 jsonl，统计所有出现的节点类型，返回 {type_str: id}。"""
-    types = set()
-    with open(jsonl_path, encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            for t in rec.get('node_types', []):
-                if isinstance(t, list):
-                    for tt in t:
-                        if tt:
-                            types.add(str(tt))
-                else:
-                    if t:
-                        types.add(str(t))
-    vocab = {t: i for i, t in enumerate(sorted(types))}
-    vocab['__other__'] = len(vocab)
-    return vocab
+COMBO_VOCAB_PATH = 'node_diffusion_room_tri/type_combo_vocab_old.json'
+
+
+def load_combo_vocab(path=COMBO_VOCAB_PATH):
+    """加载组合类型词表，返回 (num_types, combo_to_id)。
+    combo_to_id: {'[1]': 1, '[2]': 2, ...}  ID 从 1 开始。
+    num_types = N_TYPES（最大 combo_id，用于 nn.Embedding / CrossEntropyLoss）。
+    """
+    with open(path, encoding='utf-8') as f:
+        v = json.load(f)
+    return v['N_TYPES'], v['combo_to_id']
 
 
 class RoomTypeDataset(Dataset):
     def __init__(self, jsonl_path, bert_name='models/bert-base-uncased',
-                 type_vocab=None):
+                 combo_vocab_path=COMBO_VOCAB_PATH):
         self.tokenizer = BertTokenizer.from_pretrained(bert_name)
 
         with open(jsonl_path, encoding='utf-8') as f:
             self.records = [json.loads(l) for l in f if l.strip()]
 
-        if type_vocab is None:
-            type_vocab = build_type_vocab(jsonl_path)
-        self.type_vocab  = type_vocab
-        self.num_types   = len(type_vocab)
-        self.other_id    = type_vocab.get('__other__', self.num_types - 1)
-
+        self.num_types, _ = load_combo_vocab(combo_vocab_path)
         print(f"RoomTypeDataset: {len(self.records)} 条  num_types={self.num_types}  {jsonl_path}")
-
-    def _type_to_id(self, t):
-        if isinstance(t, list):
-            t = t[0] if t else '__other__'
-        t = str(t)
-        return self.type_vocab.get(t, self.other_id)
 
     def __len__(self):
         return len(self.records)
@@ -95,12 +75,11 @@ class RoomTypeDataset(Dataset):
         ptok   = np.array(enc['input_ids'],      dtype=np.int64)
         pmsk   = np.array(enc['attention_mask'], dtype=np.float32)
 
-        # 节点类型标签（padding 节点=-1，训练时忽略）
-        raw_types  = rec.get('node_types', [])
-        labels     = np.full(MAX_NODES, -1, dtype=np.int64)
+        # 节点类型标签：直接用 node_combo_ids，padding 节点=-1
+        combo_ids = rec.get('node_combo_ids', [])
+        labels    = np.full(MAX_NODES, -1, dtype=np.int64)
         for i in range(n):
-            t = raw_types[i] if i < len(raw_types) else '__other__'
-            labels[i] = self._type_to_id(t)
+            labels[i] = int(combo_ids[i]) if i < len(combo_ids) else 0
 
         return {
             'node_mask':       torch.from_numpy(mask_np),
@@ -112,8 +91,8 @@ class RoomTypeDataset(Dataset):
         }
 
 
-def load_data(jsonl_path, bert_name, batch_size, shuffle=True, type_vocab=None):
-    dataset = RoomTypeDataset(jsonl_path, bert_name=bert_name, type_vocab=type_vocab)
+def load_data(jsonl_path, bert_name, batch_size, shuffle=True):
+    dataset = RoomTypeDataset(jsonl_path, bert_name=bert_name)
     loader  = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                          num_workers=4, pin_memory=True, persistent_workers=True,
                          drop_last=True)

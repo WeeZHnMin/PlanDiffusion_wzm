@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 from transformers import BertTokenizer
 
-from .dataset import build_type_vocab, MAX_NODES, MAX_TEXT_LEN
+from .dataset import load_combo_vocab, COMBO_VOCAB_PATH, MAX_NODES, MAX_TEXT_LEN
 from .model import _assign_room_membership_single, MAX_ROOMS
 
 
@@ -74,11 +74,10 @@ def _compute_room_membership(args_tuple):
 
 # ── 处理单个 jsonl ─────────────────────────────────────────────────────────────
 
-def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1,
+def process_jsonl(jsonl_path, tokenizer, max_samples=0, n_workers=1,
                   augment=1, rng=None):
     if rng is None:
         rng = random.Random(42)
-    other_id = type_vocab.get('__other__', len(type_vocab) - 1)
 
     mask_list    = []
     adj_list     = []
@@ -126,15 +125,11 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1,
             padded[:tlen]   = enc['input_ids']
             attn_msk[:tlen] = enc['attention_mask']
 
-            # 节点类型标签
-            raw_types = rec.get("node_types", [])
+            # 节点类型标签：直接用 node_combo_ids，padding 节点=-1
+            combo_ids = rec.get("node_combo_ids", [])
             labels    = np.full(MAX_NODES, -1, dtype=np.int32)
             for i in range(n):
-                t = raw_types[i] if i < len(raw_types) else '__other__'
-                if isinstance(t, list):
-                    t = t[0] if t else '__other__'
-                t = str(t)
-                labels[i] = type_vocab.get(t, other_id)
+                labels[i] = int(combo_ids[i]) if i < len(combo_ids) else 0
 
             # 增强：对有效节点做随机排列
             base_perm = list(range(n))
@@ -196,25 +191,14 @@ def main():
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 词表：先扫描训练集，再合并验证集里出现的新类型
-    print("构建类型词表...")
-    from .dataset import build_type_vocab as _build
-    type_vocab = _build(args.jsonl)
-    if args.val_jsonl:
-        for k in _build(args.val_jsonl):
-            if k not in type_vocab:
-                type_vocab[k] = len(type_vocab)
-    print(f"词表大小: {len(type_vocab)}")
-
-    vocab_path = out_path.with_suffix('.vocab.json')
-    with open(vocab_path, 'w', encoding='utf-8') as f:
-        json.dump(type_vocab, f, ensure_ascii=False, indent=2)
-    print(f"词表 -> {vocab_path}")
+    # 词表：直接读 combo vocab，无需扫描数据
+    num_types, combo_to_id = load_combo_vocab()
+    print(f"组合类型词表大小: {num_types}  (from {COMBO_VOCAB_PATH})")
 
     # 构建训练集（带增强）
     t0 = time.perf_counter()
     print(f"\n处理训练集: {args.jsonl}  (augment={args.augment})")
-    arrays = process_jsonl(args.jsonl, tokenizer, type_vocab,
+    arrays = process_jsonl(args.jsonl, tokenizer,
                            args.max_samples, n_workers, args.augment, rng)
     np.savez_compressed(out_path, **arrays)
     print(f"训练集 -> {out_path}  ({time.perf_counter()-t0:.1f}s)")
@@ -227,7 +211,7 @@ def main():
             val_path = out_path.parent / 'val.npz'
         t0 = time.perf_counter()
         print(f"\n处理验证集: {args.val_jsonl}  (augment=1)")
-        val_arrays = process_jsonl(args.val_jsonl, tokenizer, type_vocab,
+        val_arrays = process_jsonl(args.val_jsonl, tokenizer,
                                    0, n_workers, augment=1)
         np.savez_compressed(val_path, **val_arrays)
         print(f"验证集 -> {val_path}  ({time.perf_counter()-t0:.1f}s)")
