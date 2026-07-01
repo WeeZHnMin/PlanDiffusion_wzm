@@ -33,7 +33,7 @@ def build_parser():
                    help='预处理好的验证 npz，与 val_jsonl 二选一')
     p.add_argument('--bert',         default='models/bert-base-uncased')
     p.add_argument('--save_dir',     default='checkpoints/room_type_clf')
-    p.add_argument('--batch_size',   type=int,   default=256)
+    p.add_argument('--batch_size',   type=int,   default=512)
     p.add_argument('--lr',           type=float, default=3e-4)
     p.add_argument('--weight_decay', type=float, default=1e-4)
     p.add_argument('--total_steps',  type=int,   default=50000)
