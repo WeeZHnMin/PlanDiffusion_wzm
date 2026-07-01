@@ -135,27 +135,25 @@ def build_prompt(text_desc, rings, ring_adj, n_nodes):
         f"Description: {text_desc}",
         "",
         f"The graph has {n_nodes} nodes (corners/junctions of walls).",
-        "Each ring below is an enclosed face of the graph, i.e., one room.",
+        "Each ring is an enclosed face of the graph corresponding to one room.",
         "",
-        "Rings (rooms):",
+        "Rings:",
     ]
     for i, ring in enumerate(rings):
         nodes_str = ", ".join(str(nd) for nd in sorted(ring))
         lines.append(f"  Ring {i}: nodes [{nodes_str}]")
 
-    lines += ["", "Ring adjacency (rooms sharing a wall):"]
+    lines += ["", "Adjacency (rings sharing a wall):"]
     for i, adj_list in ring_adj.items():
         if adj_list:
             lines.append(f"  Ring {i} -> " + ", ".join(f"Ring {j}" for j in sorted(adj_list)))
-        else:
-            lines.append(f"  Ring {i} -> (no neighbors)")
 
     lines += [
         "",
-        "Predict the room type for each ring.",
-        "Allowed types: bathroom, bedroom, living_room, kitchen, corridor, dining_room, other",
+        "Allowed room types: bathroom, bedroom, living_room, kitchen, corridor, dining_room, other",
         "",
-        "Reply in exactly this format (one line per ring, no extra text):",
+        "Reason briefly, then end your response with the answer block:",
+        "ANSWER:",
     ]
     for i in range(len(rings)):
         lines.append(f"Ring {i}: <room_type>")
@@ -176,7 +174,6 @@ def call_mimo(prompt, client, thinking=True, max_retries=3):
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=0.0,
-                max_tokens=512,
                 **extra,
             )
             msg = resp.choices[0].message
