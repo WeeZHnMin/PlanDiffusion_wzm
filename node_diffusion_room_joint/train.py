@@ -345,18 +345,18 @@ def main(argv=None, defaults=None):
             print(f"  saved -> {ckpt_path}")
 
         if is_master and val_records and step > 0 and step % args.val_interval == 0:
-            mse = _run_val(model, diffusion, val_tokenizer, val_records,
-                           args, device, step, log_file)
-            if mse > best_val_iou:
-                best_val_iou = mse
+            micro_iou = _run_val(model, diffusion, val_tokenizer, val_records,
+                                 args, device, step, log_file)
+            if micro_iou > best_val_iou:
+                best_val_iou = micro_iou
                 raw_model = model.module if use_ddp else model
                 best_path = save_dir / "best.pt"
                 torch.save({
                     "model": raw_model.state_dict(), "opt": opt.state_dict(),
                     "scaler": scaler.state_dict(), "step": step,
-                    "micro_iou": mse,
+                    "micro_iou": micro_iou,
                 }, best_path)
-                print(f"  best model saved (micro_iou={mse:.4f}) -> {best_path}")
+                print(f"  best model saved (micro_iou={micro_iou:.4f}) -> {best_path}")
 
     if is_master:
         ckpt_path = save_dir / "latest.pt"
