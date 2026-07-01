@@ -118,3 +118,40 @@ def load_data(jsonl_path, bert_name, batch_size, shuffle=True, type_vocab=None):
                          num_workers=4, pin_memory=True, persistent_workers=True,
                          drop_last=True)
     return dataset, loader
+
+
+# ── NPZ 版 Dataset（build_npz.py 预处理后使用，速度更快）────────────────────────
+
+class RoomTypeNpzDataset(Dataset):
+    """直接读取 build_npz.py 生成的 npz 文件，省去运行时 tokenize 和 room_membership 计算。"""
+
+    def __init__(self, npz_path):
+        data = np.load(npz_path)
+        self.node_mask       = data['node_mask'].astype(np.float32)     # [N, 40]
+        self.adj_matrix      = data['adj_matrix'].astype(np.float32)    # [N, 40, 40]
+        self.room_membership = data['room_membership']                  # [N, 40, MAX_ROOMS]
+        self.prompt_tokens   = data['prompt_tokens'].astype(np.int64)   # [N, 192]
+        self.prompt_mask     = data['prompt_mask'].astype(np.float32)   # [N, 192]
+        self.type_labels     = data['type_labels'].astype(np.int64)     # [N, 40]
+        print(f"RoomTypeNpzDataset: {len(self.node_mask)} 条  {npz_path}")
+
+    def __len__(self):
+        return len(self.node_mask)
+
+    def __getitem__(self, idx):
+        return {
+            'node_mask':       torch.from_numpy(self.node_mask[idx]),
+            'adj_matrix':      torch.from_numpy(self.adj_matrix[idx]),
+            'room_membership': torch.from_numpy(self.room_membership[idx]),
+            'prompt_tokens':   torch.from_numpy(self.prompt_tokens[idx]),
+            'prompt_mask':     torch.from_numpy(self.prompt_mask[idx]),
+            'type_labels':     torch.from_numpy(self.type_labels[idx]),
+        }
+
+
+def load_npz_data(npz_path, batch_size, shuffle=True):
+    dataset = RoomTypeNpzDataset(npz_path)
+    loader  = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                         num_workers=4, pin_memory=True, persistent_workers=True,
+                         drop_last=True)
+    return dataset, loader

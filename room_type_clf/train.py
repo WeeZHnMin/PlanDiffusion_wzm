@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 
-from .dataset import load_data, build_type_vocab
+from .dataset import load_data, load_npz_data, build_type_vocab
 from .model import RoomTypeClassifier
 
 
@@ -27,6 +27,10 @@ def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--train_jsonl',  default='data/jsonl/final_graph_dataset_v3.jsonl')
     p.add_argument('--val_jsonl',    default='data/jsonl/val_graph_dataset_18k5.jsonl')
+    p.add_argument('--train_npz',    default='',
+                   help='预处理好的训练 npz，与 train_jsonl 二选一')
+    p.add_argument('--val_npz',      default='',
+                   help='预处理好的验证 npz，与 val_jsonl 二选一')
     p.add_argument('--bert',         default='models/bert-base-uncased')
     p.add_argument('--save_dir',     default='checkpoints/room_type_clf')
     p.add_argument('--batch_size',   type=int,   default=256)
@@ -86,21 +90,31 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 先从训练集建词表（验证集共用）
-    print('构建类型词表...')
-    type_vocab = build_type_vocab(args.train_jsonl)
-    vocab_path = save_dir / 'type_vocab.json'
-    with open(vocab_path, 'w', encoding='utf-8') as f:
-        json.dump(type_vocab, f, ensure_ascii=False, indent=2)
-    print(f'词表大小: {len(type_vocab)}  已保存 -> {vocab_path}')
-
     # 数据
-    train_ds, train_loader = load_data(
-        args.train_jsonl, args.bert, args.batch_size,
-        shuffle=True, type_vocab=type_vocab)
-    _, val_loader = load_data(
-        args.val_jsonl, args.bert, batch_size=64,
-        shuffle=False, type_vocab=type_vocab)
+    if args.train_npz:
+        # npz 模式：词表从 npz 同名 vocab.json 读取
+        vocab_path = Path(args.train_npz).with_suffix('.vocab.json')
+        with open(vocab_path, encoding='utf-8') as f:
+            type_vocab = json.load(f)
+        print(f'词表大小: {len(type_vocab)}  (from {vocab_path})')
+        train_ds, train_loader = load_npz_data(
+            args.train_npz, args.batch_size, shuffle=True)
+        val_npz = args.val_npz or str(Path(args.train_npz).parent / 'val.npz')
+        _, val_loader = load_npz_data(val_npz, batch_size=64, shuffle=False)
+    else:
+        # jsonl 模式
+        print('构建类型词表...')
+        type_vocab = build_type_vocab(args.train_jsonl)
+        vocab_path = save_dir / 'type_vocab.json'
+        with open(vocab_path, 'w', encoding='utf-8') as f:
+            json.dump(type_vocab, f, ensure_ascii=False, indent=2)
+        print(f'词表大小: {len(type_vocab)}  已保存 -> {vocab_path}')
+        train_ds, train_loader = load_data(
+            args.train_jsonl, args.bert, args.batch_size,
+            shuffle=True, type_vocab=type_vocab)
+        _, val_loader = load_data(
+            args.val_jsonl, args.bert, batch_size=64,
+            shuffle=False, type_vocab=type_vocab)
 
     # 模型
     use_text = not args.no_text
