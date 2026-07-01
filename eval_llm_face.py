@@ -165,7 +165,8 @@ def build_prompt(text_desc, rings, ring_adj, n_nodes):
 
 # ── MiMo 调用 ─────────────────────────────────────────────────────────────────
 
-def call_mimo(prompt, client, max_retries=3):
+def call_mimo(prompt, client, thinking=True, max_retries=3):
+    extra = {} if thinking else {"extra_body": {"enable_thinking": False}}
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
@@ -176,6 +177,7 @@ def call_mimo(prompt, client, max_retries=3):
                 ],
                 temperature=0.0,
                 max_tokens=512,
+                **extra,
             )
             return resp.choices[0].message.content or ""
         except Exception as e:
@@ -206,7 +208,8 @@ def parse_args():
     p.add_argument("--n_samples",  type=int, default=200)
     p.add_argument("--output",     default="results/llm_face_eval.jsonl")
     p.add_argument("--api-key",    default="")
-    p.add_argument("--sleep",      type=float, default=0.5, help="API 调用间隔（秒）")
+    p.add_argument("--sleep",       type=float, default=0.5, help="API 调用间隔（秒）")
+    p.add_argument("--no_thinking", action="store_true",    help="关闭 MiMo 思考模式")
     return p.parse_args()
 
 
@@ -253,23 +256,23 @@ def main():
             prompt   = build_prompt(prompt_text, rings, ring_adj, n)
 
             try:
-                response  = call_mimo(prompt, client)
+                response  = call_mimo(prompt, client, thinking=not args.no_thinking)
                 predicted = parse_response(response, len(rings))
             except Exception as e:
                 print(f"  [ERROR] sample {n_done}: {e}")
                 n_skip += 1
                 continue
 
-            # 统计
-            sample_total = sample_correct = 0
+            # 统计：漏答算错
+            sample_correct = 0
+            sample_total   = len(rings)
+            total_rings   += sample_total
             for g, p in zip(gt, predicted):
                 if p is not None:
-                    parsed_rings  += 1
-                    sample_total  += 1
-                    total_rings   += 1
-                    if g == p:
-                        sample_correct += 1
-                        correct_rings  += 1
+                    parsed_rings += 1
+                if g == p:           # p is None 时不等，自动算错
+                    sample_correct += 1
+                    correct_rings  += 1
 
             acc = sample_correct / max(sample_total, 1)
             n_done += 1
@@ -286,20 +289,20 @@ def main():
             out_f.flush()
 
             if n_done % 10 == 0:
-                overall = correct_rings / max(parsed_rings, 1)
+                overall = correct_rings / max(total_rings, 1)
                 elapsed = time.perf_counter() - t0
                 print(f"[{n_done:4d}/{args.n_samples}] "
-                      f"overall_acc={overall:.2%}  "
+                      f"acc={overall:.2%}  "
                       f"parsed={parsed_rings}/{total_rings}  "
                       f"{elapsed:.0f}s")
 
             time.sleep(args.sleep)
 
     out_f.close()
-    overall = correct_rings / max(parsed_rings, 1)
+    overall = correct_rings / max(total_rings, 1)
     print(f"\n完成 {n_done} 条（跳过 {n_skip}）")
-    print(f"总环数: {total_rings}  解析成功: {parsed_rings}")
-    print(f"准确率: {overall:.2%}  ({correct_rings}/{parsed_rings})")
+    print(f"总环数: {total_rings}  LLM 解析成功: {parsed_rings}  ({parsed_rings/max(total_rings,1):.1%})")
+    print(f"准确率(漏答算错): {overall:.2%}  ({correct_rings}/{total_rings})")
     print(f"结果 -> {out_path}")
 
 
