@@ -1,120 +1,328 @@
+"""
+TextGraphAlign: CLIP 风格对比预训练
+
+GraphEncoder  : 四流注意力 → mean pool → MLP投影头 → L2归一化
+TextEncoder   : 预计算 BERT hidden → text_proj → mean pool → MLP投影头 → L2归一化
+TextGraphAlign: 上述两个编码器 + 可学习温度 logit_scale
+
+损失: 对称 InfoNCE (CLIP loss)
+"""
+
 import math
+from collections import deque
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import BertModel
-
-MAX_NODES = 40
 
 
-# ── Graph Tower ──────────────────────────────────────────────────────────────
+MAX_ROOMS = 20
 
-class GraphSAGEConv(nn.Module):
-    def __init__(self, in_dim, out_dim):
+
+# ── Room Membership 分配（build_npz 复用） ─────────────────────────────────────
+
+def _assign_room_membership_single(adj, n):
+    seen       = set()
+    next_rid   = 0
+    membership = np.zeros((n, MAX_ROOMS), dtype=np.int32)
+
+    for u in range(n):
+        for v in range(u + 1, n):
+            if not adj[u, v]:
+                continue
+            prev  = {u: -1}
+            q     = deque([u])
+            found = False
+            while q and not found:
+                cur = q.popleft()
+                for w in range(n):
+                    if not adj[cur, w] or w in prev:
+                        continue
+                    if cur == u and w == v:
+                        continue
+                    prev[w] = cur
+                    if w == v:
+                        found = True
+                        break
+                    q.append(w)
+            if not found:
+                continue
+            cycle = []
+            cur   = v
+            while cur != -1:
+                cycle.append(cur)
+                cur = prev[cur]
+            key = frozenset(cycle)
+            if key in seen:
+                continue
+            seen.add(key)
+            if next_rid >= MAX_ROOMS:
+                continue
+            for node in cycle:
+                membership[node, next_rid] = 1
+            next_rid += 1
+
+    return membership
+
+
+# ── 基础模块 ──────────────────────────────────────────────────────────────────
+
+def _attention(q, k, v, d_k, mask=None, dropout=None):
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+    if mask is not None:
+        scores = scores.masked_fill(mask.unsqueeze(1) == 1, -1e4)
+    scores = F.softmax(scores.float(), dim=-1).to(q.dtype)
+    if dropout is not None:
+        scores = dropout(scores)
+    return torch.matmul(scores, v)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, heads, d_model, dropout=0.1):
         super().__init__()
-        self.lin_self  = nn.Linear(in_dim,  out_dim)
-        self.lin_neigh = nn.Linear(in_dim,  out_dim)
-        self.norm      = nn.LayerNorm(out_dim)
+        self.d_k      = d_model // heads
+        self.h        = heads
+        self.q_linear = nn.Linear(d_model, d_model)
+        self.k_linear = nn.Linear(d_model, d_model)
+        self.v_linear = nn.Linear(d_model, d_model)
+        self.out      = nn.Linear(d_model, d_model)
+        self.dropout  = nn.Dropout(dropout)
 
-    def forward(self, x, adj_norm):
-        # adj_norm: (B, N, N) row-normalised
-        agg = torch.bmm(adj_norm, x)
-        out = self.lin_self(x) + self.lin_neigh(agg)
-        return self.norm(F.gelu(out))
+    def forward(self, q, k, v, mask=None):
+        bs = q.size(0)
+        q  = self.q_linear(q).view(bs, -1, self.h, self.d_k).transpose(1, 2)
+        k  = self.k_linear(k).view(bs, -1, self.h, self.d_k).transpose(1, 2)
+        v  = self.v_linear(v).view(bs, -1, self.h, self.d_k).transpose(1, 2)
+        out = _attention(q, k, v, self.d_k, mask, self.dropout)
+        out = out.transpose(1, 2).contiguous().view(bs, -1, self.h * self.d_k)
+        return self.out(out)
 
 
-class GraphTower(nn.Module):
-    def __init__(self, in_dim=2, hidden=256, out_dim=384, n_layers=3):
+class GlobalRoomAttnStream(nn.Module):
+    """按环分组的注意力，环内独立 softmax。"""
+    def __init__(self, heads, d_model, dropout=0.1):
         super().__init__()
-        self.input_proj = nn.Linear(in_dim, hidden)
-        self.convs = nn.ModuleList(
-            [GraphSAGEConv(hidden, hidden) for _ in range(n_layers)]
+        self.d_k      = d_model // heads
+        self.h        = heads
+        self.q_linear = nn.Linear(d_model, d_model)
+        self.k_linear = nn.Linear(d_model, d_model)
+        self.v_linear = nn.Linear(d_model, d_model)
+        self.out      = nn.Linear(d_model, d_model)
+        self.dropout  = nn.Dropout(dropout)
+
+    def forward(self, x, room_membership, pad_mask=None):
+        B, N, d = x.shape
+        H, d_k  = self.h, self.d_k
+        Q = self.q_linear(x).view(B, N, H, d_k).transpose(1, 2)
+        K = self.k_linear(x).view(B, N, H, d_k).transpose(1, 2)
+        V = self.v_linear(x).view(B, N, H, d_k).transpose(1, 2)
+        base_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+        if pad_mask is not None:
+            base_scores = base_scores - pad_mask.unsqueeze(2) * 1e4
+        R           = room_membership.shape[2]
+        out_accum   = torch.zeros(B, H, N, d_k, device=x.device, dtype=Q.dtype)
+        room_counts = torch.zeros(B, 1, N, 1,   device=x.device, dtype=Q.dtype)
+        for k in range(R):
+            mem_k = room_membership[:, :, k]
+            if mem_k.sum() == 0:
+                continue
+            col_mask = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e4
+            scores_k = base_scores - col_mask
+            attn_k   = F.softmax(scores_k.float(), dim=-1).to(Q.dtype)
+            attn_k   = self.dropout(attn_k)
+            out_k    = torch.matmul(attn_k, V)
+            node_mask_k = mem_k.unsqueeze(1).unsqueeze(3)
+            out_accum   = out_accum   + out_k * node_mask_k
+            room_counts = room_counts + node_mask_k
+        out = out_accum / room_counts.clamp(min=1.0)
+        out = out.transpose(1, 2).contiguous().view(B, N, H * d_k)
+        return self.out(out)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model, dropout=0.1):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_model * 2)
+        self.linear2 = nn.Linear(d_model * 2, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.linear2(self.dropout(F.relu(self.linear1(x))))
+
+
+class GraphEncoderLayer(nn.Module):
+    """四流自注意力 + FFN。"""
+    def __init__(self, d_model, heads, dropout=0.1):
+        super().__init__()
+        self.norm1            = nn.LayerNorm(d_model)
+        self.norm2            = nn.LayerNorm(d_model)
+        self.adj_attn         = MultiHeadAttention(heads, d_model, dropout)
+        self.room_attn        = MultiHeadAttention(heads, d_model, dropout)
+        self.global_attn      = MultiHeadAttention(heads, d_model, dropout)
+        self.global_room_attn = GlobalRoomAttnStream(heads, d_model, dropout)
+        self.ff               = FeedForward(d_model, dropout)
+        self.dropout          = nn.Dropout(dropout)
+
+    def forward(self, x, room_mask, room_membership, pad_mask, adj_mask):
+        x2 = self.norm1(x)
+        x  = x + self.dropout(
+            self.adj_attn        (x2, x2, x2, adj_mask)          +
+            self.room_attn       (x2, x2, x2, room_mask)         +
+            self.global_attn     (x2, x2, x2, pad_mask)          +
+            self.global_room_attn(x2, room_membership, pad_mask)
         )
-        self.out_proj = nn.Sequential(
-            nn.Linear(hidden, out_dim),
-            nn.LayerNorm(out_dim),
-        )
-
-    @staticmethod
-    def _row_norm(adj, mask):
-        # zero-out padding rows/cols, then row-normalise
-        mask2d = mask.unsqueeze(2) * mask.unsqueeze(1)      # (B, N, N)
-        adj    = adj * mask2d
-        deg    = adj.sum(dim=-1, keepdim=True).clamp(min=1)
-        return adj / deg
-
-    def forward(self, coords, adj, mask):
-        # coords: (B, N, 2), adj: (B, N, N), mask: (B, N)
-        adj_n = self._row_norm(adj, mask)
-        x     = F.gelu(self.input_proj(coords))
-        for conv in self.convs:
-            x = conv(x, adj_n)
-        # masked mean-pool
-        m      = mask.unsqueeze(-1)
-        pooled = (x * m).sum(dim=1) / m.sum(dim=1).clamp(min=1)
-        return self.out_proj(pooled)                         # (B, out_dim)
+        x2 = self.norm2(x)
+        x  = x + self.dropout(self.ff(x2))
+        return x
 
 
-# ── Text Tower ────────────────────────────────────────────────────────────────
+# ── 图编码器 ──────────────────────────────────────────────────────────────────
 
-class TextTower(nn.Module):
-    def __init__(self, bert_name='models/bert-base-uncased', out_dim=384,
-                 unfreeze_last_n=2):
+class GraphEncoder(nn.Module):
+    """
+    node_mask / adj_matrix / room_membership → graph embedding [B, d_embed]
+
+    流程:
+      共享 node_token → 四流注意力层
+      → mean pool (仅有效节点)
+      → 2-layer MLP 投影头
+      → L2 归一化
+    """
+
+    def __init__(self, d_model=256, num_layers=4, num_heads=4,
+                 d_embed=256, dropout=0.1):
         super().__init__()
-        self.bert = BertModel.from_pretrained(bert_name)
-        # freeze all
-        for p in self.bert.parameters():
-            p.requires_grad_(False)
-        # unfreeze last n encoder layers
-        n_layers = len(self.bert.encoder.layer)
-        for i in range(n_layers - unfreeze_last_n, n_layers):
-            for p in self.bert.encoder.layer[i].parameters():
-                p.requires_grad_(True)
-        # unfreeze pooler
-        for p in self.bert.pooler.parameters():
-            p.requires_grad_(True)
-
-        bert_dim = self.bert.config.hidden_size          # 768
+        self.node_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        self.layers     = nn.ModuleList(
+            [GraphEncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)]
+        )
         self.proj = nn.Sequential(
-            nn.Linear(bert_dim, out_dim),
-            nn.LayerNorm(out_dim),
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_embed),
         )
 
-    def forward(self, input_ids, attention_mask):
-        out    = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = out.pooler_output                        # (B, 768)
-        return self.proj(pooled)                          # (B, out_dim)
+    def _build_masks(self, adj_matrix, room_membership, node_mask):
+        dt = torch.float32
+        nm = node_mask.to(dt)
+        rm = room_membership.to(dt)
+
+        room_nn  = torch.bmm(rm, rm.transpose(1, 2))
+        room_msk = (room_nn == 0).to(dt)
+        pad_keys = (1 - nm).unsqueeze(1)
+        room_msk = torch.clamp(room_msk + pad_keys, 0, 1)
+        pad_mask = pad_keys
+
+        am  = adj_matrix.to(dt)
+        eye = torch.eye(am.shape[1], device=am.device, dtype=dt).unsqueeze(0)
+        adj_msk = 1 - (am + eye).clamp(0, 1)
+        adj_msk = torch.clamp(adj_msk + pad_keys, 0, 1)
+
+        return room_msk, pad_mask, adj_msk
+
+    def forward(self, node_mask, adj_matrix, room_membership):
+        B, N = node_mask.shape
+        seq  = self.node_token.expand(B, N, -1).clone()
+
+        room_msk, pad_mask, adj_msk = self._build_masks(
+            adj_matrix, room_membership, node_mask)
+
+        for layer in self.layers:
+            seq = layer(seq, room_msk, room_membership.float(), pad_mask, adj_msk)
+
+        nm     = node_mask.float().unsqueeze(-1)
+        pooled = (seq * nm).sum(dim=1) / nm.sum(dim=1).clamp(min=1)
+        return F.normalize(self.proj(pooled), dim=-1)
 
 
-# ── InfoNCE loss ──────────────────────────────────────────────────────────────
+# ── 文本编码器 ────────────────────────────────────────────────────────────────
 
-def info_nce(text_emb, graph_emb, tau=0.07):
-    """Symmetric InfoNCE; returns (loss, acc_t2g, acc_g2t)."""
-    t = F.normalize(text_emb,  dim=-1)
-    g = F.normalize(graph_emb, dim=-1)
-    logits = torch.matmul(t, g.T) / tau          # (B, B)
-    labels = torch.arange(t.shape[0], device=t.device)
-    loss_t = F.cross_entropy(logits,   labels)
-    loss_g = F.cross_entropy(logits.T, labels)
-    loss   = (loss_t + loss_g) / 2.0
-    with torch.no_grad():
-        acc_t = (logits.argmax(dim=1) == labels).float().mean().item()
-        acc_g = (logits.argmax(dim=0) == labels).float().mean().item()
-    return loss, acc_t, acc_g
+class TextEncoder(nn.Module):
+    """
+    预计算 BERT hidden [B, T, 768] → text embedding [B, d_embed]
 
+    流程:
+      text_proj Linear(768, d_model)
+      → mean pool 有效 token
+      → 2-layer MLP 投影头
+      → L2 归一化
+    """
 
-# ── Full alignment model ──────────────────────────────────────────────────────
-
-class AlignModel(nn.Module):
-    def __init__(self, bert_name='models/bert-base-uncased', out_dim=384,
-                 unfreeze_last_n=2, tau=0.07):
+    def __init__(self, d_model=256, d_embed=256):
         super().__init__()
-        self.text_tower  = TextTower(bert_name, out_dim, unfreeze_last_n)
-        self.graph_tower = GraphTower(in_dim=2, hidden=256, out_dim=out_dim)
-        self.tau         = tau
+        self.text_proj = nn.Linear(768, d_model)
+        self.proj = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_embed),
+        )
 
-    def forward(self, input_ids, attention_mask, coords, adj, mask):
-        t = self.text_tower(input_ids, attention_mask)
-        g = self.graph_tower(coords, adj, mask)
-        loss, acc_t, acc_g = info_nce(t, g, self.tau)
-        return loss, acc_t, acc_g, t, g
+    def forward(self, text_hidden, text_attn_mask):
+        """
+        text_hidden    : [B, T, 768] float32
+        text_attn_mask : [B, T]      float32  1=有效
+        """
+        feat   = self.text_proj(text_hidden)
+        tm     = text_attn_mask.float().unsqueeze(-1)
+        pooled = (feat * tm).sum(dim=1) / tm.sum(dim=1).clamp(min=1)
+        return F.normalize(self.proj(pooled), dim=-1)
+
+
+# ── CLIP Loss ─────────────────────────────────────────────────────────────────
+
+def clip_loss(graph_emb, text_emb, logit_scale):
+    """对称 InfoNCE，返回 (loss, acc_g2t, acc_t2g)。"""
+    scale      = logit_scale.exp().clamp(max=100.0)
+    logits_g2t = scale * graph_emb @ text_emb.t()
+    logits_t2g = logits_g2t.t()
+    B      = graph_emb.shape[0]
+    labels = torch.arange(B, device=graph_emb.device)
+    loss   = (F.cross_entropy(logits_g2t, labels) +
+              F.cross_entropy(logits_t2g, labels)) / 2
+    with torch.no_grad():
+        acc_g2t = (logits_g2t.argmax(dim=1) == labels).float().mean().item()
+        acc_t2g = (logits_t2g.argmax(dim=1) == labels).float().mean().item()
+    return loss, acc_g2t, acc_t2g
+
+
+# ── 主模型 ────────────────────────────────────────────────────────────────────
+
+class TextGraphAlign(nn.Module):
+    """
+    CLIP 风格文本-图对比预训练模型。
+
+    forward 输入:
+      node_mask      [B, N]
+      adj_matrix     [B, N, N]
+      room_membership[B, N, MAX_ROOMS]
+      text_hidden    [B, T, 768]
+      text_attn_mask [B, T]
+
+    forward 返回: (loss, acc_g2t, acc_t2g)
+    """
+
+    def __init__(self, d_model=256, num_layers=4, num_heads=4,
+                 d_embed=256, dropout=0.1):
+        super().__init__()
+        self.graph_enc   = GraphEncoder(d_model, num_layers, num_heads, d_embed, dropout)
+        self.text_enc    = TextEncoder(d_model, d_embed)
+        self.logit_scale = nn.Parameter(torch.log(torch.tensor(1.0 / 0.07)))
+
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"TextGraphAlign: {trainable:,} trainable params  "
+              f"d_model={d_model}  d_embed={d_embed}  layers={num_layers}")
+
+    def encode_graph(self, node_mask, adj_matrix, room_membership):
+        return self.graph_enc(node_mask, adj_matrix, room_membership)
+
+    def encode_text(self, text_hidden, text_attn_mask):
+        return self.text_enc(text_hidden, text_attn_mask)
+
+    def forward(self, node_mask, adj_matrix, room_membership,
+                text_hidden, text_attn_mask):
+        g = self.graph_enc(node_mask, adj_matrix, room_membership)
+        t = self.text_enc(text_hidden, text_attn_mask)
+        return clip_loss(g, t, self.logit_scale)
