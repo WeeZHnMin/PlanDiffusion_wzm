@@ -252,12 +252,16 @@ def main():
     print("\n运行 BERT 推理（训练集）...")
     text_hidden = run_bert(uid_ids, uid_mask, args.bert, args.bert_batch)
 
-    arrays['text_hidden']    = text_hidden          # [n_unique, T, 768] fp16
-    arrays['text_attn_mask'] = uid_mask.astype(bool) # [n_unique, T] bool
+    arrays['text_attn_mask'] = uid_mask.astype(bool)  # [n_unique, T] bool
+
+    # text_hidden 单独存 npy（不压缩，BERT特征压缩率低且耗时）
+    text_hidden_path = out_path.with_suffix('.text_hidden.npy')
+    np.save(text_hidden_path, text_hidden)
+    print(f"text_hidden -> {text_hidden_path}")
 
     np.savez_compressed(out_path, **arrays)
     print(f"训练集 -> {out_path}  ({time.perf_counter()-t0:.1f}s)")
-    _print_stats(arrays)
+    _print_stats(arrays, text_hidden)
 
     # ── 验证集 ────────────────────────────────────────────────────────────────
     if args.val_jsonl:
@@ -272,15 +276,18 @@ def main():
         print("\n运行 BERT 推理（验证集）...")
         val_text = run_bert(val_uid_ids, val_uid_mask, args.bert, args.bert_batch)
 
-        val_arrays['text_hidden']    = val_text
         val_arrays['text_attn_mask'] = val_uid_mask.astype(bool)
+
+        val_text_path = val_path.with_suffix('.text_hidden.npy')
+        np.save(val_text_path, val_text)
+        print(f"text_hidden -> {val_text_path}")
 
         np.savez_compressed(val_path, **val_arrays)
         print(f"验证集 -> {val_path}  ({time.perf_counter()-t0:.1f}s)")
-        _print_stats(val_arrays)
+        _print_stats(val_arrays, val_text)
 
 
-def _print_stats(arrays):
+def _print_stats(arrays, text_hidden):
     mask  = arrays['node_mask']
     valid = mask.astype(bool)
     mb    = arrays['room_membership']
@@ -289,8 +296,7 @@ def _print_stats(arrays):
     valid_labels = labels[valid]
     unique, counts = np.unique(valid_labels, return_counts=True)
     top5 = sorted(zip(counts, unique), reverse=True)[:5]
-    n_unique = len(arrays['text_hidden'])
-    print(f"  样本数: {len(mask)}  unique_prompts: {n_unique}")
+    print(f"  样本数: {len(mask)}  unique_prompts: {len(text_hidden)}")
     print(f"  平均节点数: {valid.sum(axis=1).mean():.1f}")
     print(f"  平均每节点属于 {density.mean():.2f} 个环")
     print(f"  top5 type_id: {[(int(uid), int(cnt)) for cnt, uid in top5]}")

@@ -28,14 +28,18 @@ def load_combo_vocab(path=COMBO_VOCAB_PATH):
 
 class RoomTypeDataset(Dataset):
     def __init__(self, npz_path):
+        npz_path = str(npz_path)
         data = np.load(npz_path)
-        self.node_mask       = data['node_mask'].astype(np.float32)      # [N, 40]
-        self.adj_matrix      = data['adj_matrix'].astype(np.float32)     # [N, 40, 40]
-        self.room_membership = data['room_membership'].astype(np.float32) # [N, 40, R]
-        self.type_labels     = data['type_labels'].astype(np.int64)      # [N, 40]
-        self.text_idx        = data['text_idx'].astype(np.int64)         # [N]
-        self.text_hidden     = data['text_hidden']                       # [U, T, 768] fp16
+        self.node_mask       = data['node_mask'].astype(np.float32)
+        self.adj_matrix      = data['adj_matrix'].astype(np.float32)
+        self.room_membership = data['room_membership'].astype(np.float32)
+        self.type_labels     = data['type_labels'].astype(np.int64)
+        self.text_idx        = data['text_idx'].astype(np.int64)
         self.text_attn_mask  = data['text_attn_mask']                    # [U, T] bool
+
+        # text_hidden 单独存为 .text_hidden.npy
+        text_hidden_path = npz_path.replace('.npz', '.text_hidden.npy')
+        self.text_hidden = np.load(text_hidden_path)                     # [U, T, 768] fp16
         print(f"RoomTypeDataset: {len(self.node_mask)} 条  "
               f"unique_prompts={len(self.text_hidden)}  {npz_path}")
 
