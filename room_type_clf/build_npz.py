@@ -9,19 +9,23 @@
   prompt_mask     (N, 192)           int32
   type_labels     (N, 40)            int32   padding 节点=-1
 
-同目录同名 .json 保存 type_vocab。
+同目录同名 .vocab.json 保存 type_vocab。
+验证集不做增强（augment 固定=1）。
 
 用法：
-  python -m room_type_clf.build_npz
+  python -m room_type_clf.build_npz --augment 4
   python -m room_type_clf.build_npz \\
-      --jsonl data/jsonl/val_graph_dataset_18k5.jsonl \\
-      --output data/processed/room_type_clf/val.npz
+      --jsonl     data/jsonl/final_graph_dataset_v3.jsonl \\
+      --val_jsonl data/jsonl/val_graph_dataset_18k5.jsonl \\
+      --augment   4 \\
+      --output    data/processed/room_type_clf/train.npz
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import time
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
@@ -40,10 +44,21 @@ def parse_args():
                    help="同时构建验证集（共用词表），留空则跳过")
     p.add_argument("--bert",        default="models/bert-base-uncased")
     p.add_argument("--output",      default="data/processed/room_type_clf/train.npz")
+    p.add_argument("--augment",     type=int, default=4,
+                   help="节点顺序打乱增强倍数（含原始顺序），验证集固定=1")
+    p.add_argument("--seed",        type=int, default=42)
     p.add_argument("--workers",     type=int, default=0)
     p.add_argument("--max_samples", type=int, default=0,
                    help="最多读取原始图数量，0=全量")
     return p.parse_args()
+
+
+def _permute(adj, labels, n, perm):
+    """按 perm 打乱有效节点，padding 部分保持不动。"""
+    full_perm = perm + list(range(n, MAX_NODES))
+    new_adj    = adj[np.ix_(full_perm, full_perm)]
+    new_labels = labels[full_perm]
+    return new_adj, new_labels
 
 
 # ── 并行 worker ───────────────────────────────────────────────────────────────
@@ -59,14 +74,17 @@ def _compute_room_membership(args_tuple):
 
 # ── 处理单个 jsonl ─────────────────────────────────────────────────────────────
 
-def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1):
+def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1,
+                  augment=1, rng=None):
+    if rng is None:
+        rng = random.Random(42)
     other_id = type_vocab.get('__other__', len(type_vocab) - 1)
 
-    mask_list   = []
-    adj_list    = []
-    ptok_list   = []
-    pmask_list  = []
-    labels_list = []
+    mask_list    = []
+    adj_list     = []
+    ptok_list    = []
+    pmask_list   = []
+    labels_list  = []
     n_nodes_list = []
 
     n_graphs = n_skipped = 0
@@ -97,11 +115,11 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1)
             adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.uint8)
             adj_pad[:n, :n] = adj_raw.clip(0, 1)
 
-            # node_mask
+            # node_mask（所有增强版本相同）
             mask = np.zeros(MAX_NODES, dtype=np.uint8)
             mask[:n] = 1
 
-            # 文本 token
+            # 文本 token（所有增强版本相同）
             padded   = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
             attn_msk = np.zeros(MAX_TEXT_LEN, dtype=np.int32)
             tlen = len(enc['input_ids'])
@@ -118,19 +136,29 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1)
                 t = str(t)
                 labels[i] = type_vocab.get(t, other_id)
 
-            mask_list.append(mask)
-            adj_list.append(adj_pad)
-            ptok_list.append(padded)
-            pmask_list.append(attn_msk)
-            labels_list.append(labels)
-            n_nodes_list.append(n)
+            # 增强：对有效节点做随机排列
+            base_perm = list(range(n))
+            perms = [base_perm]
+            for _ in range(augment - 1):
+                p = base_perm[:]
+                rng.shuffle(p)
+                perms.append(p)
+
+            for perm in perms:
+                new_adj, new_labels = _permute(adj_pad, labels, n, perm)
+                mask_list.append(mask)
+                adj_list.append(new_adj)
+                ptok_list.append(padded)
+                pmask_list.append(attn_msk)
+                labels_list.append(new_labels)
+                n_nodes_list.append(n)
 
             if (line_no + 1) % 10000 == 0:
                 elapsed = time.perf_counter() - t0
-                print(f"  {line_no+1} 行 → {n_graphs} 条记录  ({elapsed:.1f}s)")
+                print(f"  {line_no+1} 行 → {len(adj_list)} 条记录  ({elapsed:.1f}s)")
 
     total = len(adj_list)
-    print(f"共 {n_graphs} 条（跳过 {n_skipped} 条文本过长）")
+    print(f"共 {n_graphs} 张图（跳过 {n_skipped} 条文本过长），增强后 {total} 条")
 
     # 并行计算 room_membership
     print("计算 room_membership（并行）...")
@@ -160,6 +188,7 @@ def process_jsonl(jsonl_path, tokenizer, type_vocab, max_samples=0, n_workers=1)
 
 def main():
     args = parse_args()
+    rng       = random.Random(args.seed)
     n_workers = args.workers if args.workers > 0 else max(1, cpu_count() - 1)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert)
@@ -182,22 +211,24 @@ def main():
         json.dump(type_vocab, f, ensure_ascii=False, indent=2)
     print(f"词表 -> {vocab_path}")
 
-    # 构建训练集
+    # 构建训练集（带增强）
     t0 = time.perf_counter()
-    print(f"\n处理训练集: {args.jsonl}")
-    arrays = process_jsonl(args.jsonl, tokenizer, type_vocab, args.max_samples, n_workers)
+    print(f"\n处理训练集: {args.jsonl}  (augment={args.augment})")
+    arrays = process_jsonl(args.jsonl, tokenizer, type_vocab,
+                           args.max_samples, n_workers, args.augment, rng)
     np.savez_compressed(out_path, **arrays)
     print(f"训练集 -> {out_path}  ({time.perf_counter()-t0:.1f}s)")
     _print_stats(arrays)
 
-    # 构建验证集
+    # 构建验证集（不增强）
     if args.val_jsonl:
         val_path = out_path.parent / (out_path.stem.replace('train', 'val') + '.npz')
         if val_path == out_path:
             val_path = out_path.parent / 'val.npz'
         t0 = time.perf_counter()
-        print(f"\n处理验证集: {args.val_jsonl}")
-        val_arrays = process_jsonl(args.val_jsonl, tokenizer, type_vocab, 0, n_workers)
+        print(f"\n处理验证集: {args.val_jsonl}  (augment=1)")
+        val_arrays = process_jsonl(args.val_jsonl, tokenizer, type_vocab,
+                                   0, n_workers, augment=1)
         np.savez_compressed(val_path, **val_arrays)
         print(f"验证集 -> {val_path}  ({time.perf_counter()-t0:.1f}s)")
         _print_stats(val_arrays)
