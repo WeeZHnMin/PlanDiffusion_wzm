@@ -46,8 +46,6 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         return s1 * x0 + s2 * noise, noise
 
-    T_HIGH = 700  # t > T_HIGH: ring-centroid supervision; t <= T_HIGH: per-node supervision
-
     def training_losses(self, model, x0, t, model_kwargs, step=None):
         self._to(x0.device)
         x0 = x0.float()
@@ -60,33 +58,15 @@ class GaussianDiffusion:
         node_mask  = model_kwargs['node_mask'].float()
         coord_mask = node_mask.unsqueeze(1)                          # [B, 1, N]
 
-        s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
-        s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
-
-        # ── build centroid ε-target ──────────────────────────────────────────
-        membership     = model_kwargs['room_membership'].float()     # [B, N, MAX_ROOMS]
-        ring_sizes     = membership.sum(dim=1, keepdim=True).clamp(min=1)  # [B, 1, MAX_ROOMS]
-        ring_cent_x0   = torch.bmm(x0, membership) / ring_sizes     # [B, 2, MAX_ROOMS]
-        node_n_rings   = membership.sum(dim=2, keepdim=True).clamp(min=1).transpose(1, 2)  # [B, 1, N]
-        node_cent_x0   = torch.bmm(ring_cent_x0, membership.transpose(1, 2)) / node_n_rings  # [B, 2, N]
-        eps_target_cent = (xt - s1 * node_cent_x0) / s2.clamp(min=1e-3)  # ε that → centroid
-
-        # ── per-sample switch: high-t uses centroid target ───────────────────
-        high_t = (t > self.T_HIGH).float().view(-1, 1, 1)           # [B, 1, 1]
-        eps_target = high_t * eps_target_cent + (1 - high_t) * coord_noise
-
-        loss = (
-            (pred_coord_noise - eps_target) ** 2 * coord_mask
-        ).sum() / (coord_mask.sum() * 2 + 1e-8)
-
-        # ── bookkeeping losses (for logging) ─────────────────────────────────
         coord_loss = (
             (pred_coord_noise - coord_noise) ** 2 * coord_mask
         ).sum() / (coord_mask.sum() * 2 + 1e-8)
-        centroid_loss = (
-            (pred_coord_noise - eps_target_cent) ** 2 * coord_mask * high_t
-        ).sum() / ((coord_mask * high_t).sum() * 2 + 1e-8)
 
+        loss = coord_loss
+        centroid_loss = torch.tensor(0.0, device=x0.device)
+
+        s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
+        s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         with torch.no_grad():
             pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
             raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
