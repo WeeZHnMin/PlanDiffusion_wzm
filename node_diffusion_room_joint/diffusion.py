@@ -87,8 +87,9 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         with torch.no_grad():
             pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
-            coord_mask = node_mask.unsqueeze(1)
-            raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
+            # 只算噪声节点，固定节点的 pred_x0 被 1/s1 放大会污染指标
+            rmse_mask  = noisy_mask if noisy_mask.sum() > 0 else node_mask.unsqueeze(1)
+            raw_mse    = ((pred_x0 - x0) ** 2 * rmse_mask).sum() / (rmse_mask.sum() * 2 + 1e-8)
             coord_rmse = raw_mse.sqrt().item()
 
         return loss, coord_loss, centroid_loss, coord_rmse
