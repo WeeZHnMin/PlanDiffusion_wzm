@@ -72,9 +72,9 @@ class GaussianDiffusion:
         ring_sizes = membership.sum(dim=2, keepdim=True).clamp(min=1) # [B, MAX_ROOMS, 1]
         ring_mask  = (ring_sizes.squeeze(-1) > 0).float().unsqueeze(1)# [B, 1, MAX_ROOMS]
 
-        pred_centroids = torch.bmm(pred_x0, membership.transpose(1, 2)) / ring_sizes.squeeze(-1).unsqueeze(1)
-        gt_centroids   = torch.bmm(x0,      membership.transpose(1, 2)) / ring_sizes.squeeze(-1).unsqueeze(1)
-        centroid_loss  = ((pred_centroids - gt_centroids) ** 2 * ring_mask).sum() / (ring_mask.sum() * 2 + 1e-8)
+        node_sq_err   = (pred_x0 - x0) ** 2                                                                       # [B, 2, N]
+        ring_sq_err   = torch.bmm(node_sq_err, membership.transpose(1, 2)) / ring_sizes.squeeze(-1).unsqueeze(1)  # [B, 2, MAX_ROOMS] 环内平均
+        centroid_loss = (ring_sq_err * ring_mask).sum() / (ring_mask.sum() * 2 + 1e-8)                            # 跨环平均
 
         # ISTA 交替：奇数步用 coord_loss，偶数步用 centroid_loss
         if step is None or step % 2 == 0:
