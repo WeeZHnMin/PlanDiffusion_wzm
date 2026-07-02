@@ -419,7 +419,7 @@ class NodeDiffusionTransformer(nn.Module):
         node_emb = self.input_emb(x) + t_emb              # [B, N, d]
 
         # 训练全量模式和推理时都用 zeros（保持一致）；inpainting 时用实际 mask
-        fm = fixed_mask if fixed_mask is not None else torch.zeros(B, N, dtype=torch.long, device=node_emb.device)
+        fm = (fixed_mask if fixed_mask is not None else torch.zeros(B, N, device=node_emb.device)).long()
         node_emb = node_emb + self.fixed_embed(fm)
 
         dt = node_emb.dtype
