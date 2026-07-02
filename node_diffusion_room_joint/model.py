@@ -1,14 +1,14 @@
 """
-NodeDiffusionTransformer — 三流自注意力 + MMDiT 联合注意力
+NodeDiffusionTransformer — 四流自注意力 + MMDiT 联合注意力
 
 每个 EncoderLayer：
-  1. adj_attn + room_attn + global_attn（并联相加，节点内部结构归纳偏置）
+  1. adj_attn + room_attn + global_attn + global_room_attn（并联相加）
   2. JointAttention（MMDiT 风格：节点↔文本双向，各自独立 QKV 权重）
   3. FFN（节点 + 文本各自独立）
 
+global_room_attn：按环分组，每个环内独立 softmax，共享角点跨环通信。
 JointAttention 联合 key mask [B, N+T]：
   节点 padding（node_mask=0）和文本 padding（prompt_mask=0）一并屏蔽。
-  文本 token 拥有自己的 Q，梯度可由坐标损失反传至文本侧所有权重。
 """
 
 import math
@@ -131,6 +131,65 @@ class FeedForward(nn.Module):
         return self.linear2(self.dropout(F.relu(self.linear1(x))))
 
 
+# ── 环分组全局注意力 ──────────────────────────────────────────────────────────
+
+class GlobalRoomAttnStream(nn.Module):
+    """
+    按环分组的全局注意力：
+      1. 计算一次 QK^T 原始分数 [B, H, N, N]
+      2. 对每个环 k：屏蔽非环 k 的 Key 列 → 独立 softmax → 查询 V
+      3. 每个节点的输出 = 所属各环 out_k 之和 / 所属环数
+    共享角点（多环节点）同时参与多个环的注意力，实现跨环间接通信。
+    """
+    def __init__(self, heads, d_model, dropout=0.1):
+        super().__init__()
+        self.d_k      = d_model // heads
+        self.h        = heads
+        self.q_linear = nn.Linear(d_model, d_model)
+        self.k_linear = nn.Linear(d_model, d_model)
+        self.v_linear = nn.Linear(d_model, d_model)
+        self.out      = nn.Linear(d_model, d_model)
+        self.dropout  = nn.Dropout(dropout)
+
+    def forward(self, x, room_membership, pad_mask=None):
+        """
+        x:               [B, N, d]
+        room_membership: [B, N, MAX_ROOMS]  float
+        pad_mask:        [B, 1, N]          1=padding key
+        """
+        B, N, d = x.shape
+        H, d_k  = self.h, self.d_k
+
+        Q = self.q_linear(x).view(B, N, H, d_k).transpose(1, 2)  # [B, H, N, d_k]
+        K = self.k_linear(x).view(B, N, H, d_k).transpose(1, 2)
+        V = self.v_linear(x).view(B, N, H, d_k).transpose(1, 2)
+
+        base_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+        if pad_mask is not None:
+            base_scores = base_scores - pad_mask.unsqueeze(2) * 1e4
+
+        R = room_membership.shape[2]
+        out_accum   = torch.zeros(B, H, N, d_k, device=x.device, dtype=Q.dtype)
+        room_counts = torch.zeros(B, 1, N, 1,   device=x.device, dtype=Q.dtype)
+
+        for k in range(R):
+            mem_k = room_membership[:, :, k]          # [B, N]
+            if mem_k.sum() == 0:
+                continue
+            col_mask = (1.0 - mem_k).unsqueeze(1).unsqueeze(2) * 1e4
+            scores_k = base_scores - col_mask
+            attn_k   = F.softmax(scores_k.float(), dim=-1).to(Q.dtype)
+            attn_k   = self.dropout(attn_k)
+            out_k    = torch.matmul(attn_k, V)
+            node_mask_k  = mem_k.unsqueeze(1).unsqueeze(3)
+            out_accum   += out_k  * node_mask_k
+            room_counts += node_mask_k
+
+        out = out_accum / room_counts.clamp(min=1.0)
+        out = out.transpose(1, 2).contiguous().view(B, N, H * d_k)
+        return self.out(out)
+
+
 # ── MMDiT 联合注意力 ──────────────────────────────────────────────────────────
 
 class JointAttention(nn.Module):
@@ -206,17 +265,18 @@ class JointAttention(nn.Module):
 
 class EncoderLayer(nn.Module):
     """
-    1. adj_attn + room_attn + global_attn（并联相加，节点内部）
+    1. adj_attn + room_attn + global_attn + global_room_attn（并联相加）
     2. JointAttention（节点↔文本双向，各自独立 QKV）
     3. FFN（节点 + 文本各自独立）
     """
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
-        # 节点三流
-        self.norm1       = nn.LayerNorm(d_model)
-        self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
-        self.room_attn   = MultiHeadAttention(heads, d_model, dropout)
-        self.global_attn = MultiHeadAttention(heads, d_model, dropout)
+        # 节点四流
+        self.norm1            = nn.LayerNorm(d_model)
+        self.adj_attn         = MultiHeadAttention(heads, d_model, dropout)
+        self.room_attn        = MultiHeadAttention(heads, d_model, dropout)
+        self.global_attn      = MultiHeadAttention(heads, d_model, dropout)
+        self.global_room_attn = GlobalRoomAttnStream(heads, d_model, dropout)
         # 联合注意力
         self.norm_node_joint = nn.LayerNorm(d_model)
         self.norm_text_joint = nn.LayerNorm(d_model)
@@ -231,14 +291,15 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, node_seq, text_seq,
-                room_mask, joint_key_mask,
+                room_mask, room_membership, joint_key_mask,
                 pad_mask=None, adj_mask=None):
-        # ── 三流节点自注意力 ──────────────────────────────────────────────────
+        # ── 四流节点自注意力 ──────────────────────────────────────────────────
         x2 = self.norm1(node_seq)
         node_seq = node_seq + self.dropout(
-            self.adj_attn   (x2, x2, x2, adj_mask)  +
-            self.room_attn  (x2, x2, x2, room_mask) +
-            self.global_attn(x2, x2, x2, pad_mask)
+            self.adj_attn        (x2, x2, x2, adj_mask)          +
+            self.room_attn       (x2, x2, x2, room_mask)         +
+            self.global_attn     (x2, x2, x2, pad_mask)          +
+            self.global_room_attn(x2, room_membership, pad_mask)
         )
 
         # ── MMDiT 联合注意力（节点↔文本双向）────────────────────────────────
@@ -304,7 +365,7 @@ class NodeDiffusionTransformer(nn.Module):
 
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total     = sum(p.numel() for p in self.parameters())
-        print(f"NodeDiffusionTransformer(tri-stream + MMDiT joint): "
+        print(f"NodeDiffusionTransformer(quad-stream + MMDiT joint): "
               f"{trainable:,} trainable / {total:,} total")
 
     def _build_room_mask(self, room_membership, node_mask):
@@ -393,7 +454,7 @@ class NodeDiffusionTransformer(nn.Module):
         seq = node_emb
         for layer in self.layers:
             seq, text_seq = layer(seq, text_seq,
-                                  room_mask, joint_key_mask,
+                                  room_mask, room_membership, joint_key_mask,
                                   pad_mask, adj_mask)
 
         return self.coord_head(seq).permute(0, 2, 1)      # [B, 2, N]
