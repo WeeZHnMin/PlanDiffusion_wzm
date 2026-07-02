@@ -280,6 +280,7 @@ class NodeDiffusionTransformer(nn.Module):
             nn.Linear(model_channels, model_channels),
         )
         self.input_emb = nn.Linear(2, model_channels)
+        self.type_emb  = nn.Embedding(33, model_channels)  # 0=pad, 1-32=combo types
 
         self.bert = BertModel.from_pretrained(bert_name)
         for p in self.bert.parameters():
@@ -343,7 +344,8 @@ class NodeDiffusionTransformer(nn.Module):
     def forward(self, x, timesteps, node_mask,
                 prompt_tokens=None, prompt_mask=None,
                 text_feat=None, text_mask=None,
-                room_membership=None, adj_matrix=None, **kwargs):
+                room_membership=None, adj_matrix=None,
+                node_combo_ids=None, **kwargs):
         del kwargs
         B, _, N = x.shape
         x = x.permute(0, 2, 1)                            # [B, N, 2]
@@ -352,6 +354,9 @@ class NodeDiffusionTransformer(nn.Module):
             timestep_embedding(timesteps, self.model_channels)
         ).unsqueeze(1)
         node_emb = self.input_emb(x) + t_emb              # [B, N, d]
+        if node_combo_ids is not None:
+            node_emb = node_emb + self.type_emb(
+                node_combo_ids.long().clamp(0, 32).to(x.device))  # [B, N, d]
 
         dt = node_emb.dtype
         room_membership = room_membership.to(device=x.device, dtype=dt)

@@ -458,6 +458,9 @@ def main():
             adj_pad[:n, :n] = adj_raw.astype(np.float32)
             membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
             membership[:n] = _assign_room_membership_single(adj_raw.astype(bool), n)
+            combo_ids  = np.zeros(MAX_NODES, dtype=np.int32)
+            raw_combos = rec.get("node_combo_ids", [])
+            combo_ids[:min(n, len(raw_combos))] = [int(c) for c in raw_combos[:n]]
 
             prompt = rec.get("prompt", "").replace("\n", " ").strip()
             enc  = tokenizer(prompt, add_special_tokens=True,
@@ -469,6 +472,7 @@ def main():
                 "mask_np":       mask_np,
                 "adj_pad":       adj_pad,
                 "membership":    membership,
+                "combo_ids":     combo_ids,
                 "ptok":          ptok,
                 "pmsk":          pmsk,
                 "n":             n,
@@ -499,6 +503,7 @@ def main():
             adj_t   = torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device)
             ptok_t  = torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device)
             pmsk_t  = torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device)
+            cids_t  = torch.from_numpy(np.stack([s["combo_ids"]  for s in chunk])).to(device)
 
             cond_b = {
                 "node_mask":       mask_t,
@@ -506,6 +511,7 @@ def main():
                 "adj_matrix":      adj_t,
                 "prompt_tokens":   ptok_t,
                 "prompt_mask":     pmsk_t,
+                "node_combo_ids":  cids_t,
             }
 
             # 采样

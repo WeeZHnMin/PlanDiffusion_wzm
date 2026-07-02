@@ -41,6 +41,10 @@ class NodeDataset(Dataset):
         self.room_membership = d['room_membership'].astype(np.float32)  # [N, 40, MAX_ROOMS]
         self.adj_matrix      = d['adj_matrix'].astype(np.float32)       # [N, 40, 40]
         self.n_nodes         = d['n_nodes'].astype(np.int32)            # [N]
+        n_samples            = len(self.coords)
+        self.node_combo_ids  = d['node_combo_ids'].astype(np.int32) \
+                               if 'node_combo_ids' in d \
+                               else np.zeros((n_samples, 40), dtype=np.int32)
         print(f"NodeDataset(TriStream adj+room+global): {len(self.coords)} samples from {npz_path}")
 
     def __len__(self):
@@ -61,6 +65,7 @@ class NodeDataset(Dataset):
             'adj_matrix':      self.adj_matrix[idx],
             'prompt_tokens':   self.prompt_tokens[idx],
             'prompt_mask':     prompt_mask,
+            'node_combo_ids':  self.node_combo_ids[idx],
         }
         return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
 
