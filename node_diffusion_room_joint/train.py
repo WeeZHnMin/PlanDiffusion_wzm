@@ -175,7 +175,7 @@ def build_parser(defaults=None):
     parser.add_argument("--large_node_threshold", type=int,   default=defaults.get("large_node_threshold", 23))
     parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    ""),
                         help="验证集 jsonl 路径，留空则不做验证")
-    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 200))
+    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 2000))
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
