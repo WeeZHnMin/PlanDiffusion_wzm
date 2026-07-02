@@ -46,39 +46,21 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         return s1 * x0 + s2 * noise, noise
 
-    def training_losses(self, model, x0, t, model_kwargs, step=None, inpaint_prob=0.0):
+    def training_losses(self, model, x0, t, model_kwargs, step=None):
         self._to(x0.device)
         x0 = x0.float()
-
-        node_mask = model_kwargs['node_mask'].float()   # [B, N]
-
-        # ── Inpainting 模式：随机固定部分节点作为锚点 ─────────────────────────
-        if inpaint_prob > 0.0 and torch.rand(1).item() < inpaint_prob:
-            ratio      = torch.rand(1).item() * 0.4 + 0.3              # 30~70%
-            rand_vals  = torch.rand_like(node_mask)
-            fixed_mask = ((rand_vals < ratio) & node_mask.bool()).float()  # [B, N]
-        else:
-            fixed_mask = torch.zeros_like(node_mask)                   # 全量去噪模式
 
         coord_noise = torch.randn_like(x0)
         xt, _       = self.q_sample(x0, t, coord_noise)
 
-        # 固定节点：用 gt 坐标替换，不加噪
-        fixed_coord = fixed_mask.unsqueeze(1)                          # [B, 1, N]
-        xt = xt * (1 - fixed_coord) + x0 * fixed_coord
-
-        model_kwargs = dict(model_kwargs, fixed_mask=fixed_mask)
         pred_coord_noise = model(xt, t, **model_kwargs)
 
-        # Loss 只算噪声节点（非固定）
-        noisy_mask = node_mask.unsqueeze(1) * (1 - fixed_coord)        # [B, 1, N]
-        # 如果全部节点都被固定（极端情况），回退到全量 mask
-        if noisy_mask.sum() < 1:
-            noisy_mask = node_mask.unsqueeze(1)
+        node_mask  = model_kwargs['node_mask'].float()
+        coord_mask = node_mask.unsqueeze(1)                          # [B, 1, N]
 
         coord_loss = (
-            (pred_coord_noise - coord_noise) ** 2 * noisy_mask
-        ).sum() / (noisy_mask.sum() * 2 + 1e-8)
+            (pred_coord_noise - coord_noise) ** 2 * coord_mask
+        ).sum() / (coord_mask.sum() * 2 + 1e-8)
 
         loss = coord_loss
         centroid_loss = torch.tensor(0.0, device=x0.device)
@@ -87,9 +69,7 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         with torch.no_grad():
             pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
-            # 只算噪声节点，固定节点的 pred_x0 被 1/s1 放大会污染指标
-            rmse_mask  = noisy_mask if noisy_mask.sum() > 0 else node_mask.unsqueeze(1)
-            raw_mse    = ((pred_x0 - x0) ** 2 * rmse_mask).sum() / (rmse_mask.sum() * 2 + 1e-8)
+            raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
             coord_rmse = raw_mse.sqrt().item()
 
         return loss, coord_loss, centroid_loss, coord_rmse
