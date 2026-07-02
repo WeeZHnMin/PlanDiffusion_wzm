@@ -84,8 +84,8 @@ class GaussianDiffusion:
             (pred_coord_noise - coord_noise) ** 2 * coord_mask
         ).sum() / (coord_mask.sum() * 2 + 1e-8)
         centroid_loss = (
-            (pred_coord_noise - eps_target_cent) ** 2 * coord_mask
-        ).sum() / (coord_mask.sum() * 2 + 1e-8)
+            (pred_coord_noise - eps_target_cent) ** 2 * coord_mask * high_t
+        ).sum() / ((coord_mask * high_t).sum() * 2 + 1e-8)
 
         with torch.no_grad():
             pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
