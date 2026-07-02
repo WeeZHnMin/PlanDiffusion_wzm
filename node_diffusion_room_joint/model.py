@@ -418,8 +418,9 @@ class NodeDiffusionTransformer(nn.Module):
         ).unsqueeze(1)
         node_emb = self.input_emb(x) + t_emb              # [B, N, d]
 
-        if fixed_mask is not None:
-            node_emb = node_emb + self.fixed_embed(fixed_mask.long().to(x.device))
+        # 训练全量模式和推理时都用 zeros（保持一致）；inpainting 时用实际 mask
+        fm = fixed_mask if fixed_mask is not None else torch.zeros(B, N, dtype=torch.long, device=node_emb.device)
+        node_emb = node_emb + self.fixed_embed(fm)
 
         dt = node_emb.dtype
         room_membership = room_membership.to(device=x.device, dtype=dt)
