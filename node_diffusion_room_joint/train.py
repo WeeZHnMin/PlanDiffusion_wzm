@@ -179,6 +179,8 @@ def build_parser(defaults=None):
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
+    parser.add_argument("--inpaint_prob", type=float, default=defaults.get("inpaint_prob", 0.5),
+                        help="每步以此概率随机固定30~70%%节点作为锚点（0=关闭）")
     return parser
 
 
@@ -309,7 +311,8 @@ def main(argv=None, defaults=None):
 
         opt.zero_grad()
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            loss, coord_loss, centroid_loss, coord_rmse = diffusion.training_losses(model, x, t, cond, step=step)
+            loss, coord_loss, centroid_loss, coord_rmse = diffusion.training_losses(
+                model, x, t, cond, step=step, inpaint_prob=args.inpaint_prob)
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)

@@ -356,6 +356,8 @@ class NodeDiffusionTransformer(nn.Module):
             [EncoderLayer(model_channels, num_heads, dropout) for _ in range(num_layers)]
         )
 
+        self.fixed_embed = nn.Embedding(2, model_channels)   # 0=noisy, 1=fixed anchor
+
         self.coord_head = nn.Sequential(
             nn.Linear(model_channels, model_channels),
             nn.ReLU(),
@@ -405,7 +407,8 @@ class NodeDiffusionTransformer(nn.Module):
     def forward(self, x, timesteps, node_mask,
                 prompt_tokens=None, prompt_mask=None,
                 text_feat=None, text_mask=None,
-                room_membership=None, adj_matrix=None, **kwargs):
+                room_membership=None, adj_matrix=None,
+                fixed_mask=None, **kwargs):
         del kwargs
         B, _, N = x.shape
         x = x.permute(0, 2, 1)                            # [B, N, 2]
@@ -414,6 +417,9 @@ class NodeDiffusionTransformer(nn.Module):
             timestep_embedding(timesteps, self.model_channels)
         ).unsqueeze(1)
         node_emb = self.input_emb(x) + t_emb              # [B, N, d]
+
+        if fixed_mask is not None:
+            node_emb = node_emb + self.fixed_embed(fixed_mask.long().to(x.device))
 
         dt = node_emb.dtype
         room_membership = room_membership.to(device=x.device, dtype=dt)

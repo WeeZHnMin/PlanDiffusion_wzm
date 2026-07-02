@@ -46,43 +46,48 @@ class GaussianDiffusion:
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
         return s1 * x0 + s2 * noise, noise
 
-    def training_losses(self, model, x0, t, model_kwargs, step=None):
+    def training_losses(self, model, x0, t, model_kwargs, step=None, inpaint_prob=0.0):
         self._to(x0.device)
         x0 = x0.float()
+
+        node_mask = model_kwargs['node_mask'].float()   # [B, N]
+
+        # ── Inpainting 模式：随机固定部分节点作为锚点 ─────────────────────────
+        if inpaint_prob > 0.0 and torch.rand(1).item() < inpaint_prob:
+            ratio      = torch.rand(1).item() * 0.4 + 0.3              # 30~70%
+            rand_vals  = torch.rand_like(node_mask)
+            fixed_mask = ((rand_vals < ratio) & node_mask.bool()).float()  # [B, N]
+        else:
+            fixed_mask = torch.zeros_like(node_mask)                   # 全量去噪模式
 
         coord_noise = torch.randn_like(x0)
         xt, _       = self.q_sample(x0, t, coord_noise)
 
+        # 固定节点：用 gt 坐标替换，不加噪
+        fixed_coord = fixed_mask.unsqueeze(1)                          # [B, 1, N]
+        xt = xt * (1 - fixed_coord) + x0 * fixed_coord
+
+        model_kwargs = dict(model_kwargs, fixed_mask=fixed_mask)
         pred_coord_noise = model(xt, t, **model_kwargs)
 
-        node_mask  = model_kwargs['node_mask'].float()
-        coord_mask = node_mask.unsqueeze(1)                          # [B, 1, N]
+        # Loss 只算噪声节点（非固定）
+        noisy_mask = node_mask.unsqueeze(1) * (1 - fixed_coord)        # [B, 1, N]
+        # 如果全部节点都被固定（极端情况），回退到全量 mask
+        if noisy_mask.sum() < 1:
+            noisy_mask = node_mask.unsqueeze(1)
+
+        coord_loss = (
+            (pred_coord_noise - coord_noise) ** 2 * noisy_mask
+        ).sum() / (noisy_mask.sum() * 2 + 1e-8)
+
+        loss = coord_loss
+        centroid_loss = torch.tensor(0.0, device=x0.device)
 
         s1 = self.sqrt_alphas_bar[t].view(-1, 1, 1)
         s2 = self.sqrt_one_minus_alphas_bar[t].view(-1, 1, 1)
-        pred_x0 = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)  # [B, 2, N]
-
-        coord_loss = (
-            (pred_coord_noise - coord_noise) ** 2 * coord_mask
-        ).sum() / (coord_mask.sum() * 2 + 1e-8)
-
-        # 质心损失：每个环内节点坐标均值
-        membership = model_kwargs['room_membership'].float()          # [B, N, MAX_ROOMS]
-        membership = membership.permute(0, 2, 1)                      # [B, MAX_ROOMS, N]
-        ring_sizes = membership.sum(dim=2, keepdim=True).clamp(min=1) # [B, MAX_ROOMS, 1]
-        ring_mask  = (ring_sizes.squeeze(-1) > 0).float().unsqueeze(1)# [B, 1, MAX_ROOMS]
-
-        node_sq_err   = (pred_x0 - x0) ** 2                                                                       # [B, 2, N]
-        ring_sq_err   = torch.bmm(node_sq_err, membership.transpose(1, 2)) / ring_sizes.squeeze(-1).unsqueeze(1)  # [B, 2, MAX_ROOMS] 环内平均
-        centroid_loss = (ring_sq_err * ring_mask).sum() / (ring_mask.sum() * 2 + 1e-8)                            # 跨环平均
-
-        # ISTA 交替：奇数步用 coord_loss，偶数步用 centroid_loss
-        if step is None or step % 2 == 0:
-            loss = coord_loss
-        else:
-            loss = centroid_loss
-
         with torch.no_grad():
+            pred_x0    = (xt - s2 * pred_coord_noise) / s1.clamp(min=1e-3)
+            coord_mask = node_mask.unsqueeze(1)
             raw_mse    = ((pred_x0 - x0) ** 2 * coord_mask).sum() / (coord_mask.sum() * 2 + 1e-8)
             coord_rmse = raw_mse.sqrt().item()
 
