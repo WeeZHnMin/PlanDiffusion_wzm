@@ -258,6 +258,8 @@ def build_parser(defaults=None):
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   300))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    32))
+    parser.add_argument("--t_min",        type=int, default=defaults.get("t_min",        100),
+                        help="Stage1: 只在 [t_min, timesteps) 范围采样 t，避免低t质心目标爆炸")
     return parser
 
 
@@ -384,7 +386,7 @@ def main(argv=None, defaults=None):
         x    = x.to(device)
         cond = move_cond(cond, device)
 
-        t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
+        t = torch.randint(args.t_min, args.timesteps, (x.shape[0],), device=device)
 
         opt.zero_grad()
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
