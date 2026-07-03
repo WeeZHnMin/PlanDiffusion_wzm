@@ -77,11 +77,10 @@ def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
         if i + 1 < len(ts):
             ab_prev = diffusion.alphas_bar[ts[i + 1]]
             z_prev  = ab_prev.sqrt() * z0 + (1 - ab_prev).sqrt() * eps
-            # 다음 스텝 x_centroid 는 x0 기준으로 재계산
             x_cen_next = compute_x_centroid(x0, room_membership)
-            x = z_prev + x_cen_next
+            x = (z_prev + x_cen_next).clamp(-500, 500)
         else:
-            x = x0
+            x = x0.clamp(-500, 500)
 
     return x   # [B, 2, MAX_NODES]
 
