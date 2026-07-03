@@ -1,13 +1,18 @@
 """
-NodeDiffusionTransformer — 三流自注意力 + MMDiT 联合注意力
+NodeDiffusionTransformer — BGE-Joint 12层架构
 
-每个 EncoderLayer：
-  1. adj_attn + room_attn + global_attn（并联相加）
-  2. JointAttention（MMDiT 风格：节点↔文本双向，各自独立 QKV 权重）
-  3. FFN（节点 + 文本各自独立）
-
-JointAttention 联合 key mask [B, N+T]：
-  节点 padding（node_mask=0）和文本 padding（prompt_mask=0）一并屏蔽。
+每个 BGEJointLayer:
+  1. 节点三流 QKV (adj / room / global) + 文本 QKV (BGE-small 权重初始化)
+  2. K_joint = cat([K_adj, K_room, K_global, K_text])  [B, h, 3N+L, d_k]
+     V_joint = cat([V_adj, V_room, V_global, V_text])
+  3. 各 Q 使用不同 mask 对 K_joint/V_joint 计算：
+       Q_adj:    K_adj 部分用邻接 mask，其余只用 padding mask
+       Q_room:   K_room 部分用环 mask，其余只用 padding mask
+       Q_global: 只用 padding mask
+       Q_text:   只用 padding mask
+  4. node_out = out_adj + out_room + out_global → Linear → 残差 + LN
+     text_out = out_text → Linear → 残差 + LN
+  5. 各自 FFN (GELU) + LN
 """
 
 import math
@@ -75,7 +80,7 @@ def _assign_room_membership_single(adj, n):
     return membership
 
 
-# ── Transformer 基础模块 ──────────────────────────────────────────────────────
+# ── 时间步嵌入 ────────────────────────────────────────────────────────────────
 
 def timestep_embedding(timesteps, dim):
     half  = dim // 2
@@ -87,169 +92,114 @@ def timestep_embedding(timesteps, dim):
     return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
 
-def attention(q, k, v, d_k, mask=None, dropout=None):
-    """mask: [B, N, N] 或 [B, 1, N]，1=屏蔽。"""
-    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
-    if mask is not None:
-        scores = scores.masked_fill(mask.unsqueeze(1) == 1, -1e4)
-    scores = F.softmax(scores.float(), dim=-1).to(q.dtype)
-    if dropout is not None:
-        scores = dropout(scores)
-    return torch.matmul(scores, v)
+# ── BGE Joint Layer ───────────────────────────────────────────────────────────
 
+class BGEJointLayer(nn.Module):
+    """
+    节点三流 QKV + 文本 QKV 共享 K_joint / V_joint。
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, heads, d_model, dropout=0.1):
+    K_joint = cat([K_adj, K_room, K_global, K_text])  [B, h, 3N+L, d_k]
+    各 Q 对 K_joint/V_joint 计算，node_out = sum(三流输出)。
+    """
+
+    def __init__(self, d_model=384, heads=12, dropout=0.1):
         super().__init__()
+        assert d_model % heads == 0
         self.d_k = d_model // heads
         self.h   = heads
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.out      = nn.Linear(d_model, d_model)
-        self.dropout  = nn.Dropout(dropout)
+        d = d_model
 
-    def forward(self, q, k, v, mask=None):
-        bs = q.size(0)
-        q  = self.q_linear(q).view(bs, -1, self.h, self.d_k).transpose(1, 2)
-        k  = self.k_linear(k).view(bs, -1, self.h, self.d_k).transpose(1, 2)
-        v  = self.v_linear(v).view(bs, -1, self.h, self.d_k).transpose(1, 2)
-        out = attention(q, k, v, self.d_k, mask, self.dropout)
-        out = out.transpose(1, 2).contiguous().view(bs, -1, self.h * self.d_k)
-        return self.out(out)
+        # 节点三流 QKV
+        self.q_adj    = nn.Linear(d, d)
+        self.k_adj    = nn.Linear(d, d)
+        self.v_adj    = nn.Linear(d, d)
 
+        self.q_room   = nn.Linear(d, d)
+        self.k_room   = nn.Linear(d, d)
+        self.v_room   = nn.Linear(d, d)
 
-class FeedForward(nn.Module):
-    def __init__(self, d_model, dropout=0.1):
-        super().__init__()
-        self.linear1 = nn.Linear(d_model, d_model * 2)
-        self.linear2 = nn.Linear(d_model * 2, d_model)
+        self.q_global = nn.Linear(d, d)
+        self.k_global = nn.Linear(d, d)
+        self.v_global = nn.Linear(d, d)
+
+        self.out_node    = nn.Linear(d, d)
+        self.norm_node   = nn.LayerNorm(d)
+        self.ff_node_up  = nn.Linear(d, d * 2)
+        self.ff_node_dn  = nn.Linear(d * 2, d)
+        self.norm_node_ff = nn.LayerNorm(d)
+
+        # 文本 QKV（BGE 权重将从外部加载）
+        self.q_text   = nn.Linear(d, d)
+        self.k_text   = nn.Linear(d, d)
+        self.v_text   = nn.Linear(d, d)
+        self.out_text    = nn.Linear(d, d)
+        self.norm_text   = nn.LayerNorm(d)
+        self.ff_text_up  = nn.Linear(d, d * 4)   # BGE intermediate: 384→1536
+        self.ff_text_dn  = nn.Linear(d * 4, d)   # 1536→384
+        self.norm_text_ff = nn.LayerNorm(d)
+
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        return self.linear2(self.dropout(F.relu(self.linear1(x))))
+    def _proj(self, linear, x, L):
+        B = x.shape[0]
+        return linear(x).view(B, L, self.h, self.d_k).transpose(1, 2)  # [B,h,L,d_k]
 
-
-# ── MMDiT 联合注意力 ──────────────────────────────────────────────────────────
-
-class JointAttention(nn.Module):
-    """
-    节点和文本各自独立一套 QKV 权重，但共享拼接后的 KV 序列进行注意力。
-
-    joint_key_mask: [B, N+T]  1=屏蔽（节点 padding + 文本 padding）
-    输入:  node_seq [B, N, d]，text_seq [B, T, d]
-    输出:  out_node [B, N, d]，out_text [B, T, d]
-    """
-    def __init__(self, heads, d_model, dropout=0.1):
-        super().__init__()
-        self.d_k = d_model // heads
-        self.h   = heads
-        # 节点侧
-        self.q_node  = nn.Linear(d_model, d_model)
-        self.k_node  = nn.Linear(d_model, d_model)
-        self.v_node  = nn.Linear(d_model, d_model)
-        self.out_node = nn.Linear(d_model, d_model)
-        # 文本侧
-        self.q_text  = nn.Linear(d_model, d_model)
-        self.k_text  = nn.Linear(d_model, d_model)
-        self.v_text  = nn.Linear(d_model, d_model)
-        self.out_text = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def _attn(self, q, k_joint, v_joint, key_mask):
-        """
-        q:        [B, h, L, d_k]
-        k_joint:  [B, h, N+T, d_k]
-        key_mask: [B, 1, 1, N+T]   1=屏蔽
-        """
+    def _attn(self, q, k_joint, v_joint, mask=None):
         scores = torch.matmul(q, k_joint.transpose(-2, -1)) / math.sqrt(self.d_k)
-        scores = scores.masked_fill(key_mask == 1, -1e4)
+        if mask is not None:
+            scores = scores.masked_fill(mask, -1e4)
         scores = F.softmax(scores.float(), dim=-1).to(q.dtype)
-        scores = self.dropout(scores)
-        return torch.matmul(scores, v_joint)
-
-    def forward(self, node_seq, text_seq, joint_key_mask):
-        B, N, d = node_seq.shape
-        T = text_seq.shape[1]
-
-        def proj_split(linear, x, L):
-            return linear(x).view(B, L, self.h, self.d_k).transpose(1, 2)
-
-        # 节点侧 QKV
-        q_n = proj_split(self.q_node, node_seq, N)
-        k_n = proj_split(self.k_node, node_seq, N)
-        v_n = proj_split(self.v_node, node_seq, N)
-
-        # 文本侧 QKV
-        q_t = proj_split(self.q_text, text_seq, T)
-        k_t = proj_split(self.k_text, text_seq, T)
-        v_t = proj_split(self.v_text, text_seq, T)
-
-        # 联合 KV [B, h, N+T, d_k]
-        k_joint = torch.cat([k_n, k_t], dim=2)
-        v_joint = torch.cat([v_n, v_t], dim=2)
-
-        # mask 扩展为 [B, 1, 1, N+T]
-        mask = joint_key_mask.unsqueeze(1).unsqueeze(2)
-
-        out_n = self._attn(q_n, k_joint, v_joint, mask)   # [B, h, N, d_k]
-        out_t = self._attn(q_t, k_joint, v_joint, mask)   # [B, h, T, d_k]
-
-        out_n = out_n.transpose(1, 2).contiguous().view(B, N, d)
-        out_t = out_t.transpose(1, 2).contiguous().view(B, T, d)
-
-        return self.out_node(out_n), self.out_text(out_t)
-
-
-# ── Encoder Layer ─────────────────────────────────────────────────────────────
-
-class EncoderLayer(nn.Module):
-    """
-    1. adj_attn + room_attn + global_attn（并联相加）
-    2. JointAttention（节点↔文本双向，各自独立 QKV）
-    3. FFN（节点 + 文本各自独立）
-    """
-    def __init__(self, d_model, heads, dropout=0.1):
-        super().__init__()
-        # 节点三流
-        self.norm1       = nn.LayerNorm(d_model)
-        self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
-        self.room_attn   = MultiHeadAttention(heads, d_model, dropout)
-        self.global_attn = MultiHeadAttention(heads, d_model, dropout)
-        # 联合注意力
-        self.norm_node_joint = nn.LayerNorm(d_model)
-        self.norm_text_joint = nn.LayerNorm(d_model)
-        self.joint_attn      = JointAttention(heads, d_model, dropout)
-        # 节点 FFN
-        self.norm_node_ff = nn.LayerNorm(d_model)
-        self.ff_node      = FeedForward(d_model, dropout)
-        # 文本 FFN
-        self.norm_text_ff = nn.LayerNorm(d_model)
-        self.ff_text      = FeedForward(d_model, dropout)
-
-        self.dropout = nn.Dropout(dropout)
+        return torch.matmul(self.dropout(scores), v_joint)
 
     def forward(self, node_seq, text_seq,
-                room_mask, joint_key_mask,
-                pad_mask=None, adj_mask=None):
-        # ── 三流节点自注意力 ──────────────────────────────────────────────────
-        x2 = self.norm1(node_seq)
-        node_seq = node_seq + self.dropout(
-            self.adj_attn   (x2, x2, x2, adj_mask) +
-            self.room_attn  (x2, x2, x2, room_mask) +
-            self.global_attn(x2, x2, x2, pad_mask)
+                adj_joint_mask=None, room_joint_mask=None, global_joint_mask=None):
+        """
+        adj_joint_mask:  [B, 1, N, 3N+L]  Q_adj 专用
+        room_joint_mask: [B, 1, N, 3N+L]  Q_room 专用
+        global_joint_mask:[B, 1, 1, 3N+L] Q_global / Q_text 共用（仅 padding）
+        """
+        B, N, d = node_seq.shape
+        L = text_seq.shape[1]
+
+        p = self._proj
+
+        # 构建 joint K/V  [B, h, 3N+L, d_k]
+        K_joint = torch.cat([
+            p(self.k_adj,    node_seq, N),
+            p(self.k_room,   node_seq, N),
+            p(self.k_global, node_seq, N),
+            p(self.k_text,   text_seq, L),
+        ], dim=2)
+        V_joint = torch.cat([
+            p(self.v_adj,    node_seq, N),
+            p(self.v_room,   node_seq, N),
+            p(self.v_global, node_seq, N),
+            p(self.v_text,   text_seq, L),
+        ], dim=2)
+
+        def merge(x, seq_len):
+            return x.transpose(1, 2).contiguous().view(B, seq_len, d)
+
+        # 三流各自 mask 不同
+        node_attn = self.out_node(
+            merge(self._attn(p(self.q_adj,    node_seq, N), K_joint, V_joint, adj_joint_mask),  N) +
+            merge(self._attn(p(self.q_room,   node_seq, N), K_joint, V_joint, room_joint_mask), N) +
+            merge(self._attn(p(self.q_global, node_seq, N), K_joint, V_joint, global_joint_mask), N)
+        )
+        # 文本 Q 只用 padding mask
+        text_attn = self.out_text(
+            merge(self._attn(p(self.q_text, text_seq, L), K_joint, V_joint, global_joint_mask), L)
         )
 
-        # ── MMDiT 联合注意力（节点↔文本双向）────────────────────────────────
-        x_node = self.norm_node_joint(node_seq)
-        x_text = self.norm_text_joint(text_seq)
-        out_node, out_text = self.joint_attn(x_node, x_text, joint_key_mask)
-        node_seq = node_seq + self.dropout(out_node)
-        text_seq = text_seq + self.dropout(out_text)
+        # 残差 + post-norm
+        node_seq = self.norm_node(node_seq + self.dropout(node_attn))
+        text_seq = self.norm_text(text_seq + self.dropout(text_attn))
 
-        # ── FFN ──────────────────────────────────────────────────────────────
-        node_seq = node_seq + self.dropout(self.ff_node(self.norm_node_ff(node_seq)))
-        text_seq = text_seq + self.dropout(self.ff_text(self.norm_text_ff(text_seq)))
+        # FFN
+        node_seq = self.norm_node_ff(node_seq + self.dropout(
+            self.ff_node_dn(F.gelu(self.ff_node_up(node_seq)))))
+        text_seq = self.norm_text_ff(text_seq + self.dropout(
+            self.ff_text_dn(F.gelu(self.ff_text_up(text_seq)))))
 
         return node_seq, text_seq
 
@@ -258,9 +208,9 @@ class EncoderLayer(nn.Module):
 
 class NodeDiffusionTransformer(nn.Module):
     """
-    三流自注意力 + MMDiT 联合注意力版本。
+    BGE-Joint 12层扩散模型。
 
-    cond 中需含有：
+    cond 需含:
       node_mask       [B, N]
       room_membership [B, N, MAX_ROOMS]
       adj_matrix      [B, N, N]
@@ -268,77 +218,95 @@ class NodeDiffusionTransformer(nn.Module):
       prompt_mask     [B, T]
     """
 
-    def __init__(self, model_channels=384, num_layers=6, num_heads=6,
-                 dropout=0.1, bert_name='models/bert-base-uncased',
-                 unfreeze_layers=0):
+    def __init__(self, model_channels=384, num_heads=12, dropout=0.1,
+                 bert_name='models/bge-small-en-v1.5',
+                 freeze_text_emb=True):
         super().__init__()
         self.model_channels = model_channels
+        d = model_channels
 
         self.time_embed = nn.Sequential(
-            nn.Linear(model_channels, model_channels),
-            nn.SiLU(),
-            nn.Linear(model_channels, model_channels),
-        )
-        self.input_emb = nn.Linear(2, model_channels)
-        self.type_emb  = nn.Embedding(33, model_channels)  # 0=pad, 1-32=combo types
+            nn.Linear(d, d), nn.SiLU(), nn.Linear(d, d))
+        self.input_emb = nn.Linear(2, d)
+        self.type_emb  = nn.Embedding(33, d)   # 0=pad, 1-32=combo types
 
-        self.bert = BertModel.from_pretrained(bert_name)
-        for p in self.bert.parameters():
-            p.requires_grad = False
-        n_bert = len(self.bert.encoder.layer)
-        for layer in self.bert.encoder.layer[n_bert - unfreeze_layers:]:
-            for p in layer.parameters():
-                p.requires_grad = True
-        self.text_proj = nn.Linear(self.bert.config.hidden_size, model_channels)
+        # BGE: token embeddings + 12 encoder layers
+        print(f'加载 BGE 权重: {bert_name}')
+        bge = BertModel.from_pretrained(bert_name)
 
-        self.layers = nn.ModuleList(
-            [EncoderLayer(model_channels, num_heads, dropout) for _ in range(num_layers)]
-        )
+        # 复用 BGE 的 token/position/type embedding + LayerNorm
+        self.text_embeddings = bge.embeddings
+
+        # 12 层联合注意力
+        self.layers = nn.ModuleList([
+            BGEJointLayer(d, num_heads, dropout) for _ in range(12)])
+
+        # 将 BGE 文本侧权重加载进每一层
+        def _copy(dst, src):
+            dst.weight.data.copy_(src.weight.data)
+            dst.bias.data.copy_(src.bias.data)
+
+        for i, layer in enumerate(self.layers):
+            bl = bge.encoder.layer[i]
+            sa = bl.attention.self
+            ao = bl.attention.output
+            _copy(layer.q_text,  sa.query)
+            _copy(layer.k_text,  sa.key)
+            _copy(layer.v_text,  sa.value)
+            _copy(layer.out_text, ao.dense)
+            layer.norm_text.weight.data.copy_(ao.LayerNorm.weight.data)
+            layer.norm_text.bias.data.copy_(ao.LayerNorm.bias.data)
+            _copy(layer.ff_text_up,  bl.intermediate.dense)
+            _copy(layer.ff_text_dn,  bl.output.dense)
+            layer.norm_text_ff.weight.data.copy_(bl.output.LayerNorm.weight.data)
+            layer.norm_text_ff.bias.data.copy_(bl.output.LayerNorm.bias.data)
+
+        del bge
+
+        if freeze_text_emb:
+            for p in self.text_embeddings.parameters():
+                p.requires_grad = False
 
         self.coord_head = nn.Sequential(
-            nn.Linear(model_channels, model_channels),
+            nn.Linear(d, d),
             nn.ReLU(),
-            nn.Linear(model_channels, model_channels // 2),
-            nn.Linear(model_channels // 2, 2),
+            nn.Linear(d, d // 2),
+            nn.Linear(d // 2, 2),
         )
 
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total     = sum(p.numel() for p in self.parameters())
-        print(f"NodeDiffusionTransformer(tri-stream + MMDiT joint): "
-              f"{trainable:,} trainable / {total:,} total")
+        print(f'NodeDiffusionTransformer(BGE-Joint 12L): '
+              f'{trainable:,} trainable / {total:,} total')
 
     def _build_room_mask(self, room_membership, node_mask):
-        dt       = room_membership.dtype
-        room_nn  = torch.bmm(room_membership, room_membership.transpose(1, 2))
-        mask     = (room_nn == 0).to(dt)
-        pad_keys = (1 - node_mask.to(dt)).unsqueeze(1)
-        return torch.clamp(mask + pad_keys, 0, 1), pad_keys
+        """[B, N, N]  1=不在同一环或 padding，需屏蔽"""
+        dt      = room_membership.dtype
+        room_nn = torch.bmm(room_membership, room_membership.transpose(1, 2))
+        mask    = (room_nn == 0).to(dt)
+        pad_key = (1 - node_mask.to(dt)).unsqueeze(1)          # [B, 1, N]
+        return torch.clamp(mask + pad_key, 0, 1)               # [B, N, N]
 
     def _build_adj_mask(self, adj_matrix, node_mask):
+        """[B, N, N]  1=不邻接或 padding，需屏蔽"""
         dt  = adj_matrix.dtype
-        eye = torch.eye(adj_matrix.shape[1], device=adj_matrix.device, dtype=dt).unsqueeze(0)
+        eye = torch.eye(adj_matrix.shape[1], device=adj_matrix.device,
+                        dtype=dt).unsqueeze(0)
         connected = (adj_matrix + eye).clamp(0, 1)
         mask      = 1 - connected
-        pad_keys  = (1 - node_mask.to(dt)).unsqueeze(1)
-        return torch.clamp(mask + pad_keys, 0, 1)
+        pad_key   = (1 - node_mask.to(dt)).unsqueeze(1)
+        return torch.clamp(mask + pad_key, 0, 1)               # [B, N, N]
 
     def encode_text(self, prompt_tokens, prompt_mask=None):
         """
-        预计算 BERT 文本特征，推理时在 diffusion 循环外调用一次。
-
-        返回:
-          text_seq      [B, T, d]   投影后的文本序列（作为联合注意力初始输入）
-          text_key_mask [B, T]      1=屏蔽（padding 位）
+        返回 BGE token embeddings（DDIM 循环外预计算一次）。
+        text_feat: [B, T, 384]   text_mask: [B, T]  1=padding
         """
-        bert_attn = prompt_mask if prompt_mask is not None \
-                    else (prompt_tokens != 0).long()
-        with torch.no_grad():
-            text_hidden = self.bert(
-                input_ids=prompt_tokens,
-                attention_mask=bert_attn.long(),
-            ).last_hidden_state
-        text_seq      = self.text_proj(text_hidden)       # [B, T, d]
-        text_key_mask = (1 - bert_attn.float())           # [B, T]  1=masked
+        text_seq = self.text_embeddings(prompt_tokens)        # [B, T, 384]
+        if prompt_mask is not None:
+            text_key_mask = (1 - prompt_mask.float())
+        else:
+            text_key_mask = (prompt_tokens == 0).float()
         return text_seq, text_key_mask
 
     def forward(self, x, timesteps, node_mask,
@@ -348,56 +316,69 @@ class NodeDiffusionTransformer(nn.Module):
                 node_combo_ids=None, **kwargs):
         del kwargs
         B, _, N = x.shape
-        x = x.permute(0, 2, 1)                            # [B, N, 2]
+        x = x.permute(0, 2, 1)   # [B, N, 2]
 
         t_emb    = self.time_embed(
-            timestep_embedding(timesteps, self.model_channels)
-        ).unsqueeze(1)
-        node_emb = self.input_emb(x) + t_emb              # [B, N, d]
+            timestep_embedding(timesteps, self.model_channels)).unsqueeze(1)
+        node_seq = self.input_emb(x) + t_emb                  # [B, N, d]
         if node_combo_ids is not None:
-            node_emb = node_emb + self.type_emb(
-                node_combo_ids.long().clamp(0, 32).to(x.device))  # [B, N, d]
+            node_seq = node_seq + self.type_emb(
+                node_combo_ids.long().clamp(0, 32).to(x.device))
 
-        dt = node_emb.dtype
-        room_membership = room_membership.to(device=x.device, dtype=dt)
-        room_mask, pad_mask = self._build_room_mask(
-            room_membership, node_mask.to(dt))
-
-        if adj_matrix is not None:
-            adj_mask = self._build_adj_mask(adj_matrix.to(device=x.device, dtype=dt),
-                                            node_mask.to(dt))
-        else:
-            adj_mask = pad_mask
-
-        # ── 文本序列初始化 ────────────────────────────────────────────────────
-        # text_feat/text_mask: 推理时由 encode_text 预计算传入
-        # text_mask 在新版中是 [B, T]（1=masked），兼容旧版 [B, 1, T] 自动 squeeze
+        # ── 文本初始化 ────────────────────────────────────────────────────────
         if text_feat is not None:
-            text_seq = text_feat.to(dtype=dt)
-            if text_mask is not None:
-                text_key_mask = text_mask.squeeze(1).to(dtype=dt)   # [B, T]
-            else:
-                text_key_mask = torch.zeros(
-                    B, text_seq.shape[1], device=x.device, dtype=dt)
+            text_seq      = text_feat.to(dtype=node_seq.dtype)
+            text_key_mask = (text_mask.squeeze(1) if text_mask is not None
+                             else torch.zeros(B, text_feat.shape[1],
+                                              device=node_seq.device)).to(node_seq.device)
         elif prompt_tokens is not None:
             text_seq, text_key_mask = self.encode_text(prompt_tokens, prompt_mask)
-            text_seq      = text_seq.to(dt)
-            text_key_mask = text_key_mask.to(dt)
+            text_seq = text_seq.to(node_seq.dtype)
         else:
-            T = 1
-            text_seq      = torch.zeros(B, T, self.model_channels,
-                                        device=node_emb.device, dtype=dt)
-            text_key_mask = torch.zeros(B, T, device=node_emb.device, dtype=dt)
+            text_seq      = torch.zeros(B, 1, self.model_channels,
+                                        device=node_seq.device, dtype=node_seq.dtype)
+            text_key_mask = torch.zeros(B, 1, device=node_seq.device)
 
-        # ── 联合 key mask [B, N+T]：节点 padding + 文本 padding ──────────────
-        node_key_mask  = (1 - node_mask.to(dt))                         # [B, N]
-        joint_key_mask = torch.cat([node_key_mask, text_key_mask], dim=1)  # [B, N+T]
+        L = text_seq.shape[1]
+        dt = node_seq.dtype
 
-        # ── 逐层前向（text_seq 在层间流动）──────────────────────────────────
-        seq = node_emb
+        # ── 结构性 mask（adj / room）[B, N, N] ───────────────────────────────
+        room_mb  = room_membership.to(device=node_seq.device, dtype=dt) \
+                   if room_membership is not None \
+                   else torch.zeros(B, N, MAX_ROOMS, device=node_seq.device, dtype=dt)
+        adj_mat  = adj_matrix.to(device=node_seq.device, dtype=dt) \
+                   if adj_matrix is not None \
+                   else torch.zeros(B, N, N, device=node_seq.device, dtype=dt)
+
+        adj_nn  = self._build_adj_mask(adj_mat,  node_mask.to(dt))   # [B, N, N]
+        room_nn = self._build_room_mask(room_mb, node_mask.to(dt))   # [B, N, N]
+
+        node_pad  = (1 - node_mask.float())                           # [B, N]
+        text_pad  = text_key_mask.to(node_seq.device)                 # [B, L]
+
+        # 扩展 padding mask 到 [B, N, N] 和 [B, N, L]
+        node_pad_nn = node_pad.unsqueeze(1).expand(-1, N, -1)         # [B, N, N]
+        text_pad_nl = text_pad.unsqueeze(1).expand(-1, N, -1)         # [B, N, L]
+
+        # Q_adj mask：K_adj 用邻接 mask，其余 padding  [B, 1, N, 3N+L]
+        adj_joint_mask = torch.cat(
+            [adj_nn, node_pad_nn, node_pad_nn, text_pad_nl], dim=2
+        ).unsqueeze(1).bool()
+
+        # Q_room mask：K_room 用环 mask，其余 padding  [B, 1, N, 3N+L]
+        room_joint_mask = torch.cat(
+            [node_pad_nn, room_nn, node_pad_nn, text_pad_nl], dim=2
+        ).unsqueeze(1).bool()
+
+        # Q_global / Q_text mask：只有 padding  [B, 1, 1, 3N+L]
+        global_joint_mask = torch.cat(
+            [node_pad, node_pad, node_pad, text_pad], dim=1
+        ).unsqueeze(1).unsqueeze(2).bool()
+
+        # ── 12 层前向 ─────────────────────────────────────────────────────────
         for layer in self.layers:
-            seq, text_seq = layer(seq, text_seq,
-                                  room_mask, joint_key_mask,
-                                  pad_mask, adj_mask)
+            node_seq, text_seq = layer(
+                node_seq, text_seq,
+                adj_joint_mask, room_joint_mask, global_joint_mask)
 
-        return self.coord_head(seq).permute(0, 2, 1)      # [B, 2, N]
+        return self.coord_head(node_seq).permute(0, 2, 1)     # [B, 2, N]

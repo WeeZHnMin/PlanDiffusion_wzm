@@ -35,7 +35,7 @@ from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX
 from .eval_iou import coords_to_polys_by_type, compute_iou, center_at_origin
 
 MAX_NODES    = 40
-MAX_TEXT_LEN = 192
+MAX_TEXT_LEN = 128
 
 
 # ── DDIM 推理（验证用）────────────────────────────────────────────────────────

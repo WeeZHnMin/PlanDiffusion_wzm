@@ -22,15 +22,17 @@ class NodeDataset(Dataset):
                prompt_mask     [T]               1=有效token，0=PAD
     """
 
-    def __init__(self, npz_path):
+    def __init__(self, npz_path, max_text_len=128):
+        self.max_text_len = max_text_len
         d = np.load(npz_path, allow_pickle=True)
-        self.coords        = d['node_coords'].astype(np.float32)
-        self.node_mask     = d['node_mask'].astype(np.uint8)
-        self.prompt_tokens = d['prompt_tokens'].astype(np.int64)
-        self._prompt_mask  = d['prompt_mask'].astype(np.float32) \
-                             if 'prompt_mask' in d else None
-        self._prompt_lens  = d['prompt_lens'].astype(np.int32) \
-                             if 'prompt_lens' in d else None
+
+        coords        = d['node_coords'].astype(np.float32)
+        node_mask     = d['node_mask'].astype(np.uint8)
+        prompt_tokens = d['prompt_tokens'].astype(np.int64)
+        prompt_mask_  = d['prompt_mask'].astype(np.float32) \
+                        if 'prompt_mask' in d else None
+        prompt_lens_  = d['prompt_lens'].astype(np.int32) \
+                        if 'prompt_lens' in d else None
 
         for field in ('room_membership', 'adj_matrix'):
             if field not in d:
@@ -38,14 +40,38 @@ class NodeDataset(Dataset):
                     f"npz '{npz_path}' 缺少 {field} 字段。\n"
                     "请重新运行 node_diffusion_room copy/build_graph_npz.py 生成新 npz。"
                 )
-        self.room_membership = d['room_membership'].astype(np.float32)  # [N, 40, MAX_ROOMS]
-        self.adj_matrix      = d['adj_matrix'].astype(np.float32)       # [N, 40, 40]
-        self.n_nodes         = d['n_nodes'].astype(np.int32)            # [N]
-        n_samples            = len(self.coords)
-        self.node_combo_ids  = d['node_combo_ids'].astype(np.int32) \
-                               if 'node_combo_ids' in d \
-                               else np.zeros((n_samples, 40), dtype=np.int32)
-        print(f"NodeDataset(TriStream adj+room+global): {len(self.coords)} samples from {npz_path}")
+        room_membership = d['room_membership'].astype(np.float32)
+        adj_matrix      = d['adj_matrix'].astype(np.float32)
+        n_nodes         = d['n_nodes'].astype(np.int32)
+        n_samples       = len(coords)
+        node_combo_ids  = d['node_combo_ids'].astype(np.int32) \
+                          if 'node_combo_ids' in d \
+                          else np.zeros((n_samples, 40), dtype=np.int32)
+
+        # 计算实际 token 长度并过滤超长样本
+        if prompt_lens_ is not None:
+            actual_lens = prompt_lens_
+        elif prompt_mask_ is not None:
+            actual_lens = prompt_mask_.sum(axis=1).astype(np.int32)
+        else:
+            actual_lens = (prompt_tokens != 0).sum(axis=1).astype(np.int32)
+
+        keep = actual_lens <= max_text_len
+        n_before = n_samples
+        idx = np.where(keep)[0]
+
+        self.coords          = coords[idx]
+        self.node_mask       = node_mask[idx]
+        self.prompt_tokens   = prompt_tokens[idx]
+        self._prompt_mask    = prompt_mask_[idx] if prompt_mask_ is not None else None
+        self._prompt_lens    = prompt_lens_[idx] if prompt_lens_ is not None else None
+        self.room_membership = room_membership[idx]
+        self.adj_matrix      = adj_matrix[idx]
+        self.n_nodes         = n_nodes[idx]
+        self.node_combo_ids  = node_combo_ids[idx]
+
+        print(f"NodeDataset: {len(idx)}/{n_before} 样本 "
+              f"(过滤 token>{max_text_len}: {n_before - len(idx)} 条) from {npz_path}")
 
     def __len__(self):
         return len(self.coords)
@@ -63,8 +89,8 @@ class NodeDataset(Dataset):
             'node_mask':       self.node_mask[idx].astype(np.float32),
             'room_membership': self.room_membership[idx],
             'adj_matrix':      self.adj_matrix[idx],
-            'prompt_tokens':   self.prompt_tokens[idx],
-            'prompt_mask':     prompt_mask,
+            'prompt_tokens':   self.prompt_tokens[idx, :self.max_text_len],
+            'prompt_mask':     prompt_mask[:self.max_text_len],
             'node_combo_ids':  self.node_combo_ids[idx],
         }
         return torch.from_numpy(x), {k: torch.from_numpy(v) for k, v in cond.items()}
