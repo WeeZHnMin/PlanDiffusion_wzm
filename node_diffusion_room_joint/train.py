@@ -222,10 +222,8 @@ def main(argv=None, defaults=None):
 
     model = NodeDiffusionTransformer(
         model_channels=args.model_channels,
-        num_layers=args.num_layers,
         num_heads=args.num_heads,
         bert_name=args.bert,
-        unfreeze_layers=args.unfreeze_layers,
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
