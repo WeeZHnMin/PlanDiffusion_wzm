@@ -71,7 +71,7 @@ def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
 
         eps  = model(z, t_tensor, **extra)
         ab_t = diffusion.alphas_bar[t]
-        z0   = (z - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+        z0   = ((z - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)).clamp(-300, 300)
         x0   = z0 + x_cen   # 절대 좌표 복원
 
         if i + 1 < len(ts):
@@ -204,9 +204,19 @@ def _save_val_viz(vis_samples, step, vis_dir):
         draw_col2_adj (axs[1], s["adj_pad"], n, seed=0)
         draw_col4_render(axs[2], s["gt_coords_pad"], s["adj_pad"],
                          s["mask_np"], s["gt_node_types"])
-        draw_col3_coords(axs[3], pred_cen, s["adj_pad"], s["mask_np"])
-        draw_col4_render(axs[4], pred_cen, s["adj_pad"],
-                         s["mask_np"], s["gt_node_types"])
+        try:
+            draw_col3_coords(axs[3], pred_cen, s["adj_pad"], s["mask_np"])
+        except Exception as e:
+            axs[3].axis('off')
+            axs[3].text(0.5, 0.5, f'NaN\n{e}', ha='center', va='center',
+                        fontsize=7, transform=axs[3].transAxes)
+        try:
+            draw_col4_render(axs[4], pred_cen, s["adj_pad"],
+                             s["mask_np"], s["gt_node_types"])
+        except Exception as e:
+            axs[4].axis('off')
+            axs[4].text(0.5, 0.5, f'NaN\n{e}', ha='center', va='center',
+                        fontsize=7, transform=axs[4].transAxes)
 
     titles = ['Text', 'GT Adj Graph', 'GT Floor Plan',
               'Pred Coords', 'Pred Floor Plan']
