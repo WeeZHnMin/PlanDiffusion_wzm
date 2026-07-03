@@ -334,7 +334,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_tri/latest.pt')
     p.add_argument('--data',    default='data/jsonl/test_graph_dataset_10k.jsonl')
-    p.add_argument('--bert',    default='models/bert-base-uncased')
+    p.add_argument('--bert',    default='models/bge-small-en-v1.5')
     p.add_argument('--n',       type=int, default=5)
     p.add_argument('--indices', type=int, nargs='+', default=None,
                    help='手动指定行号，如 --indices 0 42 100 200 500')
