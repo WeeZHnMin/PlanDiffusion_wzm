@@ -87,7 +87,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', default='data/jsonl/final_graph_dataset_v3.jsonl')
     parser.add_argument('--out',  default='outputs/text_similarity_check.png')
-    parser.add_argument('--max_samples', type=int, default=50000)
+    parser.add_argument('--max_samples', type=int, default=999999999)
     parser.add_argument('--top',  type=int, default=8,
                         help='可视化多少张重复图（文本最不同的优先）')
     parser.add_argument('--use_bert', action='store_true',
@@ -96,6 +96,8 @@ def main():
                         help='BERT 模型路径')
     parser.add_argument('--device', default='cuda',
                         help='--use_bert 时使用的设备')
+    parser.add_argument('--batch_size', type=int, default=256,
+                        help='BERT 编码的 batch size')
     args = parser.parse_args()
 
     print(f"加载: {args.data}")
@@ -126,11 +128,10 @@ def main():
         print(f"\nBERT 编码中（device={args.device}）...")
         tokenizer = BertTokenizer.from_pretrained(args.bert_name)
         bert_model = BertModel.from_pretrained(args.bert_name).to(args.device).eval()
-        BATCH = 64
         vecs = []
         with torch.no_grad():
-            for start in range(0, M, BATCH):
-                batch_texts = prompts[start:start + BATCH]
+            for start in range(0, M, args.batch_size):
+                batch_texts = prompts[start:start + args.batch_size]
                 enc = tokenizer(batch_texts, padding=True, truncation=True,
                                 max_length=128, return_tensors='pt')
                 enc = {k: v.to(args.device) for k, v in enc.items()}
