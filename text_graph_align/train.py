@@ -137,7 +137,8 @@ def main():
         start_step = ckpt['step'] + 1
         print(f"resumed from step {start_step}")
 
-    log_f = open(save_dir / 'log.jsonl', 'a', encoding='utf-8', buffering=1)
+    log_f    = open(save_dir / 'log.jsonl', 'a', encoding='utf-8', buffering=1)
+    best_val = float('inf')
 
     def inf_loader():
         while True:
@@ -214,12 +215,21 @@ def main():
 
         if val_loader and (step + 1) % args.val_every == 0:
             v_loss, v_g2t, v_t2g = run_val(raw_model, val_loader, device)
-            print(f"  [val] loss {v_loss:.4f} | g2t {v_g2t:.2%} | t2g {v_t2g:.2%}")
+            is_best = v_loss < best_val
+            if is_best:
+                best_val = v_loss
+                torch.save({'step': step, 'model': raw_model.state_dict()},
+                           save_dir / 'align_best.pt')
+                torch.save(raw_model.text_enc.bert.state_dict(),
+                           save_dir / 'bert_aligned_best.pt')
+            print(f"  [val] loss {v_loss:.4f} | g2t {v_g2t:.2%} | t2g {v_t2g:.2%}"
+                  + (" ← best" if is_best else ""))
             log_f.write(json.dumps({
                 'step': step+1,
                 'val_loss': round(v_loss, 4),
                 'val_acc_g2t': round(v_g2t, 4),
                 'val_acc_t2g': round(v_t2g, 4),
+                'is_best': is_best,
             }) + '\n')
 
     log_f.close()
