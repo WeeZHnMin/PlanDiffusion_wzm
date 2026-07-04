@@ -25,6 +25,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import numpy as np
+import torch
 
 # ── 中文字体支持 ─────────────────────────────────────────────────────────────
 def _find_cjk_font():
@@ -89,6 +90,12 @@ def main():
     parser.add_argument('--max_samples', type=int, default=50000)
     parser.add_argument('--top',  type=int, default=8,
                         help='可视化多少张重复图（文本最不同的优先）')
+    parser.add_argument('--use_bert', action='store_true',
+                        help='用 BERT CLS 向量算 cosine 相似度（需要 GPU）')
+    parser.add_argument('--bert_name', default='models/bert-base-uncased',
+                        help='BERT 模型路径')
+    parser.add_argument('--device', default='cuda',
+                        help='--use_bert 时使用的设备')
     args = parser.parse_args()
 
     print(f"加载: {args.data}")
@@ -112,6 +119,30 @@ def main():
         n_nodes.append(n)
         prompts.append(rec.get('prompt', ''))
 
+    # ── 可选：用 BERT 编码所有文本 ──────────────────────────────────────────
+    bert_vecs = None
+    if args.use_bert:
+        from transformers import BertTokenizer, BertModel
+        print(f"\nBERT 编码中（device={args.device}）...")
+        tokenizer = BertTokenizer.from_pretrained(args.bert_name)
+        bert_model = BertModel.from_pretrained(args.bert_name).to(args.device).eval()
+        BATCH = 64
+        vecs = []
+        with torch.no_grad():
+            for start in range(0, M, BATCH):
+                batch_texts = prompts[start:start + BATCH]
+                enc = tokenizer(batch_texts, padding=True, truncation=True,
+                                max_length=128, return_tensors='pt')
+                enc = {k: v.to(args.device) for k, v in enc.items()}
+                out = bert_model(**enc)
+                cls = out.last_hidden_state[:, 0, :]   # [B, 768]
+                cls = cls / cls.norm(dim=-1, keepdim=True)
+                vecs.append(cls.cpu().float().numpy())
+                if (start // BATCH) % 10 == 0:
+                    print(f"  {start}/{M}")
+        bert_vecs = np.concatenate(vecs, axis=0)   # [M, 768]
+        print("BERT 编码完成。")
+
     # ── 按邻接图指纹分组 ─────────────────────────────────────────────────────
     groups = defaultdict(list)
     for i in range(M):
@@ -127,51 +158,52 @@ def main():
         return
 
     # ── 文本相似度分析 ────────────────────────────────────────────────────────
-    n_identical   = 0   # 所有文本完全相同
-    n_all_same    = 0   # 所有文本完全相同（组级别）
-    n_mix         = 0   # 组内有不同文本
-    jacc_scores   = []  # 每对文本的 Jaccard
+    n_identical = 0
+    n_all_same  = 0
+    n_mix       = 0
+    sim_scores  = []   # Jaccard 或 BERT cosine
 
-    # 同时记录"文本差异"最大的组用于可视化
-    group_stats = []   # (min_jacc, fp, idxs, n)
+    group_stats = []   # (min_sim, fp, idxs, n)
+    sim_label   = "BERT cosine" if args.use_bert else "词级 Jaccard"
 
     for fp, idxs in multi.items():
         texts = [prompts[i] for i in idxs]
-        # 两两计算
         pairs = []
-        for a in range(len(texts)):
-            for b in range(a + 1, len(texts)):
-                j = jaccard(texts[a], texts[b])
-                pairs.append(j)
-                jacc_scores.append(j)
+        for a in range(len(idxs)):
+            for b in range(a + 1, len(idxs)):
+                if args.use_bert:
+                    s = float(np.dot(bert_vecs[idxs[a]], bert_vecs[idxs[b]]))
+                else:
+                    s = jaccard(texts[a], texts[b])
+                pairs.append(s)
+                sim_scores.append(s)
                 if texts[a] == texts[b]:
                     n_identical += 1
 
-        min_j = min(pairs) if pairs else 1.0
+        min_s = min(pairs) if pairs else 1.0
         all_same = all(t == texts[0] for t in texts)
         if all_same:
             n_all_same += 1
         else:
             n_mix += 1
 
-        group_stats.append((min_j, fp, idxs, n_nodes[idxs[0]]))
+        group_stats.append((min_s, fp, idxs, n_nodes[idxs[0]]))
 
-    total_pairs = len(jacc_scores)
+    total_pairs    = len(sim_scores)
     identical_rate = n_identical / total_pairs if total_pairs else 0
-    mean_jacc = np.mean(jacc_scores) if jacc_scores else 0
+    mean_sim       = np.mean(sim_scores) if sim_scores else 0
 
-    print(f"\n── 文本相似度分析 ──────────────────────────────────────")
+    print(f"\n── 文本相似度分析（{sim_label}）──────────────────────────")
     print(f"总分析对数:          {total_pairs:>8,}")
     print(f"文本完全相同的对:    {n_identical:>8,}  ({100*identical_rate:.1f}%)")
     print(f"  组内文本全相同:    {n_all_same:>8,}  ({100*n_all_same/len(multi):.1f}% 的重复图)")
     print(f"  组内文本有不同:    {n_mix:>8,}  ({100*n_mix/len(multi):.1f}% 的重复图)")
-    print(f"平均词级 Jaccard:    {mean_jacc:>8.4f}  (1.0=完全相同, 0.0=完全不同)")
+    print(f"平均 {sim_label}:  {mean_sim:>8.4f}  (1.0=完全相同, 0.0=完全不同)")
 
-    # Jaccard 分布
-    arr = np.array(jacc_scores)
+    arr = np.array(sim_scores)
     for thresh in [0.99, 0.95, 0.80, 0.50]:
         pct = 100 * (arr >= thresh).mean()
-        print(f"  Jaccard >= {thresh:.2f}: {pct:.1f}%")
+        print(f"  >= {thresh:.2f}: {pct:.1f}%")
 
     # ── 可视化：文本最不同的重复图 ────────────────────────────────────────────
     # 按 min_jacc 升序（差异最大的在前）
@@ -209,7 +241,7 @@ def main():
         # 右侧: 文本对比（垂直排列）
         ax_text = axes[row_i][TEXT_COL]
         ax_text.axis('off')
-        lines = [f"n={n}  重复={len(idxs)}次  min_Jaccard={min_j:.3f}\n"]
+        lines = [f"n={n}  重复={len(idxs)}次  min_{sim_label}={min_j:.3f}\n"]
         for k, idx in enumerate(show_idxs):
             txt = prompts[idx]
             wrapped = textwrap.fill(txt, width=55)
@@ -229,7 +261,7 @@ def main():
     # ── 随机抽样：打印几组原始文本供肉眼确认 ────────────────────────────────
     print("\n── 抽样原始文本对比（文本差异最大的前5组）────────────────")
     for min_j, fp, idxs, n in group_stats[:5]:
-        print(f"\n  [n={n}, 重复{len(idxs)}次, min_Jaccard={min_j:.3f}]")
+        print(f"\n  [n={n}, 重复{len(idxs)}次, min_{sim_label}={min_j:.3f}]")
         for idx in idxs[:3]:
             print(f"    #{idx}: {prompts[idx][:120]}")
 
