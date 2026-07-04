@@ -1,16 +1,16 @@
 """
-训练 TextGraphAlign (CLIP 对比预训练，文本编码器从零训练)。
+训练 TextGraphAlign (CLIP 对比预训练，BERT 文本编码器 + 布局图编码器)。
 
-先用 room_type_clf/build_npz.py 构建 npz，再训练：
-  python -m room_type_clf.build_npz \\
-      --jsonl     data/jsonl/final_graph_dataset_v3.jsonl \\
-      --val_jsonl data/jsonl/val_graph_dataset_18k5.jsonl \\
-      --augment 3 --output data/processed/room_type_clf/train.npz
+使用 node_diffusion_room_tri/build_graph_npz.py 生成的 npz：
+  python -m text_graph_align.train \
+      --train data/processed/node_diffusion_room_tri/graph_dataset.npz \
+      --val   data/processed/node_diffusion_room_tri/graph_dataset_val.npz \
+      --save  checkpoints/text_graph_align \
+      --bert  models/bert-base-uncased \
+      --gpu   0
 
-  python -m text_graph_align.train \\
-      --train data/processed/room_type_clf/train.npz \\
-      --val   data/processed/room_type_clf/val.npz \\
-      --save  checkpoints/align --gpu 3
+训练完毕后，bert 权重保存在 save_dir/bert_aligned.pt，
+可直接加载进 node_diffusion_room_proj 的扩散模型。
 """
 
 import argparse
@@ -31,26 +31,27 @@ VAL_SAMPLES = 4096
 
 def build_parser():
     p = argparse.ArgumentParser()
-    p.add_argument('--train',        required=True)
-    p.add_argument('--val',          default='')
-    p.add_argument('--save',         default='checkpoints/align')
-    p.add_argument('--gpu',          type=int,   default=0)
-    p.add_argument('--batch',        type=int,   default=256)
-    p.add_argument('--lr',           type=float, default=1e-4)
-    p.add_argument('--weight_decay', type=float, default=1e-2)
-    p.add_argument('--warmup',       type=int,   default=500)
-    p.add_argument('--steps',        type=int,   default=30000)
-    p.add_argument('--log_every',    type=int,   default=100)
-    p.add_argument('--save_every',   type=int,   default=2000)
-    p.add_argument('--val_every',    type=int,   default=2000)
-    p.add_argument('--d_model',      type=int,   default=256)
-    p.add_argument('--num_layers',   type=int,   default=4)
-    p.add_argument('--num_heads',    type=int,   default=4)
-    p.add_argument('--d_embed',      type=int,   default=256)
-    p.add_argument('--vocab_size',   type=int,   default=10000)
-    p.add_argument('--max_len',      type=int,   default=192)
-    p.add_argument('--workers',      type=int,   default=4)
-    p.add_argument('--resume',       default='')
+    p.add_argument('--train',           required=True)
+    p.add_argument('--val',             default='')
+    p.add_argument('--save',            default='checkpoints/text_graph_align')
+    p.add_argument('--gpu',             type=int,   default=0)
+    p.add_argument('--batch',           type=int,   default=256)
+    p.add_argument('--lr',              type=float, default=1e-4)
+    p.add_argument('--bert_lr',         type=float, default=1e-5)
+    p.add_argument('--weight_decay',    type=float, default=1e-2)
+    p.add_argument('--warmup',          type=int,   default=500)
+    p.add_argument('--steps',           type=int,   default=30000)
+    p.add_argument('--log_every',       type=int,   default=100)
+    p.add_argument('--save_every',      type=int,   default=2000)
+    p.add_argument('--val_every',       type=int,   default=2000)
+    p.add_argument('--d_model',         type=int,   default=384)
+    p.add_argument('--num_layers',      type=int,   default=4)
+    p.add_argument('--num_heads',       type=int,   default=6)
+    p.add_argument('--d_embed',         type=int,   default=384)
+    p.add_argument('--bert',            default='models/bert-base-uncased')
+    p.add_argument('--unfreeze_layers', type=int,   default=4)
+    p.add_argument('--workers',         type=int,   default=4)
+    p.add_argument('--resume',          default='')
     return p
 
 
@@ -63,20 +64,19 @@ def cosine_lr(step, total, warmup, base_lr):
 
 def run_val(model, val_loader, device):
     model.eval()
-    total_loss = total_g2t = total_t2g = n_samples = n_batches = 0
+    total_loss = total_g2t = total_t2g = n_batches = n_samples = 0
     with torch.no_grad():
         for batch in val_loader:
-            node_mask  = batch['node_mask'].to(device)
-            adj        = batch['adj_matrix'].to(device)
-            membership = batch['room_membership'].to(device)
-            input_ids  = batch['input_ids'].to(device)
-            attn_mask  = batch['attn_mask'].to(device)
-            loss, acc_g2t, acc_t2g = model(
-                node_mask, adj, membership, input_ids, attn_mask)
+            coords  = batch['node_coords'].to(device)
+            adj     = batch['adj_matrix'].to(device)
+            mask    = batch['node_mask'].to(device)
+            ptok    = batch['prompt_tokens'].to(device)
+            pmsk    = batch['prompt_mask'].to(device)
+            loss, acc_g2t, acc_t2g = model(coords, adj, mask, ptok, pmsk)
             total_loss += loss.item()
             total_g2t  += acc_g2t
             total_t2g  += acc_t2g
-            n_samples  += node_mask.shape[0]
+            n_samples  += mask.shape[0]
             n_batches  += 1
             if n_samples >= VAL_SAMPLES:
                 break
@@ -102,16 +102,25 @@ def main():
                                         shuffle=False, num_workers=args.workers)
 
     model = TextGraphAlign(
-        vocab_size = args.vocab_size,
-        d_model    = args.d_model,
-        num_layers = args.num_layers,
-        num_heads  = args.num_heads,
-        max_len    = args.max_len,
-        d_embed    = args.d_embed,
+        bert_name       = args.bert,
+        unfreeze_layers = args.unfreeze_layers,
+        d_model         = args.d_model,
+        num_layers      = args.num_layers,
+        num_heads       = args.num_heads,
+        d_embed         = args.d_embed,
     ).to(device)
 
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    opt    = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
+    # 差异化学习率：BERT 解冻层用 bert_lr，其余用 lr
+    bert_param_ids = set(id(p) for p in model.text_enc.bert.parameters()
+                         if p.requires_grad)
+    bert_params    = [p for p in model.parameters()
+                      if p.requires_grad and id(p) in bert_param_ids]
+    other_params   = [p for p in model.parameters()
+                      if p.requires_grad and id(p) not in bert_param_ids]
+    opt = torch.optim.AdamW([
+        {'params': other_params, 'lr': args.lr,      'weight_decay': args.weight_decay},
+        {'params': bert_params,  'lr': args.bert_lr, 'weight_decay': args.weight_decay},
+    ])
     scaler = torch.amp.GradScaler('cuda')
 
     start_step = 0
@@ -136,22 +145,23 @@ def main():
     for step in range(start_step, args.steps):
         lr = cosine_lr(step, args.steps, args.warmup, args.lr)
         for pg in opt.param_groups:
-            pg['lr'] = lr
+            scale = args.bert_lr / args.lr if pg['params'] is bert_params else 1.0
+            pg['lr'] = lr * scale
 
-        batch      = next(data_iter)
-        node_mask  = batch['node_mask'].to(device)
-        adj        = batch['adj_matrix'].to(device)
-        membership = batch['room_membership'].to(device)
-        input_ids  = batch['input_ids'].to(device)
-        attn_mask  = batch['attn_mask'].to(device)
+        batch   = next(data_iter)
+        coords  = batch['node_coords'].to(device)
+        adj     = batch['adj_matrix'].to(device)
+        mask    = batch['node_mask'].to(device)
+        ptok    = batch['prompt_tokens'].to(device)
+        pmsk    = batch['prompt_mask'].to(device)
 
         opt.zero_grad()
         with torch.amp.autocast('cuda'):
-            loss, acc_g2t, acc_t2g = model(
-                node_mask, adj, membership, input_ids, attn_mask)
+            loss, acc_g2t, acc_t2g = model(coords, adj, mask, ptok, pmsk)
 
         scaler.scale(loss).backward()
         scaler.unscale_(opt)
+        trainable = [p for p in model.parameters() if p.requires_grad]
         nn.utils.clip_grad_norm_(trainable, 1.0)
         scaler.step(opt)
         scaler.update()
@@ -184,7 +194,10 @@ def main():
                         'opt': opt.state_dict()}, ckpt_path)
             torch.save({'step': step, 'model': model.state_dict()},
                        save_dir / 'align_latest.pt')
-            print(f"saved -> {ckpt_path}")
+            # 单独保存 BERT 权重，供扩散模型直接加载
+            torch.save(model.text_enc.bert.state_dict(),
+                       save_dir / 'bert_aligned.pt')
+            print(f"saved -> {ckpt_path}  bert_aligned.pt")
 
         if val_loader and (step + 1) % args.val_every == 0:
             v_loss, v_g2t, v_t2g = run_val(model, val_loader, device)

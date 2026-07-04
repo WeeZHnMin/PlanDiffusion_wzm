@@ -1,15 +1,12 @@
 """
-AlignDataset: 读取 text_graph_align/build_npz.py 生成的 npz。
+AlignDataset: 读取 node_diffusion_room_tri/build_graph_npz.py 生成的 npz。
 
-npz 中包含：
-  text_input_ids  [U, T] int32   去重后的 token IDs（自定义词表）
-  text_attn_mask  [U, T] bool    1=有效 token
-  text_idx        [N,]   int32   每条样本对应的 unique 索引
-  node_mask       [N, 40]
-  adj_matrix      [N, 40, 40]
-  room_membership [N, 40, MAX_ROOMS]
-
-文本编码器从零训练，不依赖 BERT。
+npz 中需包含：
+  node_coords   [N, MAX_NODES, 2]   float32
+  adj_matrix    [N, MAX_NODES, MAX_NODES]  uint8
+  node_mask     [N, MAX_NODES]       int32
+  prompt_tokens [N, MAX_TEXT_LEN]   int32   BERT token ids
+  prompt_mask   [N, MAX_TEXT_LEN]   int32   1=有效 token
 """
 
 import numpy as np
@@ -19,33 +16,29 @@ from torch.utils.data import Dataset, DataLoader
 
 class AlignDataset(Dataset):
     def __init__(self, npz_path):
-        npz_path = str(npz_path)
-        data = np.load(npz_path)
-        self.node_mask       = data['node_mask'].astype(np.float32)
-        self.adj_matrix      = data['adj_matrix'].astype(np.float32)
-        self.room_membership = data['room_membership'].astype(np.float32)
-        self.text_idx        = data['text_idx'].astype(np.int64)
-        self.text_input_ids  = data['text_input_ids'].astype(np.int64)   # [U, T]
-        self.text_attn_mask  = data['text_attn_mask'].astype(np.float32) # [U, T]
-        print(f"AlignDataset: {len(self.node_mask)} 条  "
-              f"unique_prompts={len(self.text_input_ids)}  {npz_path}")
+        data = np.load(str(npz_path))
+        self.node_coords   = data['node_coords'].astype(np.float32)
+        self.adj_matrix    = data['adj_matrix'].astype(np.float32)
+        self.node_mask     = data['node_mask'].astype(np.float32)
+        self.prompt_tokens = data['prompt_tokens'].astype(np.int64)
+        self.prompt_mask   = data['prompt_mask'].astype(np.float32)
+        print(f"AlignDataset: {len(self.node_mask)} 条  {npz_path}")
 
     def __len__(self):
         return len(self.node_mask)
 
     def __getitem__(self, idx):
-        uid = self.text_idx[idx]
         return {
-            'node_mask':       torch.from_numpy(self.node_mask[idx]),
-            'adj_matrix':      torch.from_numpy(self.adj_matrix[idx]),
-            'room_membership': torch.from_numpy(self.room_membership[idx]),
-            'input_ids':       torch.from_numpy(self.text_input_ids[uid]),
-            'attn_mask':       torch.from_numpy(self.text_attn_mask[uid]),
+            'node_coords':   torch.from_numpy(self.node_coords[idx]),
+            'adj_matrix':    torch.from_numpy(self.adj_matrix[idx]),
+            'node_mask':     torch.from_numpy(self.node_mask[idx]),
+            'prompt_tokens': torch.from_numpy(self.prompt_tokens[idx]),
+            'prompt_mask':   torch.from_numpy(self.prompt_mask[idx]),
         }
 
 
 def load_align_data(npz_path, batch_size, shuffle=True, num_workers=4):
-    ds = AlignDataset(npz_path)
+    ds     = AlignDataset(npz_path)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                         num_workers=num_workers, drop_last=True,
                         pin_memory=True, persistent_workers=(num_workers > 0))
