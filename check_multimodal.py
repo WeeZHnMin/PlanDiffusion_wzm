@@ -101,7 +101,7 @@ def main():
     for fp, idxs in multi.items():
         n = n_nodes[idxs[0]]
         # 各布局中心归一化后的坐标
-        centered = [center(coords_all[i, :n], n) for i in idxs]
+        centered = [center(coords_all[i], n) for i in idxs]
         # 所有布局堆叠后计算方差（节点平均）
         stack = np.stack(centered, axis=0)   # [K, n, 2]
         var   = stack.var(axis=0).mean()     # 标量
@@ -136,7 +136,7 @@ def main():
             ax = axes[row_i][col_i]
             if col_i < len(show_idxs):
                 draw_layout(ax, centered[col_i],
-                            adj_all[show_idxs[col_i]], n,
+                            adj_all[show_idxs[col_i]], n,  # noqa
                             title=f"样本#{show_idxs[col_i]}")
             else:
                 ax.axis('off')
