@@ -34,7 +34,8 @@ def build_parser():
     p.add_argument('--train',           required=True)
     p.add_argument('--val',             default='')
     p.add_argument('--save',            default='checkpoints/text_graph_align')
-    p.add_argument('--gpu',             type=int,   default=0)
+    p.add_argument('--gpus',            default='0',
+                   help='使用的 GPU，单卡: "0"，双卡: "0,1"')
     p.add_argument('--batch',           type=int,   default=256)
     p.add_argument('--lr',              type=float, default=1e-4)
     p.add_argument('--bert_lr',         type=float, default=1e-5)
@@ -87,9 +88,10 @@ def run_val(model, val_loader, device):
 
 def main():
     args = build_parser().parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"device: {device}")
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
+    device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    n_gpus  = len(args.gpus.split(','))
+    print(f"device: {device}  gpus: {args.gpus}  n_gpus: {n_gpus}")
 
     save_dir = Path(args.save)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -101,7 +103,7 @@ def main():
         _, val_loader = load_align_data(args.val, batch_size=64,
                                         shuffle=False, num_workers=args.workers)
 
-    model = TextGraphAlign(
+    raw_model = TextGraphAlign(
         bert_name       = args.bert,
         unfreeze_layers = args.unfreeze_layers,
         d_model         = args.d_model,
@@ -110,12 +112,14 @@ def main():
         d_embed         = args.d_embed,
     ).to(device)
 
+    model = nn.DataParallel(raw_model) if n_gpus > 1 else raw_model
+
     # 差异化学习率：BERT 解冻层用 bert_lr，其余用 lr
-    bert_param_ids = set(id(p) for p in model.text_enc.bert.parameters()
+    bert_param_ids = set(id(p) for p in raw_model.text_enc.bert.parameters()
                          if p.requires_grad)
-    bert_params    = [p for p in model.parameters()
+    bert_params    = [p for p in raw_model.parameters()
                       if p.requires_grad and id(p) in bert_param_ids]
-    other_params   = [p for p in model.parameters()
+    other_params   = [p for p in raw_model.parameters()
                       if p.requires_grad and id(p) not in bert_param_ids]
     opt = torch.optim.AdamW([
         {'params': other_params, 'lr': args.lr,      'weight_decay': args.weight_decay},
@@ -176,7 +180,7 @@ def main():
             avg_g2t  = g2t_acc  / n
             avg_t2g  = t2g_acc  / n
             elapsed  = time.perf_counter() - t0
-            tau      = 1.0 / model.logit_scale.exp().item()
+            tau      = 1.0 / raw_model.logit_scale.exp().item()
             print(f"step {step+1:6d} | loss {avg_loss:.4f} | "
                   f"g2t {avg_g2t:.2%} | t2g {avg_t2g:.2%} | "
                   f"tau {tau:.4f} | lr {lr:.2e} | {elapsed:.1f}s")
@@ -190,12 +194,12 @@ def main():
 
         if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
             ckpt_path = save_dir / f'align_step{step+1:06d}.pt'
-            torch.save({'step': step, 'model': model.state_dict(),
+            torch.save({'step': step, 'model': raw_model.state_dict(),
                         'opt': opt.state_dict()}, ckpt_path)
-            torch.save({'step': step, 'model': model.state_dict()},
+            torch.save({'step': step, 'model': raw_model.state_dict()},
                        save_dir / 'align_latest.pt')
             # 单独保存 BERT 权重，供扩散模型直接加载
-            torch.save(model.text_enc.bert.state_dict(),
+            torch.save(raw_model.text_enc.bert.state_dict(),
                        save_dir / 'bert_aligned.pt')
             print(f"saved -> {ckpt_path}  bert_aligned.pt")
 
