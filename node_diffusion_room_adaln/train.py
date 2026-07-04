@@ -154,7 +154,7 @@ def build_parser(defaults=None):
     parser.add_argument("--batch_size",   type=int,   default=defaults.get("batch_size",   512))
     parser.add_argument("--lr",           type=float, default=defaults.get("lr",           3e-4))
     parser.add_argument("--weight_decay", type=float, default=defaults.get("weight_decay", 1e-4))
-    parser.add_argument("--total_steps",  type=int,   default=defaults.get("total_steps",  350000))
+    parser.add_argument("--total_steps",  type=int,   default=defaults.get("total_steps",  14000))
     parser.add_argument("--log_interval", type=int,   default=defaults.get("log_interval", 100))
     parser.add_argument("--save_interval",type=int,   default=defaults.get("save_interval",5000))
     parser.add_argument("--model_channels",type=int,  default=defaults.get("model_channels",384))
@@ -168,7 +168,7 @@ def build_parser(defaults=None):
     parser.add_argument("--large_node_threshold", type=int,   default=defaults.get("large_node_threshold", 23))
     parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    ""),
                         help="验证集 jsonl 路径，留空则不做验证")
-    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 5000))
+    parser.add_argument("--val_interval", type=int, default=defaults.get("val_interval", 2000))
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
