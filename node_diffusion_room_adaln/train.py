@@ -14,6 +14,9 @@ import random
 import time
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -26,6 +29,8 @@ from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .eval_iou import coords_to_polys_by_type, compute_iou, center_at_origin
+from .visualize_gt_adj import (draw_col1_text, draw_col2_adj,
+                                draw_col3_coords, draw_col4_render)
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
@@ -98,13 +103,18 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         ptok = np.array(enc["input_ids"],      dtype=np.int64)
         pmsk = np.array(enc["attention_mask"], dtype=np.float32)
 
+        gt_coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32)
+        gt_coords_pad[:n] = gt_centered[:n]
+
         prepared.append({
             "mask_np": mask_np, "adj_pad": adj_pad, "membership": membership,
             "ptok": ptok, "pmsk": pmsk, "n": n,
             "adj_list": adj_list, "gt_polys": gt_polys, "gt_node_types": gt_node_types,
+            "gt_coords_pad": gt_coords_pad, "prompt": prompt,
         })
 
     micro_list, macro_list = [], []
+    vis_samples = []
     BS = args.val_batch
     t0 = time.perf_counter()
     for bi in range(0, len(prepared), BS):
@@ -119,15 +129,17 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         }
         pred_xy = _ddim_sample(raw_model, diffusion, cond_b, device, args.ddim_steps)
         for j in range(B):
-            s       = chunk[j]
-            n       = s["n"]
-            pred_np = pred_xy[j].cpu().numpy().T          # [MAX_NODES, 2]
+            s        = chunk[j]
+            n        = s["n"]
+            pred_np  = pred_xy[j].cpu().numpy().T
             pred_cen = center_at_origin(pred_np, s["mask_np"])
             pred_polys = coords_to_polys_by_type(
                 pred_cen[:n], s["adj_list"], s["gt_node_types"], n)
             micro, macro = compute_iou(s["gt_polys"], pred_polys)
             micro_list.append(micro)
             macro_list.append(macro)
+            if len(vis_samples) < args.vis_n:
+                vis_samples.append((s, pred_cen))
 
     micro_iou = float(np.mean(micro_list)) if micro_list else 0.0
     macro_iou = float(np.mean(macro_list)) if macro_list else 0.0
@@ -139,8 +151,46 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
                                'macro_iou': round(macro_iou, 4),
                                'elapsed_val': round(elapsed, 1)}) + '\n')
 
+    if vis_samples:
+        _save_val_viz(vis_samples, step, args.vis_dir)
+
     raw_model.train()
     return micro_iou
+
+
+def _save_val_viz(vis_samples, step, vis_dir):
+    os.makedirs(vis_dir, exist_ok=True)
+    B = len(vis_samples)
+    COL_W = [4.2, 2.6, 2.8, 2.6, 2.8]
+    fig, axes = plt.subplots(
+        B, 5, figsize=(sum(COL_W) + 0.2, B * 2.7 + 0.55),
+        gridspec_kw={'width_ratios': COL_W}, constrained_layout=True,
+    )
+    if B == 1:
+        axes = [axes]
+    for row_i, (s, pred_cen) in enumerate(vis_samples):
+        axs = axes[row_i]
+        draw_col1_text(axs[0], s["prompt"])
+        draw_col2_adj(axs[1], s["adj_pad"], s["n"], seed=0)
+        draw_col4_render(axs[2], s["gt_coords_pad"], s["adj_pad"],
+                         s["mask_np"], s["gt_node_types"])
+        try:
+            draw_col3_coords(axs[3], pred_cen, s["adj_pad"], s["mask_np"])
+        except Exception:
+            axs[3].axis('off'); axs[3].text(0.5, 0.5, 'NaN', ha='center', va='center',
+                                             fontsize=8, transform=axs[3].transAxes)
+        try:
+            draw_col4_render(axs[4], pred_cen, s["adj_pad"],
+                             s["mask_np"], s["gt_node_types"])
+        except Exception:
+            axs[4].axis('off'); axs[4].text(0.5, 0.5, 'NaN', ha='center', va='center',
+                                             fontsize=8, transform=axs[4].transAxes)
+    for j, title in enumerate(['Text', 'GT Adj', 'GT Floor Plan', 'Pred Coords', 'Pred Floor Plan']):
+        axes[0][j].set_title(title, fontsize=11, fontweight='bold', pad=4)
+    out = os.path.join(vis_dir, f"val_step_{step:06d}.png")
+    fig.savefig(out, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  viz -> {out}")
 
 
 # ── 训练入口 ──────────────────────────────────────────────────────────────────
@@ -172,6 +222,8 @@ def build_parser(defaults=None):
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
+    parser.add_argument("--vis_n",        type=int, default=defaults.get("vis_n",        5))
+    parser.add_argument("--vis_dir",      default=defaults.get("vis_dir", "outputs/node_diffusion_room_adaln"))
     return parser
 
 
