@@ -171,6 +171,8 @@ def build_parser(defaults=None):
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
     parser.add_argument("--unfreeze_layers", type=int,   default=defaults.get("unfreeze_layers", 2))
     parser.add_argument("--bert_lr",         type=float, default=defaults.get("bert_lr",         1e-5))
+    parser.add_argument("--freeze_backbone", action="store_true", default=False,
+                        help="冻结扩散主干，只训练 text_projs + BERT 解冻层")
     parser.add_argument("--large_node_weight",    type=float, default=defaults.get("large_node_weight",    1.0),
                         help="节点数>=阈值的样本权重倍数，1.0=不启用")
     parser.add_argument("--large_node_threshold", type=int,   default=defaults.get("large_node_threshold", 23))
@@ -225,36 +227,13 @@ def main(argv=None, defaults=None):
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
-    no_decay = {'bias', 'norm', 'LayerNorm'}
 
-    # BERT 解冻层用小学习率（1e-5），其余参数用正常 lr
-    bert_params     = set(id(p) for p in model.bert.parameters() if p.requires_grad)
-    non_bert_decay  = [p for n, p in model.named_parameters()
-                       if p.requires_grad and id(p) not in bert_params
-                       and not any(nd in n for nd in no_decay)]
-    non_bert_nodec  = [p for n, p in model.named_parameters()
-                       if p.requires_grad and id(p) not in bert_params
-                       and any(nd in n for nd in no_decay)]
-    bert_decay      = [p for n, p in model.named_parameters()
-                       if p.requires_grad and id(p) in bert_params
-                       and not any(nd in n for nd in no_decay)]
-    bert_nodec      = [p for n, p in model.named_parameters()
-                       if p.requires_grad and id(p) in bert_params
-                       and any(nd in n for nd in no_decay)]
-    opt = AdamW(
-        [
-            {'params': non_bert_decay, 'lr': args.lr,       'weight_decay': args.weight_decay},
-            {'params': non_bert_nodec, 'lr': args.lr,       'weight_decay': 0.0},
-            {'params': bert_decay,     'lr': args.bert_lr,  'weight_decay': args.weight_decay},
-            {'params': bert_nodec,     'lr': args.bert_lr,  'weight_decay': 0.0},
-        ],
-    )
-
-    use_amp  = device.type == 'cuda'
+    # ── 步骤1：先加载模型权重（不加载 opt 状态）───────────────────────────────
+    use_amp   = device.type == 'cuda'
     amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    scaler   = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
-
+    scaler    = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
     start_step = 0
+    saved_opt_state = None
     if args.resume:
         ckpt   = torch.load(args.resume, map_location=device)
         raw_sd = ckpt["model"]
@@ -266,15 +245,49 @@ def main(argv=None, defaults=None):
                 print(f"  missing keys: {missing}")
             if unexpected:
                 print(f"  unexpected keys: {unexpected}")
-        try:
-            opt.load_state_dict(ckpt["opt"])
-            if "scaler" in ckpt:
-                scaler.load_state_dict(ckpt["scaler"])
-        except ValueError:
-            print("  [warn] optimizer state 结构不兼容，跳过 opt 恢复，仅加载模型权重")
+        saved_opt_state = ckpt.get("opt")
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
         start_step = ckpt["step"] + 1
         if is_master:
             print(f"resumed from step {start_step}")
+
+    # ── 步骤2：按需冻结主干（在 optimizer 构建之前！）─────────────────────────
+    if args.freeze_backbone:
+        if is_master:
+            print("freeze_backbone=True：冻结扩散主干，只训练 text_projs + BERT 解冻层")
+        model.freeze_diffusion_backbone()
+
+    # ── 步骤3：构建 optimizer（requires_grad 已确定）──────────────────────────
+    no_decay    = {'bias', 'norm', 'LayerNorm'}
+    bert_params = set(id(p) for p in model.bert.parameters() if p.requires_grad)
+    non_bert_decay = [p for n, p in model.named_parameters()
+                      if p.requires_grad and id(p) not in bert_params
+                      and not any(nd in n for nd in no_decay)]
+    non_bert_nodec = [p for n, p in model.named_parameters()
+                      if p.requires_grad and id(p) not in bert_params
+                      and any(nd in n for nd in no_decay)]
+    bert_decay     = [p for n, p in model.named_parameters()
+                      if p.requires_grad and id(p) in bert_params
+                      and not any(nd in n for nd in no_decay)]
+    bert_nodec     = [p for n, p in model.named_parameters()
+                      if p.requires_grad and id(p) in bert_params
+                      and any(nd in n for nd in no_decay)]
+    opt = AdamW(
+        [
+            {'params': non_bert_decay, 'lr': args.lr,      'weight_decay': args.weight_decay},
+            {'params': non_bert_nodec, 'lr': args.lr,      'weight_decay': 0.0},
+            {'params': bert_decay,     'lr': args.bert_lr, 'weight_decay': args.weight_decay},
+            {'params': bert_nodec,     'lr': args.bert_lr, 'weight_decay': 0.0},
+        ],
+    )
+    # 步骤4：恢复 opt 状态（结构一致时才加载，freeze 模式下通常不兼容，跳过）
+    if saved_opt_state is not None:
+        try:
+            opt.load_state_dict(saved_opt_state)
+        except (ValueError, KeyError):
+            if is_master:
+                print("  [warn] optimizer state 结构不兼容，跳过 opt 恢复，仅加载模型权重")
 
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,

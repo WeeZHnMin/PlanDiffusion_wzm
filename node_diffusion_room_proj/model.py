@@ -246,6 +246,21 @@ class NodeDiffusionTransformer(nn.Module):
               f"bert_unfreeze={unfreeze_layers}): "
               f"{trainable:,} trainable / {total:,} total")
 
+    def freeze_diffusion_backbone(self):
+        """
+        冻结扩散主干（time_embed, input_emb, layers, coord_head），
+        只让 text_projs 和 BERT 解冻层参与梯度下降。
+        梯度仍可经 cross_attn 的 K/V 路径流回 text_projs。
+        """
+        for name, param in self.named_parameters():
+            if 'text_projs' in name or 'bert' in name:
+                continue          # 保持 text_projs 和 BERT 当前的 requires_grad
+            param.requires_grad = False
+
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total     = sum(p.numel() for p in self.parameters())
+        print(f"  [freeze_backbone] trainable={trainable:,} / total={total:,}")
+
     def _build_room_mask(self, room_membership, node_mask):
         """
         room_membership: [B, N, MAX_ROOMS]
