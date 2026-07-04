@@ -39,7 +39,7 @@ def _assign_room_membership_single(adj, n):
             if not adj[u, v]:
                 continue
             prev  = {u: -1}
-            q     = __import__('collections').deque([u])
+            q     = deque([u])
             found = False
             while q and not found:
                 cur = q.popleft()
