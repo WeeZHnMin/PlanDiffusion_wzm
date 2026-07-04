@@ -303,6 +303,9 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
     ptok    = torch.from_numpy(ptok_np[None]).to(device)               # [1, T]
     pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)        # [1, T]
 
+    # BERT 只跑一次，避免循环内重复调用
+    text_feat, text_mask = model.encode_text(ptok, pmsk)
+
     diffusion._to(device)
     g = torch.Generator(device=device)
     g.manual_seed(seed)
@@ -311,7 +314,7 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
     for t in reversed(range(diffusion.T)):
         tb  = torch.full((1,), t, device=device, dtype=torch.long)
         eps = model(x, tb, mask,
-                    prompt_tokens=ptok, prompt_mask=pmsk,
+                    text_feat=text_feat, text_mask=text_mask,
                     room_membership=room_mb, adj_matrix=adj)
         ab  = diffusion.alphas_bar[t]
         ap  = diffusion.alphas_bar_prev[t]
@@ -332,7 +335,7 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_tri/latest.pt')
+    p.add_argument('--ckpt',    default='checkpoints/node_diffusion_room_proj/best.pt')
     p.add_argument('--data',    default='data/jsonl/test_graph_dataset_10k.jsonl')
     p.add_argument('--bert',    default='models/bert-base-uncased')
     p.add_argument('--n',       type=int, default=5)
