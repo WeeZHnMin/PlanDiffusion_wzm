@@ -295,7 +295,7 @@ def draw_col4_render(ax, coords: np.ndarray, adj_np: np.ndarray,
 @torch.no_grad()
 def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
                   mask_np: np.ndarray, ptok_np: np.ndarray, pmsk_np: np.ndarray,
-                  device, seed: int = 0) -> np.ndarray:
+                  device, seed: int = 0, no_text: bool = False) -> np.ndarray:
     """DDPM 1000步逆采样，三流条件：room_membership + adj_matrix + text。返回 [N_NODES, 2]。"""
     room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)   # [1, N, MAX_ROOMS]
     adj     = torch.from_numpy(adj_np[None]).float().to(device)        # [1, N, N]
@@ -310,8 +310,10 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
 
     for t in reversed(range(diffusion.T)):
         tb  = torch.full((1,), t, device=device, dtype=torch.long)
+        _ptok = None if no_text else ptok
+        _pmsk = None if no_text else pmsk
         eps = model(x, tb, mask,
-                    prompt_tokens=ptok, prompt_mask=pmsk,
+                    prompt_tokens=_ptok, prompt_mask=_pmsk,
                     room_membership=room_mb, adj_matrix=adj)
         ab  = diffusion.alphas_bar[t]
         ap  = diffusion.alphas_bar_prev[t]
@@ -341,6 +343,8 @@ def parse_args():
     p.add_argument('--seed',    type=int, default=42)
     p.add_argument('--gpu',     type=int, default=None)
     p.add_argument('--out',     default='outputs/visualize_gt_adj_room/result.png')
+    p.add_argument('--no_text',      action='store_true',
+                   help='推理时不传文本条件（text_feat 置零），纯图结构生成')
     p.add_argument('--use_type_model', action='store_true',
                    help='用 TextCondGNN 预测节点类型（否则 Col5 沿用 GT 类型）')
     p.add_argument('--type_ckpt', default='checkpoints/node_type/model_latest.pt')
@@ -446,7 +450,7 @@ def main():
             model, diffusion,
             rec['room_mb_np'], rec['adj_np'],
             rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
-            device, seed=rec['idx'],
+            device, seed=rec['idx'], no_text=args.no_text,
         )   # [40, 2]
 
     del model
