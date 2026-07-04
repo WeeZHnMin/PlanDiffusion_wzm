@@ -74,9 +74,9 @@ def run_val(model, val_loader, device):
             ptok    = batch['prompt_tokens'].to(device)
             pmsk    = batch['prompt_mask'].to(device)
             loss, acc_g2t, acc_t2g = model(coords, adj, mask, ptok, pmsk)
-            total_loss += loss.item()
-            total_g2t  += acc_g2t
-            total_t2g  += acc_t2g
+            total_loss += loss.mean().item()
+            total_g2t  += acc_g2t.mean().item()
+            total_t2g  += acc_t2g.mean().item()
             n_samples  += mask.shape[0]
             n_batches  += 1
             if n_samples >= VAL_SAMPLES:
@@ -170,9 +170,9 @@ def main():
         scaler.step(opt)
         scaler.update()
 
-        loss_acc += loss.item()
-        g2t_acc  += acc_g2t
-        t2g_acc  += acc_t2g
+        loss_acc += loss.mean().item()
+        g2t_acc  += acc_g2t.mean().item()
+        t2g_acc  += acc_t2g.mean().item()
 
         if (step + 1) % args.log_every == 0:
             n        = args.log_every

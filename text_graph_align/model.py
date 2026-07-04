@@ -176,8 +176,8 @@ def clip_loss(graph_emb, text_emb, logit_scale):
     loss   = (F.cross_entropy(logits_g2t, labels) +
               F.cross_entropy(logits_t2g, labels)) / 2
     with torch.no_grad():
-        acc_g2t = (logits_g2t.argmax(dim=1) == labels).float().mean().item()
-        acc_t2g = (logits_t2g.argmax(dim=1) == labels).float().mean().item()
+        acc_g2t = (logits_g2t.argmax(dim=1) == labels).float().mean()
+        acc_t2g = (logits_t2g.argmax(dim=1) == labels).float().mean()
     return loss, acc_g2t, acc_t2g
 
 
