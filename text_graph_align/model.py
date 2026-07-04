@@ -215,4 +215,14 @@ class TextGraphAlign(nn.Module):
     def forward(self, node_coords, adj_matrix, node_mask, prompt_tokens, prompt_mask):
         g = self.graph_enc(node_coords, adj_matrix, node_mask)
         t = self.text_enc(prompt_tokens, prompt_mask)
-        return clip_loss(g, t, self.logit_scale)
+        loss, _, _ = clip_loss(g, t, self.logit_scale)
+        return loss   # DataParallel 只 gather 单个 tensor
+
+    @torch.no_grad()
+    def compute_metrics(self, node_coords, adj_matrix, node_mask,
+                        prompt_tokens, prompt_mask):
+        """单独计算 accuracy，供 raw_model 调用（不经过 DataParallel）。"""
+        g = self.graph_enc(node_coords, adj_matrix, node_mask)
+        t = self.text_enc(prompt_tokens, prompt_mask)
+        _, acc_g2t, acc_t2g = clip_loss(g, t, self.logit_scale)
+        return acc_g2t.item(), acc_t2g.item()

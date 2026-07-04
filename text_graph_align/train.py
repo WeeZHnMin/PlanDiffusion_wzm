@@ -63,8 +63,9 @@ def cosine_lr(step, total, warmup, base_lr):
     return base_lr * (1 + math.cos(math.pi * t)) / 2
 
 
-def run_val(model, val_loader, device):
-    model.eval()
+def run_val(raw_model, val_loader, device):
+    """用 raw_model 做验证，不经过 DataParallel。"""
+    raw_model.eval()
     total_loss = total_g2t = total_t2g = n_batches = n_samples = 0
     with torch.no_grad():
         for batch in val_loader:
@@ -73,15 +74,16 @@ def run_val(model, val_loader, device):
             mask    = batch['node_mask'].to(device)
             ptok    = batch['prompt_tokens'].to(device)
             pmsk    = batch['prompt_mask'].to(device)
-            loss, acc_g2t, acc_t2g = model(coords, adj, mask, ptok, pmsk)
-            total_loss += loss.mean().item()
-            total_g2t  += acc_g2t.mean().item()
-            total_t2g  += acc_t2g.mean().item()
+            loss                = raw_model(coords, adj, mask, ptok, pmsk)
+            acc_g2t, acc_t2g   = raw_model.compute_metrics(coords, adj, mask, ptok, pmsk)
+            total_loss += loss.item()
+            total_g2t  += acc_g2t
+            total_t2g  += acc_t2g
             n_samples  += mask.shape[0]
             n_batches  += 1
             if n_samples >= VAL_SAMPLES:
                 break
-    model.train()
+    raw_model.train()
     nb = max(n_batches, 1)
     return total_loss / nb, total_g2t / nb, total_t2g / nb
 
@@ -161,9 +163,9 @@ def main():
 
         opt.zero_grad()
         with torch.amp.autocast('cuda'):
-            loss, acc_g2t, acc_t2g = model(coords, adj, mask, ptok, pmsk)
+            loss = model(coords, adj, mask, ptok, pmsk)
 
-        scaler.scale(loss).backward()
+        scaler.scale(loss.mean()).backward()
         scaler.unscale_(opt)
         trainable = [p for p in model.parameters() if p.requires_grad]
         nn.utils.clip_grad_norm_(trainable, 1.0)
@@ -171,14 +173,21 @@ def main():
         scaler.update()
 
         loss_acc += loss.mean().item()
-        g2t_acc  += acc_g2t.mean().item()
-        t2g_acc  += acc_t2g.mean().item()
+        # accuracy：每 log_every 步算一次，用 raw_model 避免 DataParallel 干扰
+        if (step + 1) % args.log_every == 0:
+            with torch.no_grad():
+                a_g2t, a_t2g = raw_model.compute_metrics(
+                    coords[:64].to(device), adj[:64].to(device),
+                    mask[:64].to(device),   ptok[:64].to(device),
+                    pmsk[:64].to(device))
+            g2t_acc += a_g2t
+            t2g_acc += a_t2g
 
         if (step + 1) % args.log_every == 0:
             n        = args.log_every
             avg_loss = loss_acc / n
-            avg_g2t  = g2t_acc  / n
-            avg_t2g  = t2g_acc  / n
+            avg_g2t  = g2t_acc          # 只算一次，不除以 n
+            avg_t2g  = t2g_acc
             elapsed  = time.perf_counter() - t0
             tau      = 1.0 / raw_model.logit_scale.exp().item()
             print(f"step {step+1:6d} | loss {avg_loss:.4f} | "
@@ -204,7 +213,7 @@ def main():
             print(f"saved -> {ckpt_path}  bert_aligned.pt")
 
         if val_loader and (step + 1) % args.val_every == 0:
-            v_loss, v_g2t, v_t2g = run_val(model, val_loader, device)
+            v_loss, v_g2t, v_t2g = run_val(raw_model, val_loader, device)
             print(f"  [val] loss {v_loss:.4f} | g2t {v_g2t:.2%} | t2g {v_t2g:.2%}")
             log_f.write(json.dumps({
                 'step': step+1,
