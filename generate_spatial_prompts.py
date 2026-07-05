@@ -117,8 +117,10 @@ def generate_prompt(node_types, node_coords, adj_matrix, n):
         # 按质心位置排序（先 y 后 x，从上到下、从左到右）
         comp_centroids = []
         for comp in comps:
-            cx = np.mean([nx_arr[i] for i in comp])
-            cy = np.mean([ny_arr[i] for i in comp])
+            xs = [nx_arr[i] for i in comp]
+            ys = [ny_arr[i] for i in comp]
+            cx = (min(xs) + max(xs)) / 2
+            cy = (min(ys) + max(ys)) / 2
             comp_centroids.append((cy, cx, pt))
         comp_centroids.sort()
         for cy, cx, t in comp_centroids:
