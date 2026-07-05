@@ -169,10 +169,11 @@ def main():
             rec = json.loads(line)
             n   = int(rec['n_nodes'])
 
-            new_prompt             = generate_prompt(
+            spatial_prompt         = generate_prompt(
                 rec['node_types'], rec['node_coords'], rec['adj_matrix'], n)
-            rec['prompt_original'] = rec.get('prompt', '')
-            rec['prompt']          = new_prompt
+            original_prompt        = rec.get('prompt', '')
+            rec['prompt_original'] = original_prompt
+            rec['prompt']          = spatial_prompt + ' [SEP] ' + original_prompt
             fout.write(json.dumps(rec, ensure_ascii=False) + '\n')
             n_written += 1
 
