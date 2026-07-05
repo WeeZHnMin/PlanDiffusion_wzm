@@ -47,6 +47,7 @@ from transformers import BertTokenizer
 from .model import NodeDiffusionTransformer, _assign_room_membership_single
 from .diffusion import GaussianDiffusion
 from .eval_iou import TextCondGNN, load_vocab
+from text_graph_align.model import TextGraphAlign
 
 # ── 渲染常量（来自 render.py，内联以消除跨包依赖）─────────────────────────────
 ROOM_TYPE_ORDER = [
@@ -330,6 +331,76 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
     return x.squeeze(0).permute(1, 0).cpu().numpy()  # [N_NODES, 2]
 
 
+# ── DDPM 采样（CLIP 梯度引导）────────────────────────────────────────────────
+
+def sample_coords_clip_guided(
+        model, diffusion,
+        align_model,           # TextGraphAlign，已冻结
+        room_mb_np, adj_np, mask_np, ptok_np, pmsk_np,
+        device, seed=0, no_text=False,
+        guidance_scale=1.0) -> np.ndarray:
+    """
+    DDPM 1000步逆采样 + 推理时 CLIP 梯度引导。
+    每步在预测出 x̂₀ 后，用 text_graph_align 计算余弦距离梯度，
+    叠加到采样均值，把坐标往更符合文本描述的方向推。
+    返回 [N_NODES, 2]，归一化坐标。
+    """
+    import torch.nn.functional as F
+
+    room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)
+    mask    = torch.from_numpy(mask_np[None]).float().to(device)
+    ptok    = torch.from_numpy(ptok_np[None]).to(device)
+    pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)
+
+    diffusion._to(device)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+    x = torch.randn(1, 2, N_NODES, device=device, generator=g)
+
+    # 提前编码文本（只跑一次）
+    with torch.no_grad():
+        _ptok = None if no_text else ptok
+        _pmsk = None if no_text else pmsk
+        t_emb = align_model.text_enc(ptok, pmsk)   # [1, d_embed]，L2归一化
+
+    for t in reversed(range(diffusion.T)):
+        tb = torch.full((1,), t, device=device, dtype=torch.long)
+
+        with torch.no_grad():
+            eps = model(x, tb, mask,
+                        prompt_tokens=_ptok, prompt_mask=_pmsk,
+                        room_membership=room_mb, adj_matrix=adj)
+
+        ab = diffusion.alphas_bar[t]
+        ap = diffusion.alphas_bar_prev[t]
+
+        # 预测 x̂₀，开启梯度以便对其求 CLIP 梯度
+        x0 = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-5, 5)
+
+        if guidance_scale > 0:
+            x0_g = x0.detach().requires_grad_(True)
+            # x0_g: [1, 2, N] → permute → [1, N, 2] 喂 GraphEncoder
+            g_emb = align_model.graph_enc(
+                x0_g.permute(0, 2, 1), adj, mask, room_mb)  # [1, d_embed]
+            clip_loss = 1.0 - F.cosine_similarity(g_emb, t_emb).mean()
+            clip_loss.backward()
+            grad = x0_g.grad.detach()                        # [1, 2, N]
+            x0 = x0 - guidance_scale * grad
+            x0 = x0.detach().clamp(-5, 5)
+
+        a  = diffusion.alphas[t]
+        b_ = diffusion.betas[t]
+        mu = (ap.sqrt() * b_ / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
+        if t > 0:
+            x = mu + diffusion.posterior_variance[t].sqrt() * \
+                torch.randn(x.shape, device=device, generator=g)
+        else:
+            x = mu
+
+    return x.squeeze(0).permute(1, 0).cpu().numpy()  # [N_NODES, 2]
+
+
 # ── 参数 ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -343,6 +414,12 @@ def parse_args():
     p.add_argument('--seed',    type=int, default=42)
     p.add_argument('--gpu',     type=int, default=None)
     p.add_argument('--out',     default='outputs/visualize_gt_adj_room/result.png')
+    p.add_argument('--align_bert', default='',
+                   help='text_graph_align 训练好的 BERT 权重（bert_aligned_best.pt），留空则跳过')
+    p.add_argument('--align_ckpt', default='',
+                   help='完整 text_graph_align 模型路径（align_best.pt），用于 CLIP 梯度引导推理')
+    p.add_argument('--guidance_scale', type=float, default=1.0,
+                   help='CLIP 梯度引导强度，0=关闭，越大引导越强')
     p.add_argument('--no_text',      action='store_true',
                    help='推理时不传文本条件（text_feat 置零），纯图结构生成')
     p.add_argument('--use_type_model', action='store_true',
@@ -437,11 +514,32 @@ def main():
     ckpt  = torch.load(args.ckpt, map_location=device)
     model.load_state_dict(
         {k.replace('module.', ''): v for k, v in ckpt['model'].items()}, strict=False)
-    model.eval()
     print(f'  step={ckpt.get("step", "?")}')
     del ckpt
 
+    if args.align_bert:
+        bert_sd = torch.load(args.align_bert, map_location=device)
+        missing, unexpected = model.bert.load_state_dict(bert_sd, strict=False)
+        print(f'[align_bert] {args.align_bert}  missing={len(missing)}  unexpected={len(unexpected)}')
+
+    model.eval()
+
     diffusion = GaussianDiffusion(timesteps=1000)
+
+    # ── 加载 text_graph_align 模型（可选）────────────────────────────────────
+    align_model = None
+    if args.align_ckpt:
+        print(f'\n加载 text_graph_align: {args.align_ckpt}')
+        align_model = TextGraphAlign(bert_name=args.bert).to(device)
+        align_sd    = torch.load(args.align_ckpt, map_location=device)
+        raw_sd      = align_sd['model']
+        if any(k.startswith('module.') for k in raw_sd):
+            raw_sd = {k[7:]: v for k, v in raw_sd.items()}
+        align_model.load_state_dict(raw_sd, strict=False)
+        align_model.eval()
+        for p in align_model.parameters():
+            p.requires_grad_(False)
+        print(f'  step={align_sd.get("step", "?")}  guidance_scale={args.guidance_scale}')
 
     # ── DDPM 采样 ─────────────────────────────────────────────────────────────
     for rec in records:
@@ -453,7 +551,19 @@ def main():
             device, seed=rec['idx'], no_text=args.no_text,
         )   # [40, 2]
 
-    del model
+    # ── DDPM 采样（CLIP 引导）─────────────────────────────────────────────────
+    if align_model is not None:
+        for rec in records:
+            print(f'  DDPM+CLIP引导 1000步  idx={rec["idx"]}...', flush=True)
+            rec['pred_coords_clip'] = sample_coords_clip_guided(
+                model, diffusion, align_model,
+                rec['room_mb_np'], rec['adj_np'],
+                rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
+                device, seed=rec['idx'], no_text=args.no_text,
+                guidance_scale=args.guidance_scale,
+            )   # [40, 2]
+
+    del model, align_model
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
@@ -493,12 +603,15 @@ def main():
             torch.cuda.empty_cache()
 
     # ── 绘图 ──────────────────────────────────────────────────────────────────
-    B = len(records)
-    print(f'\n绘制 {B} × 5 图...')
-    COL_W = [4.2, 2.6, 2.8, 2.6, 2.8]
+    has_clip  = 'pred_coords_clip' in records[0]
+    n_cols    = 7 if has_clip else 5
+    B         = len(records)
+    print(f'\n绘制 {B} × {n_cols} 图...')
+
+    COL_W = [4.2, 2.6, 2.8, 2.6, 2.8] + ([2.6, 2.8] if has_clip else [])
     ROW_H = 2.7
     fig, axes = plt.subplots(
-        B, 5,
+        B, n_cols,
         figsize=(sum(COL_W) + 0.2, B * ROW_H + 0.55),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
@@ -508,22 +621,26 @@ def main():
 
     for row_i, rec in enumerate(records):
         axs = axes[row_i]
+        pred_types = rec.get('pred_node_types', rec['node_types'])
         draw_col1_text   (axs[0], rec['text'])
         draw_col2_adj    (axs[1], rec['adj_np'], rec['n_nodes'], seed=args.seed)
         draw_col4_render (axs[2], rec['gt_coords_np'], rec['adj_np'],
                           rec['mask_np'], rec['node_types'])
         draw_col3_coords (axs[3], rec['pred_coords'], rec['adj_np'], rec['mask_np'])
-        pred_types_for_render = rec.get('pred_node_types', rec['node_types'])
         draw_col4_render (axs[4], rec['pred_coords'], rec['adj_np'],
-                          rec['mask_np'], pred_types_for_render)
+                          rec['mask_np'], pred_types)
+        if has_clip:
+            draw_col3_coords (axs[5], rec['pred_coords_clip'], rec['adj_np'], rec['mask_np'])
+            draw_col4_render (axs[6], rec['pred_coords_clip'], rec['adj_np'],
+                              rec['mask_np'], pred_types)
 
-    col_titles = ['Text Description',
-                  'GT Adjacency Graph',
-                  'GT Floor Plan',
-                  r'$\theta_2$: Predicted Coords',
-                  'Predicted Floor Plan']
+    col_titles = ['Text', 'GT Adj', 'GT Floor Plan',
+                  r'$\theta_2$ Pred', 'Pred Floor Plan']
+    if has_clip:
+        col_titles += [f'CLIP(s={args.guidance_scale}) Pred',
+                       'CLIP Floor Plan']
     for j, title in enumerate(col_titles):
-        axes[0][j].set_title(title, fontsize=13, fontweight='bold', pad=5)
+        axes[0][j].set_title(title, fontsize=11, fontweight='bold', pad=5)
 
     for row_i, rec in enumerate(records):
         axes[row_i][0].set_ylabel(f"#{rec['idx']}", fontsize=6, labelpad=2)

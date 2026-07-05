@@ -33,6 +33,7 @@ from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .eval_iou import coords_to_polys_by_type, compute_iou, center_at_origin
+from text_graph_align.model import TextGraphAlign
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
@@ -66,9 +67,61 @@ def _ddim_sample(model, diffusion, cond_batched, device, ddim_steps=200):
     return x   # [B, 2, MAX_NODES]
 
 
+# ── DDIM 推理（CLIP 梯度引导版，验证用）──────────────────────────────────────
+
+def _ddim_sample_clip_guided(model, diffusion, align_model,
+                              cond_batched, device, ddim_steps=200,
+                              guidance_scale=1.0):
+    import torch.nn.functional as F
+    diffusion._to(device)
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+    B  = next(iter(cond_batched.values())).shape[0]
+    x  = torch.randn(B, 2, MAX_NODES, device=device)
+
+    with torch.no_grad():
+        text_feat, text_mask = model.encode_text(
+            cond_batched['prompt_tokens'], cond_batched.get('prompt_mask'))
+        # align_model 文本编码，只跑一次
+        ptok = cond_batched['prompt_tokens']
+        pmsk = cond_batched['prompt_mask'].long()
+        t_emb = align_model.text_enc(ptok, pmsk)   # [B, d_embed]
+
+    extra = {k: v for k, v in cond_batched.items()
+             if k not in ('prompt_tokens', 'prompt_mask')}
+    extra['text_feat'] = text_feat
+    extra['text_mask'] = text_mask
+
+    for i, t in enumerate(ts):
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+        with torch.no_grad():
+            eps = model(x, t_tensor, **extra)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        # CLIP 梯度引导
+        x0_g = x0.detach().requires_grad_(True)
+        g_emb = align_model.graph_enc(
+            x0_g.permute(0, 2, 1),              # [B, N, 2]
+            extra['adj_matrix'],
+            extra['node_mask'],
+            extra['room_membership'],
+        )                                        # [B, d_embed]
+        loss = (1.0 - F.cosine_similarity(g_emb, t_emb)).mean()
+        loss.backward()
+        x0 = (x0 - guidance_scale * x0_g.grad.detach()).clamp(-5, 5)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+    return x.detach()   # [B, 2, MAX_NODES]
+
+
 # ── 验证函数（IoU）───────────────────────────────────────────────────────────
 
-def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file):
+def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_file,
+             align_model=None):
     raw_model = model.module if hasattr(model, 'module') else model
     raw_model.eval()
 
@@ -111,41 +164,62 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
             "adj_list": adj_list, "gt_polys": gt_polys, "gt_node_types": gt_node_types,
         })
 
-    micro_list, macro_list = [], []
+    def _eval_chunks(sample_fn):
+        micro_l, macro_l = [], []
+        for bi in range(0, len(prepared), BS):
+            chunk  = prepared[bi: bi + BS]
+            B      = len(chunk)
+            cond_b = {
+                "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+                "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+                "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+                "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+                "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+            }
+            pred_xy = sample_fn(cond_b, B)
+            for j in range(B):
+                s        = chunk[j]
+                n        = s["n"]
+                pred_np  = pred_xy[j].cpu().numpy().T * 160.0
+                pred_cen = center_at_origin(pred_np, s["mask_np"])
+                pred_polys = coords_to_polys_by_type(
+                    pred_cen[:n], s["adj_list"], s["gt_node_types"], n)
+                micro, macro = compute_iou(s["gt_polys"], pred_polys)
+                micro_l.append(micro); macro_l.append(macro)
+        return (float(np.mean(micro_l)) if micro_l else 0.0,
+                float(np.mean(macro_l)) if macro_l else 0.0,
+                len(micro_l))
+
     BS = args.val_batch
     t0 = time.perf_counter()
-    for bi in range(0, len(prepared), BS):
-        chunk = prepared[bi: bi + BS]
-        B = len(chunk)
-        cond_b = {
-            "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
-            "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
-            "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
-            "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
-            "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
-        }
-        pred_xy = _ddim_sample(raw_model, diffusion, cond_b, device, args.ddim_steps)
-        for j in range(B):
-            s       = chunk[j]
-            n       = s["n"]
-            pred_np = pred_xy[j].cpu().numpy().T * 160.0  # 反归一化到原始坐标尺度
-            pred_cen = center_at_origin(pred_np, s["mask_np"])
-            pred_polys = coords_to_polys_by_type(
-                pred_cen[:n], s["adj_list"], s["gt_node_types"], n)
-            micro, macro = compute_iou(s["gt_polys"], pred_polys)
-            micro_list.append(micro)
-            macro_list.append(macro)
 
-    micro_iou = float(np.mean(micro_list)) if micro_list else 0.0
-    macro_iou = float(np.mean(macro_list)) if macro_list else 0.0
-    elapsed   = time.perf_counter() - t0
-    print(f"[val step {step:6d}] n={len(micro_list)} | "
+    # ── 标准 DDIM ─────────────────────────────────────────────────────────────
+    micro_iou, macro_iou, n_eval = _eval_chunks(
+        lambda cond_b, _: _ddim_sample(raw_model, diffusion, cond_b, device, args.ddim_steps)
+    )
+    elapsed = time.perf_counter() - t0
+    print(f"[val step {step:6d}] n={n_eval} | "
           f"micro_iou={micro_iou:.4f}  macro_iou={macro_iou:.4f} | {elapsed:.1f}s")
-    log_file.write(json.dumps({'step': step,
-                               'micro_iou': round(micro_iou, 4),
-                               'macro_iou': round(macro_iou, 4),
-                               'elapsed_val': round(elapsed, 1)}) + '\n')
+    log_entry = {'step': step,
+                 'micro_iou': round(micro_iou, 4),
+                 'macro_iou': round(macro_iou, 4),
+                 'elapsed_val': round(elapsed, 1)}
 
+    # ── CLIP 引导 DDIM（可选）────────────────────────────────────────────────
+    if align_model is not None:
+        t1 = time.perf_counter()
+        micro_clip, macro_clip, _ = _eval_chunks(
+            lambda cond_b, _: _ddim_sample_clip_guided(
+                raw_model, diffusion, align_model, cond_b, device,
+                args.ddim_steps, args.guidance_scale)
+        )
+        elapsed_clip = time.perf_counter() - t1
+        print(f"  [clip guided  s={args.guidance_scale}] "
+              f"micro_iou={micro_clip:.4f}  macro_iou={macro_clip:.4f} | {elapsed_clip:.1f}s")
+        log_entry['micro_iou_clip'] = round(micro_clip, 4)
+        log_entry['macro_iou_clip'] = round(macro_clip, 4)
+
+    log_file.write(json.dumps(log_entry) + '\n')
     raw_model.train()
     return micro_iou
 
@@ -179,6 +253,12 @@ def build_parser(defaults=None):
     parser.add_argument("--val_n",        type=int, default=defaults.get("val_n",        224))
     parser.add_argument("--ddim_steps",   type=int, default=defaults.get("ddim_steps",   200))
     parser.add_argument("--val_batch",    type=int, default=defaults.get("val_batch",    16))
+    parser.add_argument("--align_bert",    default=defaults.get("align_bert", ""),
+                        help="text_graph_align 训练好的 BERT 权重（bert_aligned_best.pt），留空则跳过")
+    parser.add_argument("--align_ckpt",   default=defaults.get("align_ckpt", ""),
+                        help="完整 text_graph_align 模型（align_best.pt），用于验证时 CLIP 引导 DDIM")
+    parser.add_argument("--guidance_scale", type=float, default=defaults.get("guidance_scale", 1.0),
+                        help="CLIP 梯度引导强度")
     return parser
 
 
@@ -223,6 +303,12 @@ def main(argv=None, defaults=None):
         unfreeze_layers=args.unfreeze_layers,
     ).to(device)
 
+    if args.align_bert:
+        bert_sd = torch.load(args.align_bert, map_location=device)
+        missing, unexpected = model.bert.load_state_dict(bert_sd, strict=False)
+        if is_master:
+            print(f"[align_bert] {args.align_bert}  missing={len(missing)}  unexpected={len(unexpected)}")
+
     diffusion = GaussianDiffusion(timesteps=args.timesteps)
     no_decay = {'bias', 'norm', 'LayerNorm'}
     opt = AdamW(
@@ -266,6 +352,20 @@ def main(argv=None, defaults=None):
     if use_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,
                     find_unused_parameters=False)
+
+    # ── 加载 text_graph_align（CLIP 引导验证，可选）──────────────────────────
+    align_model = None
+    if is_master and args.align_ckpt:
+        align_model = TextGraphAlign(bert_name=args.bert).to(device)
+        align_sd    = torch.load(args.align_ckpt, map_location=device)
+        raw_sd_a    = align_sd['model']
+        if any(k.startswith('module.') for k in raw_sd_a):
+            raw_sd_a = {k[7:]: v for k, v in raw_sd_a.items()}
+        align_model.load_state_dict(raw_sd_a, strict=False)
+        align_model.eval()
+        for p in align_model.parameters():
+            p.requires_grad_(False)
+        print(f"[align_ckpt] CLIP 引导验证已启用  guidance_scale={args.guidance_scale}")
 
     # ── 预加载验证集（仅 master）─────────────────────────────────────────────
     val_records   = []
@@ -352,7 +452,7 @@ def main(argv=None, defaults=None):
 
         if is_master and val_records and step > 0 and step % args.val_interval == 0:
             mse = _run_val(model, diffusion, val_tokenizer, val_records,
-                           args, device, step, log_file)
+                           args, device, step, log_file, align_model=align_model)
             if mse > best_val_iou:
                 best_val_iou = mse
                 raw_model = model.module if use_ddp else model
