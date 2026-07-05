@@ -169,9 +169,10 @@ def main():
             rec = json.loads(line)
             n   = int(rec['n_nodes'])
 
-            new_prompt    = generate_prompt(
+            new_prompt             = generate_prompt(
                 rec['node_types'], rec['node_coords'], rec['adj_matrix'], n)
-            rec['prompt'] = new_prompt
+            rec['prompt_original'] = rec.get('prompt', '')
+            rec['prompt']          = new_prompt
             fout.write(json.dumps(rec, ensure_ascii=False) + '\n')
             n_written += 1
 
