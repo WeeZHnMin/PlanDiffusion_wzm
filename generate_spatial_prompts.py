@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from transformers import BertTokenizer
 
 # ── 房间类型优先级与显示名 ─────────────────────────────────────────────────────
 TYPE_PRIORITY = ['living_room', 'kitchen', 'bedroom', 'corridor', 'bathroom']
@@ -151,14 +152,19 @@ def main():
     parser.add_argument('--input',   default='data/jsonl/final_graph_dataset_v3.jsonl')
     parser.add_argument('--output',  default='data/jsonl/final_graph_dataset_v3_spatial.jsonl')
     parser.add_argument('--preview', type=int, default=5, help='打印前 N 条对比，0=不打印')
+    parser.add_argument('--bert',    default='models/bert-base-uncased')
+    parser.add_argument('--stats',   action='store_true', help='统计 token 长度分布')
     args = parser.parse_args()
 
     in_path  = Path(args.input)
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    tokenizer = BertTokenizer.from_pretrained(args.bert) if args.stats else None
+
     t0 = time.perf_counter()
     n_written = 0
+    token_lens = []
 
     with open(in_path, encoding='utf-8') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
@@ -172,14 +178,18 @@ def main():
             spatial_prompt         = generate_prompt(
                 rec['node_types'], rec['node_coords'], rec['adj_matrix'], n)
             original_prompt        = rec.get('prompt', '')
+            full_prompt            = spatial_prompt + ' [SEP] ' + original_prompt
             rec['prompt_original'] = original_prompt
-            rec['prompt']          = spatial_prompt + ' [SEP] ' + original_prompt
+            rec['prompt']          = full_prompt
             fout.write(json.dumps(rec, ensure_ascii=False) + '\n')
             n_written += 1
 
+            if tokenizer is not None:
+                token_lens.append(len(tokenizer(full_prompt)['input_ids']))
+
             if args.preview > 0 and line_no < args.preview:
                 print(f'=== sample {line_no} (n={n}) ===')
-                print(new_prompt)
+                print(full_prompt)
                 print()
 
             if (line_no + 1) % 10000 == 0:
@@ -188,6 +198,12 @@ def main():
 
     elapsed = time.perf_counter() - t0
     print(f'完成: {n_written} 条 -> {out_path}  ({elapsed:.1f}s)')
+
+    if token_lens:
+        arr = np.array(token_lens)
+        print(f'\nToken 长度统计 ({n_written} 条):')
+        print(f'  mean={arr.mean():.1f}  median={np.median(arr):.0f}')
+        print(f'  p95={np.percentile(arr, 95):.0f}  p99={np.percentile(arr, 99):.0f}  max={arr.max()}')
 
 
 if __name__ == '__main__':
