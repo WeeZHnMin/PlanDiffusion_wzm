@@ -128,7 +128,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         for j in range(B):
             s       = chunk[j]
             n       = s["n"]
-            pred_np = pred_xy[j].cpu().numpy().T          # [MAX_NODES, 2]
+            pred_np = pred_xy[j].cpu().numpy().T * 160.0  # 反归一化到原始坐标尺度
             pred_cen = center_at_origin(pred_np, s["mask_np"])
             pred_polys = coords_to_polys_by_type(
                 pred_cen[:n], s["adj_list"], s["gt_node_types"], n)
@@ -333,10 +333,11 @@ def main(argv=None, defaults=None):
             elapsed  = time.perf_counter() - t0
             t0       = time.perf_counter()
 
-            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | {elapsed:.1f}s")
+            avg_rmse_px = avg_rmse * 160.0
+            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse_px:.2f} px | {elapsed:.1f}s")
             log_file.write(json.dumps({
                 'step': step, 'loss': round(avg_loss, 4),
-                'coord_rmse': round(avg_rmse, 2),
+                'coord_rmse': round(avg_rmse_px, 2),
                 'elapsed': round(elapsed, 1),
             }) + '\n')
 
