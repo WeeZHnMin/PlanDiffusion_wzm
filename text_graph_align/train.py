@@ -203,15 +203,12 @@ def main():
             t0 = time.perf_counter()
 
         if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
-            ckpt_path = save_dir / f'align_step{step+1:06d}.pt'
             torch.save({'step': step, 'model': raw_model.state_dict(),
-                        'opt': opt.state_dict()}, ckpt_path)
-            torch.save({'step': step, 'model': raw_model.state_dict()},
+                        'opt': opt.state_dict()},
                        save_dir / 'align_latest.pt')
-            # 单独保存 BERT 权重，供扩散模型直接加载
             torch.save(raw_model.text_enc.bert.state_dict(),
-                       save_dir / 'bert_aligned.pt')
-            print(f"saved -> {ckpt_path}  bert_aligned.pt")
+                       save_dir / 'bert_aligned_latest.pt')
+            print(f"saved latest (step {step+1})")
 
         if val_loader and (step + 1) % args.val_every == 0:
             v_loss, v_g2t, v_t2g = run_val(raw_model, val_loader, device)
