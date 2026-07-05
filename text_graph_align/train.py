@@ -130,8 +130,16 @@ def main():
 
     start_step = 0
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt['model'])
+        ckpt   = torch.load(args.resume, map_location=device)
+        raw_sd = ckpt['model']
+        # 去掉 DataParallel 保存时可能带的 module. 前缀
+        if any(k.startswith('module.') for k in raw_sd):
+            raw_sd = {k[7:]: v for k, v in raw_sd.items()}
+        missing, unexpected = raw_model.load_state_dict(raw_sd, strict=False)
+        if missing:
+            print(f"[resume] missing keys ({len(missing)}): {missing[:3]}")
+        if unexpected:
+            print(f"[resume] unexpected keys ({len(unexpected)}): {unexpected[:3]}")
         opt.load_state_dict(ckpt['opt'])
         start_step = ckpt['step'] + 1
         print(f"resumed from step {start_step}")
