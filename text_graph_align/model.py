@@ -61,21 +61,23 @@ class FeedForward(nn.Module):
 
 
 class GraphEncoderLayer(nn.Module):
-    """adj_attn（直接相邻）+ global_attn（全局）双流。"""
+    """adj_attn（直接相邻）+ room_attn（同环）+ global_attn（全局）三流。"""
 
     def __init__(self, d_model, heads, dropout=0.1):
         super().__init__()
         self.norm1       = nn.LayerNorm(d_model)
         self.norm2       = nn.LayerNorm(d_model)
         self.adj_attn    = MultiHeadAttention(heads, d_model, dropout)
+        self.room_attn   = MultiHeadAttention(heads, d_model, dropout)
         self.global_attn = MultiHeadAttention(heads, d_model, dropout)
         self.ff          = FeedForward(d_model, dropout)
         self.dropout     = nn.Dropout(dropout)
 
-    def forward(self, x, adj_mask, pad_mask):
+    def forward(self, x, adj_mask, room_mask, pad_mask):
         x2 = self.norm1(x)
         x  = x + self.dropout(
-            self.adj_attn   (x2, x2, x2, adj_mask) +
+            self.adj_attn   (x2, x2, x2, adj_mask)  +
+            self.room_attn  (x2, x2, x2, room_mask) +
             self.global_attn(x2, x2, x2, pad_mask)
         )
         x2 = self.norm2(x)
@@ -105,21 +107,28 @@ class GraphEncoder(nn.Module):
             nn.Linear(d_model, d_embed),
         )
 
-    def _build_masks(self, adj_matrix, node_mask):
+    def _build_masks(self, adj_matrix, node_mask, room_membership):
         dt  = adj_matrix.dtype
         nm  = node_mask.to(dt)
+        pad_msk = (1 - nm).unsqueeze(1)                                   # [B, 1, N]
+
         eye = torch.eye(adj_matrix.shape[1], device=adj_matrix.device, dtype=dt).unsqueeze(0)
         adj_msk = torch.clamp(1 - (adj_matrix + eye).clamp(0, 1) +
-                              (1 - nm).unsqueeze(1), 0, 1)   # [B, N, N]
-        pad_msk = (1 - nm).unsqueeze(1)                      # [B, 1, N]
-        return adj_msk, pad_msk
+                              pad_msk, 0, 1)                               # [B, N, N]
 
-    def forward(self, node_coords, adj_matrix, node_mask):
-        seq = self.node_input(node_coords.float())            # [B, N, d]
-        adj_msk, pad_msk = self._build_masks(adj_matrix.float(), node_mask.float())
+        room_nn   = torch.bmm(room_membership.to(dt),
+                              room_membership.to(dt).transpose(1, 2))     # [B, N, N]
+        room_msk  = torch.clamp((room_nn == 0).to(dt) + pad_msk, 0, 1)   # [B, N, N]
+
+        return adj_msk, room_msk, pad_msk
+
+    def forward(self, node_coords, adj_matrix, node_mask, room_membership):
+        seq = self.node_input(node_coords.float())
+        adj_msk, room_msk, pad_msk = self._build_masks(
+            adj_matrix.float(), node_mask.float(), room_membership.float())
         for layer in self.layers:
-            seq = layer(seq, adj_msk, pad_msk)
-        nm     = node_mask.float().unsqueeze(-1)              # [B, N, 1]
+            seq = layer(seq, adj_msk, room_msk, pad_msk)
+        nm     = node_mask.float().unsqueeze(-1)
         pooled = (seq * nm).sum(dim=1) / nm.sum(dim=1).clamp(min=1)
         return F.normalize(self.proj(pooled), dim=-1)
 
@@ -212,17 +221,17 @@ class TextGraphAlign(nn.Module):
               f"bert={t_total/1e6:.2f}M(trainable={t_train/1e6:.2f}M)  "
               f"d_embed={d_embed}  d_model={d_model}  layers={num_layers}")
 
-    def forward(self, node_coords, adj_matrix, node_mask, prompt_tokens, prompt_mask):
-        g = self.graph_enc(node_coords, adj_matrix, node_mask)
+    def forward(self, node_coords, adj_matrix, node_mask, room_membership,
+                prompt_tokens, prompt_mask):
+        g = self.graph_enc(node_coords, adj_matrix, node_mask, room_membership)
         t = self.text_enc(prompt_tokens, prompt_mask)
         loss, _, _ = clip_loss(g, t, self.logit_scale)
-        return loss   # DataParallel 只 gather 单个 tensor
+        return loss
 
     @torch.no_grad()
-    def compute_metrics(self, node_coords, adj_matrix, node_mask,
+    def compute_metrics(self, node_coords, adj_matrix, node_mask, room_membership,
                         prompt_tokens, prompt_mask):
-        """单独计算 accuracy，供 raw_model 调用（不经过 DataParallel）。"""
-        g = self.graph_enc(node_coords, adj_matrix, node_mask)
+        g = self.graph_enc(node_coords, adj_matrix, node_mask, room_membership)
         t = self.text_enc(prompt_tokens, prompt_mask)
         _, acc_g2t, acc_t2g = clip_loss(g, t, self.logit_scale)
         return acc_g2t.item(), acc_t2g.item()

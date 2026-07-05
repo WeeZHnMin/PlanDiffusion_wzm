@@ -72,10 +72,11 @@ def run_val(raw_model, val_loader, device):
             coords  = batch['node_coords'].to(device)
             adj     = batch['adj_matrix'].to(device)
             mask    = batch['node_mask'].to(device)
+            member  = batch['room_membership'].to(device)
             ptok    = batch['prompt_tokens'].to(device)
             pmsk    = batch['prompt_mask'].to(device)
-            loss                = raw_model(coords, adj, mask, ptok, pmsk)
-            acc_g2t, acc_t2g   = raw_model.compute_metrics(coords, adj, mask, ptok, pmsk)
+            loss             = raw_model(coords, adj, mask, member, ptok, pmsk)
+            acc_g2t, acc_t2g = raw_model.compute_metrics(coords, adj, mask, member, ptok, pmsk)
             total_loss += loss.item()
             total_g2t  += acc_g2t
             total_t2g  += acc_t2g
@@ -159,12 +160,13 @@ def main():
         coords  = batch['node_coords'].to(device)
         adj     = batch['adj_matrix'].to(device)
         mask    = batch['node_mask'].to(device)
+        member  = batch['room_membership'].to(device)
         ptok    = batch['prompt_tokens'].to(device)
         pmsk    = batch['prompt_mask'].to(device)
 
         opt.zero_grad()
         with torch.amp.autocast('cuda'):
-            loss = model(coords, adj, mask, ptok, pmsk)
+            loss = model(coords, adj, mask, member, ptok, pmsk)
 
         scaler.scale(loss.mean()).backward()
         scaler.unscale_(opt)
@@ -174,13 +176,12 @@ def main():
         scaler.update()
 
         loss_acc += loss.mean().item()
-        # accuracy：每 log_every 步算一次，用 raw_model 避免 DataParallel 干扰
         if (step + 1) % args.log_every == 0:
             with torch.no_grad():
                 a_g2t, a_t2g = raw_model.compute_metrics(
-                    coords[:64].to(device), adj[:64].to(device),
-                    mask[:64].to(device),   ptok[:64].to(device),
-                    pmsk[:64].to(device))
+                    coords[:64].to(device),  adj[:64].to(device),
+                    mask[:64].to(device),    member[:64].to(device),
+                    ptok[:64].to(device),    pmsk[:64].to(device))
             g2t_acc += a_g2t
             t2g_acc += a_t2g
 
