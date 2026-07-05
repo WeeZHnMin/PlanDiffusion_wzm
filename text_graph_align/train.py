@@ -26,7 +26,7 @@ import torch.nn as nn
 from .dataset import load_align_data
 from .model   import TextGraphAlign
 
-VAL_SAMPLES = 4096
+VAL_SAMPLES = 0  # 0 = 跑完整个验证集
 
 
 def build_parser():
@@ -82,8 +82,6 @@ def run_val(raw_model, val_loader, device):
             total_t2g  += acc_t2g
             n_samples  += mask.shape[0]
             n_batches  += 1
-            if n_samples >= VAL_SAMPLES:
-                break
     raw_model.train()
     nb = max(n_batches, 1)
     return total_loss / nb, total_g2t / nb, total_t2g / nb
@@ -104,7 +102,7 @@ def main():
     val_loader = None
     if args.val:
         _, val_loader = load_align_data(args.val, batch_size=64,
-                                        shuffle=False, num_workers=args.workers)
+                                        shuffle=True, num_workers=args.workers)
 
     raw_model = TextGraphAlign(
         bert_name       = args.bert,
