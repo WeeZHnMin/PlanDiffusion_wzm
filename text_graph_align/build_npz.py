@@ -44,7 +44,7 @@ import numpy as np
 from transformers import BertTokenizer
 
 MAX_NODES    = 40
-MAX_TEXT_LEN = 192
+MAX_TEXT_LEN = 224  # p99=205，224 覆盖绝大多数，超出直接丢弃
 
 
 def parse_args():
