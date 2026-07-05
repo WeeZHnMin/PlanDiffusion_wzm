@@ -104,7 +104,7 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, augment=1, rng=None):
             n_graphs += 1
 
             # 坐标
-            raw_coords = rec['node_coords'][:n]
+            raw_coords = np.array(rec['node_coords'][:n], dtype=np.float32) / 160.0
             coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32)
             coords_pad[:n] = raw_coords
 
