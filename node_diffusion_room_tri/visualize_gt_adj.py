@@ -331,6 +331,100 @@ def sample_coords(model, diffusion, room_mb_np: np.ndarray, adj_np: np.ndarray,
     return x.squeeze(0).permute(1, 0).cpu().numpy()  # [N_NODES, 2]
 
 
+# ── DDIM 采样 ─────────────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def sample_coords_ddim(model, diffusion, room_mb_np, adj_np, mask_np,
+                       ptok_np, pmsk_np, device, seed=0,
+                       no_text=False, ddim_steps=200) -> np.ndarray:
+    """DDIM 逆采样，返回 [N_NODES, 2]。"""
+    room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)
+    mask    = torch.from_numpy(mask_np[None]).float().to(device)
+    ptok    = torch.from_numpy(ptok_np[None]).to(device)
+    pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)
+
+    diffusion._to(device)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+    x = torch.randn(1, 2, N_NODES, device=device, generator=g)
+
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+    _ptok = None if no_text else ptok
+    _pmsk = None if no_text else pmsk
+
+    # 预计算文本特征
+    text_feat, text_mask = model.encode_text(ptok, pmsk)
+    extra = dict(node_mask=mask, room_membership=room_mb, adj_matrix=adj,
+                 text_feat=text_feat, text_mask=text_mask)
+
+    for i, t in enumerate(ts):
+        tb  = torch.full((1,), t, device=device, dtype=torch.long)
+        eps = model(x, tb, **extra)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+
+    return x.squeeze(0).permute(1, 0).cpu().numpy()  # [N_NODES, 2]
+
+
+# ── DDIM 采样（CLIP 梯度引导）────────────────────────────────────────────────
+
+def sample_coords_ddim_clip_guided(
+        model, diffusion, align_model,
+        room_mb_np, adj_np, mask_np, ptok_np, pmsk_np,
+        device, seed=0, no_text=False,
+        ddim_steps=200, guidance_scale=1.0) -> np.ndarray:
+    """DDIM + CLIP 梯度引导，返回 [N_NODES, 2]。"""
+    import torch.nn.functional as F
+
+    room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)
+    mask    = torch.from_numpy(mask_np[None]).float().to(device)
+    ptok    = torch.from_numpy(ptok_np[None]).to(device)
+    pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)
+
+    diffusion._to(device)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+    x = torch.randn(1, 2, N_NODES, device=device, generator=g)
+
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+
+    with torch.no_grad():
+        text_feat, text_mask = model.encode_text(ptok, pmsk)
+        t_emb = align_model.text_enc(ptok, pmsk)
+
+    extra = dict(node_mask=mask, room_membership=room_mb, adj_matrix=adj,
+                 text_feat=text_feat, text_mask=text_mask)
+
+    for i, t in enumerate(ts):
+        tb = torch.full((1,), t, device=device, dtype=torch.long)
+        with torch.no_grad():
+            eps = model(x, tb, **extra)
+        ab_t = diffusion.alphas_bar[t]
+        x0   = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        if guidance_scale > 0:
+            x0_g = x0.detach().requires_grad_(True)
+            g_emb = align_model.graph_enc(x0_g.permute(0, 2, 1), adj, mask, room_mb)
+            loss  = 1.0 - F.cosine_similarity(g_emb, t_emb).mean()
+            loss.backward()
+            x0 = (x0 - guidance_scale * x0_g.grad.detach()).clamp(-5, 5)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+
+    return x.detach().squeeze(0).permute(1, 0).cpu().numpy()  # [N_NODES, 2]
+
+
 # ── DDPM 采样（CLIP 梯度引导）────────────────────────────────────────────────
 
 def sample_coords_clip_guided(
@@ -420,6 +514,10 @@ def parse_args():
                    help='完整 text_graph_align 模型路径（align_best.pt），用于 CLIP 梯度引导推理')
     p.add_argument('--guidance_scale', type=float, default=1.0,
                    help='CLIP 梯度引导强度，0=关闭，越大引导越强')
+    p.add_argument('--sampler',     default='ddim', choices=['ddpm', 'ddim'],
+                   help='采样器：ddpm=1000步DDPM，ddim=DDIM（步数由--ddim_steps指定）')
+    p.add_argument('--ddim_steps', type=int, default=200,
+                   help='DDIM 步数（--sampler ddim 时生效）')
     p.add_argument('--no_text',      action='store_true',
                    help='推理时不传文本条件（text_feat 置零），纯图结构生成')
     p.add_argument('--use_type_model', action='store_true',
@@ -541,27 +639,48 @@ def main():
             p.requires_grad_(False)
         print(f'  step={align_sd.get("step", "?")}  guidance_scale={args.guidance_scale}')
 
-    # ── DDPM 采样 ─────────────────────────────────────────────────────────────
+    # ── 采样 ──────────────────────────────────────────────────────────────────
+    use_ddim  = args.sampler == 'ddim'
+    step_desc = f'DDIM {args.ddim_steps}步' if use_ddim else 'DDPM 1000步'
     for rec in records:
-        print(f'  DDPM 1000步  idx={rec["idx"]}...', flush=True)
-        rec['pred_coords'] = sample_coords(
-            model, diffusion,
-            rec['room_mb_np'], rec['adj_np'],
-            rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
-            device, seed=rec['idx'], no_text=args.no_text,
-        )   # [40, 2]
-
-    # ── DDPM 采样（CLIP 引导）─────────────────────────────────────────────────
-    if align_model is not None:
-        for rec in records:
-            print(f'  DDPM+CLIP引导 1000步  idx={rec["idx"]}...', flush=True)
-            rec['pred_coords_clip'] = sample_coords_clip_guided(
-                model, diffusion, align_model,
+        print(f'  {step_desc}  idx={rec["idx"]}...', flush=True)
+        if use_ddim:
+            rec['pred_coords'] = sample_coords_ddim(
+                model, diffusion,
                 rec['room_mb_np'], rec['adj_np'],
                 rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
                 device, seed=rec['idx'], no_text=args.no_text,
-                guidance_scale=args.guidance_scale,
-            )   # [40, 2]
+                ddim_steps=args.ddim_steps,
+            )
+        else:
+            rec['pred_coords'] = sample_coords(
+                model, diffusion,
+                rec['room_mb_np'], rec['adj_np'],
+                rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
+                device, seed=rec['idx'], no_text=args.no_text,
+            )
+
+    # ── 采样（CLIP 引导）──────────────────────────────────────────────────────
+    if align_model is not None:
+        for rec in records:
+            print(f'  {step_desc}+CLIP引导  idx={rec["idx"]}...', flush=True)
+            if use_ddim:
+                rec['pred_coords_clip'] = sample_coords_ddim_clip_guided(
+                    model, diffusion, align_model,
+                    rec['room_mb_np'], rec['adj_np'],
+                    rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
+                    device, seed=rec['idx'], no_text=args.no_text,
+                    ddim_steps=args.ddim_steps,
+                    guidance_scale=args.guidance_scale,
+                )
+            else:
+                rec['pred_coords_clip'] = sample_coords_clip_guided(
+                    model, diffusion, align_model,
+                    rec['room_mb_np'], rec['adj_np'],
+                    rec['mask_np'], rec['ptok_np'], rec['pmsk_np'],
+                    device, seed=rec['idx'], no_text=args.no_text,
+                    guidance_scale=args.guidance_scale,
+                )
 
     del model, align_model
     if device.type == 'cuda':
