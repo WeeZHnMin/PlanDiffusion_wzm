@@ -727,11 +727,11 @@ def main():
     B         = len(records)
     print(f'\n绘制 {B} × {n_cols} 图...')
 
-    COL_W = [4.2, 2.6, 2.8, 2.6, 2.8] + ([2.6, 2.8] if has_clip else [])
-    ROW_H = 2.7
+    COL_W = [5.0, 3.2, 3.4, 3.2, 3.4] + ([3.2, 3.4] if has_clip else [])
+    ROW_H = 3.4
     fig, axes = plt.subplots(
         B, n_cols,
-        figsize=(sum(COL_W) + 0.2, B * ROW_H + 0.55),
+        figsize=(sum(COL_W) + 0.4, B * ROW_H + 0.8),
         gridspec_kw={'width_ratios': COL_W},
         constrained_layout=True,
     )
