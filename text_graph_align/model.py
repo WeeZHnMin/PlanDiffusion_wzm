@@ -1,7 +1,7 @@
 """
 TextGraphAlign: CLIP 风格对比预训练
 
-GraphEncoder : node_coords + adj_matrix → adj_attn + global_attn → mean pool → MLP投影头 → L2归一化
+GraphEncoder : node_coords + adj_matrix → adj_attn + global_attn → attention pool → MLP投影头 → L2归一化
 TextEncoder  : BERT（解冻最后 unfreeze_layers 层）→ CLS token → MLP投影头 → L2归一化
 """
 
@@ -100,6 +100,7 @@ class GraphEncoder(nn.Module):
         self.layers     = nn.ModuleList(
             [GraphEncoderLayer(d_model, num_heads, dropout) for _ in range(num_layers)]
         )
+        self.pool_attn = nn.Linear(d_model, 1)
         self.proj = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
@@ -128,8 +129,10 @@ class GraphEncoder(nn.Module):
             adj_matrix.float(), node_mask.float(), room_membership.float())
         for layer in self.layers:
             seq = layer(seq, adj_msk, room_msk, pad_msk)
-        nm     = node_mask.float().unsqueeze(-1)
-        pooled = (seq * nm).sum(dim=1) / nm.sum(dim=1).clamp(min=1)
+        attn_w = self.pool_attn(seq).squeeze(-1)                    # [B, N]
+        attn_w = attn_w.masked_fill(node_mask == 0, -1e4)
+        attn_w = torch.softmax(attn_w, dim=-1)                      # [B, N]
+        pooled = (attn_w.unsqueeze(-1) * seq).sum(dim=1)            # [B, d]
         return F.normalize(self.proj(pooled), dim=-1)
 
 
