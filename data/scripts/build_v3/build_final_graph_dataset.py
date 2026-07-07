@@ -410,6 +410,8 @@ def main():
     missing_src      = 0
     disconnected_cnt = 0
     low_degree_cnt   = 0
+    dup_coord_cnt    = 0
+    seen_coords: set = set()
 
     # ── 收集所有任务（保持顺序） ─────────────────────────────────────────────────
     tasks: list[tuple] = []   # (mapping_row, src_row, caption, seed, img_dir_rel)
@@ -486,6 +488,15 @@ def main():
                     if has_low_degree_node(rec['adj_matrix'], rec['n_nodes']):
                         low_degree_cnt += 1
                         continue
+                    n = rec['n_nodes']
+                    ck = frozenset(
+                        (round(float(c[0]), 1), round(float(c[1]), 1))
+                        for c in rec['node_coords'][:n]
+                    )
+                    if ck in seen_coords:
+                        dup_coord_cnt += 1
+                        continue
+                    seen_coords.add(ck)
                     out.write(_json_dumps(rec) + "\n")
                     total_written += 1
                     if args.max_records and total_written >= args.max_records:
@@ -500,7 +511,7 @@ def main():
     elapsed = time.perf_counter() - t0
     new_combos = len(combo_to_id) - 32
     print(f"\n完成  总写入：{total_written}  耗时：{elapsed:.1f}s  ({total_written/elapsed:.0f} 条/s)")
-    print(f"  缺描述：{missing_cap}  缺源数据：{missing_src}  断开图（已过滤）：{disconnected_cnt}  度<2（已过滤）：{low_degree_cnt}")
+    print(f"  缺描述：{missing_cap}  缺源数据：{missing_src}  断开图（已过滤）：{disconnected_cnt}  度<2（已过滤）：{low_degree_cnt}  坐标重复（已过滤）：{dup_coord_cnt}")
     print(f"  combo vocab：旧 32 种 + 新增 {new_combos} 种 = {len(combo_to_id)} 种")
 
     # 保存扩展后的 vocab
