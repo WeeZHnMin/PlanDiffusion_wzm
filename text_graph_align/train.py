@@ -52,6 +52,7 @@ def build_parser():
     p.add_argument('--bert',            default='models/bert-base-uncased')
     p.add_argument('--unfreeze_layers', type=int,   default=4)
     p.add_argument('--workers',         type=int,   default=4)
+    p.add_argument('--val_batch',       type=int,   default=64)
     p.add_argument('--resume',          default='')
     return p
 
@@ -101,7 +102,7 @@ def main():
                                       num_workers=args.workers)
     val_loader = None
     if args.val:
-        _, val_loader = load_align_data(args.val, batch_size=64,
+        _, val_loader = load_align_data(args.val, batch_size=args.val_batch,
                                         shuffle=True, num_workers=args.workers)
 
     raw_model = TextGraphAlign(
