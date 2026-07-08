@@ -30,6 +30,7 @@ from .diffusion import GaussianDiffusion
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
+COORD_SCALE  = 160.0
 
 ROOM_TYPE_ORDER = [
     "bathroom", "bedroom", "living_room", "kitchen",
@@ -344,6 +345,7 @@ def main():
                 continue
 
             raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
+            norm_coords = raw_coords / COORD_SCALE
             adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
             np.fill_diagonal(adj_raw, 0)
             node_types = [
@@ -359,7 +361,7 @@ def main():
                 continue
 
             mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
-            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = raw_coords
+            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = norm_coords
             adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
             adj_pad[:n, :n] = adj_raw.astype(np.float32)
 
@@ -420,7 +422,7 @@ def main():
         else:
             pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
         for j in range(B):
-            all_pred_np.append(pred_xy[j].cpu().numpy().T)   # [MAX_NODES, 2]
+            all_pred_np.append(pred_xy[j].cpu().numpy().T * COORD_SCALE)   # [MAX_NODES, 2]
 
         done = min(bi + BS, len(prepared))
         elapsed = time.time() - t0

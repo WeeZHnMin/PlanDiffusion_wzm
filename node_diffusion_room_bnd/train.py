@@ -45,6 +45,7 @@ from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX
 
 MAX_NODES    = 40
 MAX_TEXT_LEN = 192
+COORD_SCALE  = 160.0
 
 
 # ── DDIM 推理（验证用）────────────────────────────────────────────────────────
@@ -120,6 +121,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
             continue
 
         raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
+        norm_coords = raw_coords / COORD_SCALE
         adj_raw    = np.array(rec["adj_matrix"],       dtype=np.int32)[:n, :n]
         np.fill_diagonal(adj_raw, 0)
         node_types = [
@@ -134,7 +136,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
             continue
 
         mask_np    = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
-        coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = raw_coords
+        coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32); coords_pad[:n] = norm_coords
         adj_pad    = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
         adj_pad[:n, :n] = adj_raw.astype(np.float32)
 
@@ -192,7 +194,7 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
         pred_xy = _ddim_sample(raw_model, diffusion, cond_b, gt_coords_b, device, args.ddim_steps)
         # pred_xy: [B, 2, MAX_NODES]
         for j in range(B):
-            all_pred_np.append(pred_xy[j].cpu().numpy().T)   # [MAX_NODES, 2]
+            all_pred_np.append(pred_xy[j].cpu().numpy().T * COORD_SCALE)   # [MAX_NODES, 2]
 
         done = min(bi + VB, len(prepared))
         elapsed = time.perf_counter() - t0

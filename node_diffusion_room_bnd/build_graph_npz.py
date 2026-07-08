@@ -205,7 +205,7 @@ def main():
 
             combo_ids = np.array(rec["node_combo_ids"][:MAX_NODES], dtype=np.int32)
 
-            raw_coords = rec["node_coords"][:MAX_NODES]
+            raw_coords = np.array(rec["node_coords"][:MAX_NODES], dtype=np.float32) / 160.0
             coords     = np.zeros((MAX_NODES, 2), dtype=np.float32)
             coords[:len(raw_coords)] = raw_coords
 
