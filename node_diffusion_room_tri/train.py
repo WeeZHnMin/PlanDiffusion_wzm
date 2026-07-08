@@ -478,5 +478,58 @@ def main(argv=None, defaults=None):
         dist.destroy_process_group()
 
 
+def _ddim_sample_clip_guided(model, diffusion, align_model,
+                              cond_batched, device, ddim_steps=200,
+                              guidance_scale=1.0):
+    import torch.nn.functional as F
+
+    diffusion._to(device)
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+    B = next(iter(cond_batched.values())).shape[0]
+    x = torch.randn(B, 2, MAX_NODES, device=device)
+
+    with torch.no_grad():
+        text_feat, text_mask = model.encode_text(
+            cond_batched['prompt_tokens'], cond_batched.get('prompt_mask'))
+        ptok = cond_batched['prompt_tokens']
+        pmsk = cond_batched['prompt_mask'].long()
+        t_emb = align_model.text_enc(ptok, pmsk)
+
+    extra = {k: v for k, v in cond_batched.items()
+             if k not in ('prompt_tokens', 'prompt_mask')}
+    extra['text_feat'] = text_feat
+    extra['text_mask'] = text_mask
+
+    for i, t in enumerate(ts):
+        t_tensor = torch.full((B,), t, device=device, dtype=torch.long)
+        ab_t = diffusion.alphas_bar[t]
+
+        if guidance_scale > 0:
+            with torch.enable_grad():
+                x_t = x.detach().requires_grad_(True)
+                eps_g = model(x_t, t_tensor, **extra)
+                x0_g = (x_t - (1 - ab_t).sqrt() * eps_g) / ab_t.sqrt().clamp(min=1e-3)
+                g_emb = align_model.graph_enc(
+                    x0_g.permute(0, 2, 1),
+                    extra['adj_matrix'],
+                    extra['node_mask'],
+                    extra['room_membership'],
+                )
+                loss = (1.0 - F.cosine_similarity(g_emb, t_emb)).mean()
+                grad = torch.autograd.grad(loss, x_t)[0]
+            x = (x - guidance_scale * grad.detach()).clamp(-5, 5)
+
+        with torch.no_grad():
+            eps = model(x, t_tensor, **extra)
+        x0 = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+    return x.detach()
+
+
 if __name__ == "__main__":
     main()

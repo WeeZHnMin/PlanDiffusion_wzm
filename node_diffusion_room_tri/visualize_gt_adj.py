@@ -776,5 +776,119 @@ def main():
     print(f'已保存: {pdf_out}')
 
 
+def sample_coords_ddim_clip_guided(
+        model, diffusion,
+        align_model,
+        room_mb_np, adj_np, mask_np, ptok_np, pmsk_np,
+        device, seed=0, no_text=False,
+        ddim_steps=200, guidance_scale=1.0) -> np.ndarray:
+    import torch.nn.functional as F
+
+    room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)
+    mask    = torch.from_numpy(mask_np[None]).float().to(device)
+    ptok    = torch.from_numpy(ptok_np[None]).to(device)
+    pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)
+
+    diffusion._to(device)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+    x = torch.randn(1, 2, N_NODES, device=device, generator=g)
+    ts = torch.linspace(0, diffusion.T - 1, ddim_steps).long().flip(0).tolist()
+
+    with torch.no_grad():
+        text_feat, text_mask = model.encode_text(ptok, pmsk)
+        t_emb = align_model.text_enc(ptok, pmsk)
+
+    extra = dict(node_mask=mask, room_membership=room_mb, adj_matrix=adj,
+                 text_feat=text_feat, text_mask=text_mask)
+
+    for i, t in enumerate(ts):
+        tb = torch.full((1,), t, device=device, dtype=torch.long)
+        ab_t = diffusion.alphas_bar[t]
+
+        if guidance_scale > 0:
+            with torch.enable_grad():
+                x_t = x.detach().requires_grad_(True)
+                eps_g = model(x_t, tb, **extra)
+                x0_g = (x_t - (1 - ab_t).sqrt() * eps_g) / ab_t.sqrt().clamp(min=1e-3)
+                g_emb = align_model.graph_enc(x0_g.permute(0, 2, 1), adj, mask, room_mb)
+                loss = 1.0 - F.cosine_similarity(g_emb, t_emb).mean()
+                grad = torch.autograd.grad(loss, x_t)[0]
+            x = (x - guidance_scale * grad.detach()).clamp(-5, 5)
+
+        with torch.no_grad():
+            eps = model(x, tb, **extra)
+        x0 = (x - (1 - ab_t).sqrt() * eps) / ab_t.sqrt().clamp(min=1e-3)
+
+        if i + 1 < len(ts):
+            ab_prev = diffusion.alphas_bar[ts[i + 1]]
+            x = ab_prev.sqrt() * x0 + (1 - ab_prev).sqrt() * eps
+        else:
+            x = x0
+
+    return x.detach().squeeze(0).permute(1, 0).cpu().numpy()
+
+
+def sample_coords_clip_guided(
+        model, diffusion,
+        align_model,
+        room_mb_np, adj_np, mask_np, ptok_np, pmsk_np,
+        device, seed=0, no_text=False,
+        guidance_scale=1.0) -> np.ndarray:
+    import torch.nn.functional as F
+
+    room_mb = torch.from_numpy(room_mb_np[None]).float().to(device)
+    adj     = torch.from_numpy(adj_np[None]).float().to(device)
+    mask    = torch.from_numpy(mask_np[None]).float().to(device)
+    ptok    = torch.from_numpy(ptok_np[None]).to(device)
+    pmsk    = torch.from_numpy(pmsk_np[None]).long().to(device)
+
+    diffusion._to(device)
+    g = torch.Generator(device=device)
+    g.manual_seed(seed)
+    x = torch.randn(1, 2, N_NODES, device=device, generator=g)
+
+    with torch.no_grad():
+        _ptok = None if no_text else ptok
+        _pmsk = None if no_text else pmsk
+        t_emb = align_model.text_enc(ptok, pmsk)
+
+    for t in reversed(range(diffusion.T)):
+        tb = torch.full((1,), t, device=device, dtype=torch.long)
+        ab = diffusion.alphas_bar[t]
+        ap = diffusion.alphas_bar_prev[t]
+
+        if guidance_scale > 0:
+            with torch.enable_grad():
+                x_t = x.detach().requires_grad_(True)
+                eps_g = model(x_t, tb, mask,
+                              prompt_tokens=_ptok, prompt_mask=_pmsk,
+                              room_membership=room_mb, adj_matrix=adj)
+                x0_g = ((x_t - (1 - ab).sqrt() * eps_g) /
+                        ab.sqrt().clamp(min=1e-3)).clamp(-5, 5)
+                g_emb = align_model.graph_enc(x0_g.permute(0, 2, 1), adj, mask, room_mb)
+                loss = 1.0 - F.cosine_similarity(g_emb, t_emb).mean()
+                grad = torch.autograd.grad(loss, x_t)[0]
+            x = (x - guidance_scale * grad.detach()).clamp(-5, 5)
+
+        with torch.no_grad():
+            eps = model(x, tb, mask,
+                        prompt_tokens=_ptok, prompt_mask=_pmsk,
+                        room_membership=room_mb, adj_matrix=adj)
+        x0 = ((x - (1 - ab).sqrt() * eps) / ab.sqrt().clamp(min=1e-3)).clamp(-5, 5)
+
+        a  = diffusion.alphas[t]
+        b_ = diffusion.betas[t]
+        mu = (ap.sqrt() * b_ / (1 - ab)) * x0 + (a.sqrt() * (1 - ap) / (1 - ab)) * x
+        if t > 0:
+            x = mu + diffusion.posterior_variance[t].sqrt() * \
+                torch.randn(x.shape, device=device, generator=g)
+        else:
+            x = mu
+
+    return x.squeeze(0).permute(1, 0).cpu().numpy()
+
+
 if __name__ == '__main__':
     main()
