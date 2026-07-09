@@ -249,7 +249,6 @@ def build_parser(defaults=None):
     parser.add_argument("--num_heads",    type=int,   default=defaults.get("num_heads",    6))
     parser.add_argument("--timesteps",    type=int,   default=defaults.get("timesteps",    1000))
     parser.add_argument("--bert",         default=defaults.get("bert", "models/bert-base-uncased"))
-    parser.add_argument("--unfreeze_layers", type=int, default=defaults.get("unfreeze_layers", 0))
     # ── 验证参数 ────────────────────────────────────────────────────────────
     parser.add_argument("--val_jsonl",    default=defaults.get("val_jsonl",    "data/jsonl/val_graph_dataset_18k5.jsonl"),
                         help="验证集 jsonl 路径（空则跳过验证）")
@@ -302,7 +301,6 @@ def main(argv=None, defaults=None):
         num_layers=args.num_layers,
         num_heads=args.num_heads,
         bert_name=args.bert,
-        unfreeze_layers=args.unfreeze_layers,
     ).to(device)
 
     diffusion = GaussianDiffusion(timesteps=args.timesteps)

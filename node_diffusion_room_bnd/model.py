@@ -195,8 +195,7 @@ class NodeDiffusionTransformer(nn.Module):
     """
 
     def __init__(self, model_channels=384, num_layers=6, num_heads=6,
-                 dropout=0.1, bert_name='models/bert-base-uncased',
-                 unfreeze_layers=0):
+                 dropout=0.1, bert_name='models/bert-base-uncased'):
         super().__init__()
         self.model_channels = model_channels
 
@@ -210,10 +209,6 @@ class NodeDiffusionTransformer(nn.Module):
         self.bert = BertModel.from_pretrained(bert_name)
         for p in self.bert.parameters():
             p.requires_grad = False
-        n_layers = len(self.bert.encoder.layer)
-        for layer in self.bert.encoder.layer[n_layers - unfreeze_layers:]:
-            for p in layer.parameters():
-                p.requires_grad = True
         self.text_proj = nn.Linear(self.bert.config.hidden_size, model_channels)
 
         self.layers = nn.ModuleList(
