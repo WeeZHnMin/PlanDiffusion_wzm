@@ -420,11 +420,12 @@ def main(argv=None, defaults=None):
             running_loss = running_rmse = 0.0
             elapsed  = time.perf_counter() - t0
             t0       = time.perf_counter()
+            avg_rmse_px = avg_rmse * COORD_SCALE
 
-            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse:.2f} px | {elapsed:.1f}s")
+            print(f"step {step:6d} | loss {avg_loss:.4f} | coord_rmse {avg_rmse_px:.2f} px | {elapsed:.1f}s")
             log_file.write(json.dumps({
                 'step': step, 'loss': round(avg_loss, 4),
-                'coord_rmse': round(avg_rmse, 2),
+                'coord_rmse': round(avg_rmse_px, 2),
                 'elapsed': round(elapsed, 1),
             }) + '\n')
 
