@@ -319,8 +319,9 @@ def main(argv=None, defaults=None):
         lr=args.lr,
     )
 
-    use_amp = device.type == 'cuda'
-    scaler  = torch.amp.GradScaler('cuda', enabled=use_amp)
+    use_amp   = device.type == 'cuda'
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    scaler    = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
 
     start_step = 0
     _resumed_iou = -1.0
@@ -388,7 +389,7 @@ def main(argv=None, defaults=None):
         t = torch.randint(0, args.timesteps, (x.shape[0],), device=device)
 
         opt.zero_grad()
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             loss, coord_rmse = diffusion.training_losses(model, x, t, cond)
 
         if not torch.isfinite(loss):
