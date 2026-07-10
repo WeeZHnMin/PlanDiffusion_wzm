@@ -3,7 +3,7 @@ Measure llm_graph tokenizer prompt length distribution on a JSONL dataset.
 
 Examples:
   python -m llm_graph.stats_token_lengths
-  python -m llm_graph.stats_token_lengths --jsonl data/jsonl/graph_160k_spatial_train.jsonl
+  python -m llm_graph.stats_token_lengths --jsonl data/jsonl/graph_160k_spatial.jsonl
   python -m llm_graph.stats_token_lengths --thresholds 128 160 192 224 256
 """
 

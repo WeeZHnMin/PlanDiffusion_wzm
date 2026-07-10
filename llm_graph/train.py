@@ -158,7 +158,7 @@ def main():
             opt, T_max=total_steps, eta_min=args.lr * 0.1)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    run_id   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_dir = Path(args.save_dir) / run_id
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -191,6 +191,31 @@ def main():
             best_val_loss = ckpt.get('best_val_loss', float('inf'))
             print(f'resumed from step {start_step} / {total_steps}  '
                   f'({start_step/steps_per_epoch:.1f} epochs done)')
+
+    if args.resume and val_rows and start_step > 0:
+        t_val = time.perf_counter()
+        face_diff, n_match, avg_ged = run_val(
+            model, val_rows, args.val_n, args.vocab, args.val_batch, device, seed=start_step)
+        elapsed_val = time.perf_counter() - t_val
+        is_best_val = face_diff < best_val_loss
+        if is_best_val:
+            best_val_loss = face_diff
+        print(f'  [resume val] step={start_step}  face_diff={face_diff:.4f}  ged={avg_ged:.4f}'
+              f'  n_match={n_match:.3f}  best_face_diff={best_val_loss:.4f}'
+              f'  ({elapsed_val:.1f}s){"  ★" if is_best_val else ""}')
+        log_file.write(json.dumps({
+            'step': start_step, 'resume_val_face_diff': round(face_diff, 4),
+            'resume_val_ged': round(avg_ged, 4), 'resume_val_n_match': round(n_match, 4),
+            'best_val_face_diff': round(best_val_loss, 4),
+        }, ensure_ascii=False) + '\n')
+        if is_best_val:
+            raw = model.module if hasattr(model, 'module') else model
+            torch.save({
+                'model': raw.state_dict(), 'opt': opt.state_dict(),
+                'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
+                'step': start_step, 'best_loss': best_loss, 'best_val_loss': best_val_loss,
+            }, save_dir / 'best.pt')
+            print(f'  best.pt updated after resume val → step={start_step} face_diff={best_val_loss:.4f}')
 
     def infinite():
         while True:
@@ -316,7 +341,7 @@ def main():
     raw = model.module if hasattr(model, 'module') else model
     torch.save({'model': raw.state_dict(), 'opt': opt.state_dict(),
                 'scaler': scaler.state_dict(), 'scheduler': scheduler.state_dict(),
-                'step': total_steps, 'best_loss': best_loss},
+                'step': total_steps, 'best_loss': best_loss, 'best_val_loss': best_val_loss},
                save_dir / 'final.pt')
     log_file.close()
     print('Stage2 训练完成')

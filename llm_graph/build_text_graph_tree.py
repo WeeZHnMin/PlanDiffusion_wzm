@@ -22,7 +22,6 @@ import numpy as np
 from tokenizers import Tokenizer
 
 MAX_NODES = 40
-MAX_TEXT_LEN = 224
 MAX_SEQ_LEN = 384
 
 PAD_ID = 10000
@@ -153,7 +152,7 @@ def main():
     coords_list = []
     mask_list = []
     n_graphs = 0
-    n_skipped = 0
+    n_empty_text = 0
     n_disconnected = 0
     n_invalid = 0
     truncated = 0
@@ -170,10 +169,8 @@ def main():
             rec = json.loads(line)
             prompt = rec.get("prompt", "").replace("\n", " ").strip()
             text_ids = bpe.encode(prompt).ids
-            if len(text_ids) > MAX_TEXT_LEN:
-                n_skipped += 1
-                continue
-            text_ids = text_ids[:MAX_TEXT_LEN]
+            if not text_ids:
+                n_empty_text += 1
 
             n = int(rec["n_nodes"])
             if n < 1 or n > MAX_NODES:
@@ -246,7 +243,7 @@ def main():
                 elapsed = time.perf_counter() - t0
                 print(
                     f"processed={line_no} kept={len(tokens_list)} "
-                    f"skipped_prompt={n_skipped} invalid={n_invalid} disconnected={n_disconnected} "
+                    f"empty_text={n_empty_text} invalid={n_invalid} disconnected={n_disconnected} "
                     f"truncated={truncated} elapsed={elapsed:.1f}s"
                 )
 
@@ -254,7 +251,7 @@ def main():
         raise RuntimeError("No samples were kept. Check prompt length, connectivity, and MAX_SEQ_LEN.")
 
     print(
-        f"\nTotal graphs={n_graphs}, skipped_prompt={n_skipped}, invalid={n_invalid}, "
+        f"\nTotal graphs={n_graphs}, empty_text={n_empty_text}, invalid={n_invalid}, "
         f"filtered_disconnected={n_disconnected}, kept={len(tokens_list)}, truncated={truncated}"
     )
     print("Saving...")
