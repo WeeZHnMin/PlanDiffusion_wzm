@@ -417,7 +417,7 @@ def parse_args():
     p.add_argument(
         "--output",
         default=None,
-        help="Output floorplan json. Defaults to Tell2Design-comp/T5/data/floorplan_rect_subset/<input_stem>.json",
+        help="Output floorplan json. Defaults to Tell2Design-comp/T5/data/floorplan/floorplan_train.json or floorplan_dev.json",
     )
     p.add_argument(
         "--combo-vocab",
@@ -442,8 +442,13 @@ def main():
     args = parse_args()
     input_path = Path(args.input)
     if args.output is None:
-        default_dir = Path("Tell2Design-comp/T5/data/floorplan_rect_subset")
-        output_path = default_dir / f"{input_path.stem}.json"
+        default_dir = Path("Tell2Design-comp/T5/data/floorplan")
+        stem_lower = input_path.stem.lower()
+        if any(tag in stem_lower for tag in ["val", "dev", "test"]):
+            default_name = "floorplan_dev.json"
+        else:
+            default_name = "floorplan_train.json"
+        output_path = default_dir / default_name
     else:
         output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
