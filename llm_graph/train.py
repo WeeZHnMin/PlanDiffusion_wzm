@@ -78,7 +78,11 @@ def run_val(model, val_rows, val_n, vocab, batch_size, device, seed=0):
     rows = [val_rows[i] for i in idxs]
     print(f'    val 抽样: {n} 条 (seed={seed})')
     model.eval()
-    res = _eval_generate(model, rows, vocab, device, batch_size=batch_size)
+    # KV-cache batched generation is not compatible with DataParallel here:
+    # HF cache objects keep the full batch on replica 0 and then mismatch with
+    # per-replica key/value shapes on subsequent decoding steps.
+    eval_model = model.module if hasattr(model, 'module') else model
+    res = _eval_generate(eval_model, rows, vocab, device, batch_size=batch_size)
     model.train()
     return res['avg_face_diff'], res['n_match_rate'], res['avg_ged']
 
