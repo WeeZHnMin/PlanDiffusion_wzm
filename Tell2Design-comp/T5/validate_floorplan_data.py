@@ -11,7 +11,11 @@ from arguments import DataTrainingArguments
 
 def parse_args():
     p = argparse.ArgumentParser(description="Validate Tell2Design floorplan dataset loading.")
-    p.add_argument("--tokenizer", default="t5-small", help="Tokenizer name or local path.")
+    p.add_argument(
+        "--tokenizer",
+        default="/home/wzm/PlanDiffusion_wzm/models/t5-v1_1-base",
+        help="Tokenizer name or local path.",
+    )
     p.add_argument("--data-dir", default="data", help="T5 data root containing floorplan/*.json.")
     p.add_argument("--split", choices=["train", "dev", "test"], default="train")
     p.add_argument("--max-input-length", type=int, default=512)
