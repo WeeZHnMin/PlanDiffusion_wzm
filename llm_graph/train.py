@@ -46,7 +46,7 @@ def parse_args():
     p.add_argument("--reset-steps",   action="store_true",
                    help="续训新数据集时重置步数，只继承模型权重")
 
-    p.add_argument("--batch-size",    type=int,   default=26)
+    p.add_argument("--batch-size",    type=int,   default=96)
     p.add_argument("--epochs",        type=int,   default=200)
     p.add_argument("--lr",            type=float, default=1e-4)
     p.add_argument("--weight-decay",  type=float, default=0.01)
@@ -101,6 +101,7 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    gpu_count = torch.cuda.device_count() if device.type == 'cuda' else 0
     print('device:', device)
     torch.backends.cudnn.benchmark = True
 
@@ -109,8 +110,10 @@ def main():
                          pad_id=PAD_ID, shuffle=True, num_workers=nw)
     steps_per_epoch = len(loader.dataset) // args.batch_size
     total_steps     = args.epochs * steps_per_epoch
+    per_gpu_batch   = (args.batch_size // gpu_count) if gpu_count > 0 else args.batch_size
     print(f'数据集: {len(loader.dataset)} 条  '
           f'batch={args.batch_size}  '
+          f'per_gpu_batch={per_gpu_batch}  '
           f'steps/epoch={steps_per_epoch}  '
           f'epochs={args.epochs}  '
           f'total_steps={total_steps}')
@@ -144,14 +147,17 @@ def main():
     elif not args.resume:
         print('警告: 未提供 stage1 checkpoint，从零初始化')
 
-    if torch.cuda.device_count() > 1:
+    if gpu_count > 1:
         model = nn.DataParallel(model)
+        print(f'Per-GPU batch size: {per_gpu_batch}')
         print(f'使用 {torch.cuda.device_count()} 张 GPU')
     print(f'参数量: {sum(p.numel() for p in model.parameters())/1e6:.1f}M')
 
     opt = AdamW(model.parameters(), lr=args.lr,
                 weight_decay=args.weight_decay, betas=(0.9, 0.95))
-    scaler = torch.amp.GradScaler('cuda')
+    use_amp = device.type == 'cuda'
+    amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
+    scaler = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -235,7 +241,7 @@ def main():
         y = make_labels(tokens, text_lens, PAD_ID).to(device)
 
         opt.zero_grad()
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             out    = model(input_ids=x, attention_mask=mask[:, :-1])
             logits = out.logits
             loss   = loss_fn(logits.reshape(-1, VOCAB_SIZE), y.reshape(-1))
