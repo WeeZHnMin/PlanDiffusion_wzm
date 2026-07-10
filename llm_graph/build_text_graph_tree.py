@@ -41,6 +41,11 @@ DEFAULT_OUTPUT_BY_SPLIT = {
     "val": "data/processed/graph_tree/text_graph_tree_val.npz",
 }
 
+DEFAULT_AUGMENT_BY_SPLIT = {
+    "train": 12,
+    "val": 1,
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -51,8 +56,8 @@ def parse_args():
     p.add_argument(
         "--augment",
         type=int,
-        default=12,
-        help="How many BFS root choices to try per graph. 1 keeps only root 0.",
+        default=None,
+        help="How many BFS root choices to try per graph. Default: train=12, val=1.",
     )
     p.add_argument("--progress-every", type=int, default=10000)
     p.add_argument("--seed", type=int, default=42)
@@ -144,6 +149,7 @@ def main():
     bpe = Tokenizer.from_file(args.bpe)
     jsonl_path = Path(args.jsonl or DEFAULT_JSONL_BY_SPLIT[args.split])
     out_path = Path(args.output or DEFAULT_OUTPUT_BY_SPLIT[args.split])
+    augment = args.augment if args.augment is not None else DEFAULT_AUGMENT_BY_SPLIT[args.split]
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     tokens_list = []
@@ -158,7 +164,7 @@ def main():
     truncated = 0
     t0 = time.perf_counter()
 
-    print(f"split={args.split} jsonl={jsonl_path} output={out_path}")
+    print(f"split={args.split} jsonl={jsonl_path} output={out_path} augment={augment}")
 
     with open(jsonl_path, encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
@@ -209,7 +215,7 @@ def main():
                 n_disconnected += 1
                 continue
 
-            starts = [0] + rng.sample(range(1, n), min(args.augment - 1, n - 1))
+            starts = [0] + rng.sample(range(1, n), min(augment - 1, n - 1))
 
             for start in starts:
                 parents, tree_edges, new_id = bfs_spanning_tree(adj, n, start)
