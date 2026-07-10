@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,7 @@ def expected_json_path(data_dir: str, split: str) -> Path:
 
 def main():
     args = parse_args()
+    os.environ.setdefault("T5_SKIP_RUNTIME_VERSION_CHECK", "1")
     json_path = expected_json_path(args.data_dir, args.split)
     if not json_path.exists():
         print(f"[error] expected dataset json not found: {json_path}", file=sys.stderr)
