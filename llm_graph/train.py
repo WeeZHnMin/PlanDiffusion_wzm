@@ -136,6 +136,13 @@ def chunked_cross_entropy(logits, labels, vocab_size, chunk_tokens=8192):
     return loss_sum / total.clamp_min(1)
 
 
+def load_checkpoint(path, map_location):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 def main():
     warnings.filterwarnings('ignore', category=UserWarning,
                             module='torch.optim.lr_scheduler')
@@ -182,7 +189,7 @@ def main():
     model = LlamaForCausalLM(cfg).to(device)
 
     if args.stage1_ckpt and Path(args.stage1_ckpt).exists():
-        ckpt = torch.load(args.stage1_ckpt, map_location='cpu')
+        ckpt = load_checkpoint(args.stage1_ckpt, map_location='cpu')
         sd   = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
         missing, unexpected = model.load_state_dict(sd, strict=False)
         print(f'stage1 ckpt loaded | missing={len(missing)} unexpected={len(unexpected)}')
@@ -251,7 +258,7 @@ def main():
     save_win_steps = 0
 
     if args.resume and Path(args.resume).exists():
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = load_checkpoint(args.resume, map_location=device)
         sd   = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
         raw  = model.module if hasattr(model, 'module') else model
         raw.load_state_dict(sd, strict=True)
