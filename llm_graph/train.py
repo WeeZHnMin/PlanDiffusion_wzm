@@ -48,7 +48,9 @@ def parse_args():
 
     p.add_argument("--batch-size",    type=int,   default=96)
     p.add_argument("--epochs",        type=int,   default=200)
-    p.add_argument("--lr",            type=float, default=1e-4)
+    p.add_argument("--lr",            type=float, default=5e-5)
+    p.add_argument("--warmup-steps",  type=int,   default=2000,
+                   help="Linear warmup steps before cosine decay.")
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
     p.add_argument("--log-every",     type=int,   default=200)
@@ -162,10 +164,23 @@ def main():
     use_amp = device.type == 'cuda'
     amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
     scaler = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
+    warmup_steps = max(0, min(args.warmup_steps, max(total_steps - 1, 0)))
+
+    def lr_lambda(step_idx: int) -> float:
+        if total_steps <= 0:
+            return 1.0
+        if warmup_steps > 0 and step_idx < warmup_steps:
+            return float(step_idx + 1) / float(max(warmup_steps, 1))
+
+        decay_steps = max(total_steps - warmup_steps, 1)
+        progress = min(max(step_idx - warmup_steps, 0), decay_steps)
+        cosine = 0.5 * (1.0 + np.cos(np.pi * progress / decay_steps))
+        min_ratio = 0.1
+        return min_ratio + (1.0 - min_ratio) * cosine
+
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=total_steps, eta_min=args.lr * 0.1)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
     loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
