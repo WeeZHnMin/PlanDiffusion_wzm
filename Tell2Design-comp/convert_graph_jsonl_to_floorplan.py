@@ -28,6 +28,12 @@ SUPPORTED_BASE_TYPES = {
     "dining_room",
 }
 
+DEFAULT_ALL_INPUT = "data/jsonl/graph_160k_spatial.jsonl"
+DEFAULT_TRAIN_INPUT = "data/jsonl/graph_160k_spatial_train.jsonl"
+DEFAULT_VAL_INPUT = "data/jsonl/graph_160k_spatial_val.jsonl"
+DEFAULT_COMBO_VOCAB = "Tell2Design-comp/type_combo_vocab_v3.json"
+DEFAULT_OUTPUT_DIR = "Tell2Design-comp/T5/data/floorplan"
+
 
 def load_jsonl(path: Path):
     with path.open("r", encoding="utf-8-sig") as f:
@@ -413,7 +419,17 @@ def convert_sample(
 
 def parse_args():
     p = argparse.ArgumentParser(description="Convert graph JSONL to Tell2Design floorplan JSON.")
-    p.add_argument("--input", required=True, help="Input graph jsonl.")
+    p.add_argument(
+        "--split",
+        choices=["train", "val", "all"],
+        default="train",
+        help="Which default input/output pair to use when --input/--output are omitted.",
+    )
+    p.add_argument(
+        "--input",
+        default=None,
+        help="Input graph jsonl. Defaults are centralized in the script by --split.",
+    )
     p.add_argument(
         "--output",
         default=None,
@@ -421,7 +437,7 @@ def parse_args():
     )
     p.add_argument(
         "--combo-vocab",
-        default="Tell2Design-comp/type_combo_vocab_v3.json",
+        default=DEFAULT_COMBO_VOCAB,
         help="Combo vocab used to decode node_combo_ids.",
     )
     p.add_argument(
@@ -438,17 +454,28 @@ def parse_args():
     return p.parse_args()
 
 
+def resolve_default_input(split: str) -> Path:
+    if split == "train":
+        return Path(DEFAULT_TRAIN_INPUT)
+    if split == "val":
+        return Path(DEFAULT_VAL_INPUT)
+    return Path(DEFAULT_ALL_INPUT)
+
+
+def resolve_default_output(split: str) -> Path:
+    output_dir = Path(DEFAULT_OUTPUT_DIR)
+    if split == "train":
+        return output_dir / "floorplan_train.json"
+    if split == "val":
+        return output_dir / "floorplan_dev.json"
+    return output_dir / "floorplan_all.json"
+
+
 def main():
     args = parse_args()
-    input_path = Path(args.input)
+    input_path = Path(args.input) if args.input is not None else resolve_default_input(args.split)
     if args.output is None:
-        default_dir = Path("Tell2Design-comp/T5/data/floorplan")
-        stem_lower = input_path.stem.lower()
-        if any(tag in stem_lower for tag in ["val", "dev", "test"]):
-            default_name = "floorplan_dev.json"
-        else:
-            default_name = "floorplan_train.json"
-        output_path = default_dir / default_name
+        output_path = resolve_default_output(args.split)
     else:
         output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
