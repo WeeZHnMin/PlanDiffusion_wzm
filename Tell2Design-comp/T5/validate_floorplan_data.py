@@ -55,7 +55,7 @@ def main():
             print("hint: install missing dependency with `pip install sacremoses`", file=sys.stderr)
         raise
 
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=False)
 
     data_args = DataTrainingArguments(
         datasets="floorplan",
