@@ -31,6 +31,7 @@ SEP_ID      = 10003
 N_START     = 10004   # N=k → N_START+(k-1)
 NODE_START  = 10044   # node_j → NODE_START+j
 MAX_NODES   = 40
+MAX_TEXT_LEN = 224
 
 # ── 三条默认演示提示词（直接取自真实数据，存有对应 dataset idx）────────────────
 # (dataset_idx, label, text)
@@ -65,7 +66,7 @@ MODEL_CFG = dict(
     num_hidden_layers=8,
     num_attention_heads=8,
     intermediate_size=1536,
-    max_position_embeddings=256,
+    max_position_embeddings=384,
     bos_token_id=BOS_ID,
     eos_token_id=EOS_ID,
     pad_token_id=PAD_ID,
@@ -174,7 +175,7 @@ def node_degrees(adj: list) -> list:
 
 # ── 文本编码 / 最近邻搜索 ──────────────────────────────────────────────────────
 
-def encode_text(text: str, tokenizer_path: str, max_len: int = 128) -> list:
+def encode_text(text: str, tokenizer_path: str, max_len: int = MAX_TEXT_LEN) -> list:
     from tokenizers import Tokenizer
     tok = Tokenizer.from_file(tokenizer_path)
     return tok.encode(text).ids[:max_len]

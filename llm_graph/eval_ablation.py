@@ -90,7 +90,7 @@ def evaluate_variant(
         gen_seq = generate(model, prefix, device,
                            max_new_tokens=200, temperature=temperature,
                            **constraints)
-        gen = parse_sequence(gen_seq)
+        gen = parse_sequence(gen_seq, count_actual_n=not constraints.get('use_c2', True))
 
         if gen['valid']:
             adj = gen['adj']

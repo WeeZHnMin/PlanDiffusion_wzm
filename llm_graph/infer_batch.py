@@ -28,7 +28,7 @@ import torch
 from llm_graph.infer_stage1 import (
     load_model,
     parse_sequence, has_triangle, node_degrees,
-    MAX_NODES, BOS_ID, PAD_ID, EOS_ID, SEP_ID,
+    MAX_NODES, MAX_TEXT_LEN, BOS_ID, PAD_ID, EOS_ID, SEP_ID,
     N_START, NODE_START, VOCAB_SIZE,
     encode_text,
 )
@@ -307,7 +307,7 @@ def main():
         for i in indices:
             text = rows[i]['prompt']
             texts.append(text)
-            prefix = encode_text(text, args.vocab) + [BOS_ID]
+            prefix = encode_text(text, args.vocab, max_len=MAX_TEXT_LEN) + [BOS_ID]
             prefixes.append(prefix)
 
         # 批次自回归生成
