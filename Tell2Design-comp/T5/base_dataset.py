@@ -11,8 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
-from transformers import PreTrainedTokenizer, torch_distributed_zero_first
-from transformers_src import default_data_collator
+from transformers import PreTrainedTokenizer, torch_distributed_zero_first, default_data_collator
 
 from arguments import DataTrainingArguments
 from input_example import InputFeatures, InputExample

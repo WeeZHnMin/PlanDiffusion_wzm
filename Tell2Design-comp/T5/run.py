@@ -16,7 +16,7 @@ from collections import defaultdict
 import torch
 from torch.utils import data
 from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, AutoModelForSeq2SeqLM, EncoderDecoderModel, BertConfig, EncoderDecoderConfig, Trainer
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, AutoModelForSeq2SeqLM, EncoderDecoderModel, BertConfig, EncoderDecoderConfig, Trainer, default_data_collator
 import transformers
 
 from arguments import ModelArguments, DataTrainingArguments, TrainingArguments
@@ -24,7 +24,7 @@ from datasets import load_dataset
 from evaluate import evaluate, get_avg_results, print_results
 from utils import get_episode_indices
 # from transformers_src import T5ForConditionalGeneration,Trainer, T5Config
-from transformers_src import T5ForConditionalGeneration,T5Config, default_data_collator
+from transformers_src import T5ForConditionalGeneration, T5Config
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
