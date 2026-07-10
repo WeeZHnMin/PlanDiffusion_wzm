@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
@@ -51,8 +52,16 @@ def parse_args():
     p.add_argument("--lr",            type=float, default=5e-5)
     p.add_argument("--warmup-steps",  type=int,   default=2000,
                    help="Linear warmup steps before cosine decay.")
+    p.add_argument("--lr-decay-steps", type=int,  default=30000,
+                   help="Steps used by cosine decay after warmup. 0 means use total_steps.")
+    p.add_argument("--min-lr-ratio",  type=float, default=0.1,
+                   help="Final lr ratio after cosine decay.")
     p.add_argument("--weight-decay",  type=float, default=0.01)
     p.add_argument("--grad-clip",     type=float, default=1.0)
+    p.add_argument("--ce-chunk-tokens", type=int, default=8192,
+                   help="Compute CE loss in chunks to reduce peak memory. 0 disables chunking.")
+    p.add_argument("--max-nonfinite", type=int,   default=20,
+                   help="Abort after this many consecutive non-finite losses/gradients.")
     p.add_argument("--log-every",     type=int,   default=200)
     p.add_argument("--save-every",    type=int,   default=1_000)
     p.add_argument("--val-data",      default="data/jsonl/val_graph_dataset_18k5.jsonl",
@@ -98,6 +107,33 @@ def make_labels(tokens, text_lens, pad_id):
             y[i, :tl] = -100
     y[y == pad_id] = -100
     return y
+
+
+def chunked_cross_entropy(logits, labels, vocab_size, chunk_tokens=8192):
+    flat_logits = logits.reshape(-1, vocab_size)
+    flat_labels = labels.reshape(-1)
+    valid = flat_labels.ne(-100)
+    total = valid.sum()
+    if total.item() == 0:
+        return flat_logits.sum() * 0.0
+
+    if chunk_tokens <= 0 or flat_logits.size(0) <= chunk_tokens:
+        return F.cross_entropy(flat_logits.float(), flat_labels, ignore_index=-100)
+
+    loss_sum = flat_logits.new_zeros(())
+    for start in range(0, flat_logits.size(0), chunk_tokens):
+        end = min(start + chunk_tokens, flat_logits.size(0))
+        target = flat_labels[start:end]
+        n_valid = target.ne(-100).sum()
+        if n_valid.item() == 0:
+            continue
+        loss_sum = loss_sum + F.cross_entropy(
+            flat_logits[start:end].float(),
+            target,
+            ignore_index=-100,
+            reduction='sum',
+        )
+    return loss_sum / total.clamp_min(1)
 
 
 def main():
@@ -159,8 +195,24 @@ def main():
         print(f'使用 {torch.cuda.device_count()} 张 GPU')
     print(f'参数量: {sum(p.numel() for p in model.parameters())/1e6:.1f}M')
 
-    opt = AdamW(model.parameters(), lr=args.lr,
-                weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    decay_params = []
+    no_decay_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        lname = name.lower()
+        if param.ndim < 2 or 'norm' in lname or 'embed' in lname:
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+    opt = AdamW(
+        [
+            {'params': decay_params, 'weight_decay': args.weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0},
+        ],
+        lr=args.lr,
+        betas=(0.9, 0.95),
+    )
     use_amp = device.type == 'cuda'
     amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float16
     scaler = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
@@ -172,17 +224,16 @@ def main():
         if warmup_steps > 0 and step_idx < warmup_steps:
             return float(step_idx + 1) / float(max(warmup_steps, 1))
 
-        decay_steps = max(total_steps - warmup_steps, 1)
+        configured_decay = args.lr_decay_steps if args.lr_decay_steps > 0 else total_steps - warmup_steps
+        decay_steps = max(configured_decay, 1)
         progress = min(max(step_idx - warmup_steps, 0), decay_steps)
         cosine = 0.5 * (1.0 + np.cos(np.pi * progress / decay_steps))
-        min_ratio = 0.1
+        min_ratio = args.min_lr_ratio
         return min_ratio + (1.0 - min_ratio) * cosine
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lr_lambda)
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_dir = Path(args.save_dir) / run_id
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +300,8 @@ def main():
     data_iter = infinite()
     t0 = time.perf_counter()
     model.train()
+    consecutive_nonfinite = 0
+    last_grad_norm = float('nan')
 
     for step in range(start_step, total_steps):
         tokens, mask, text_lens = next(data_iter)
@@ -259,16 +312,21 @@ def main():
         x = tokens[:, :-1]
         y = make_labels(tokens, text_lens, PAD_ID).to(device)
 
-        opt.zero_grad()
+        opt.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             out    = model(input_ids=x, attention_mask=mask[:, :-1])
             logits = out.logits
-            loss   = loss_fn(logits.reshape(-1, VOCAB_SIZE), y.reshape(-1))
+
+        loss = chunked_cross_entropy(logits, y, VOCAB_SIZE, args.ce_chunk_tokens)
 
         if not torch.isfinite(loss):
             print(f'  [warn] step {step}: non-finite loss {loss.item():.4f}, skipping batch')
-            opt.zero_grad()
-            scaler.update()
+            consecutive_nonfinite += 1
+            opt.zero_grad(set_to_none=True)
+            del out, logits, loss
+            torch.cuda.empty_cache()
+            if consecutive_nonfinite >= args.max_nonfinite:
+                raise RuntimeError(f'too many consecutive non-finite batches ({consecutive_nonfinite})')
             continue
 
         scaler.scale(loss).backward()
@@ -276,16 +334,23 @@ def main():
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         if not torch.isfinite(grad_norm):
             print(f'  [warn] step {step}: non-finite grad_norm {grad_norm:.4f}, skipping update')
-            opt.zero_grad()
+            consecutive_nonfinite += 1
+            opt.zero_grad(set_to_none=True)
             scaler.update()
+            del out, logits, loss
+            torch.cuda.empty_cache()
+            if consecutive_nonfinite >= args.max_nonfinite:
+                raise RuntimeError(f'too many consecutive non-finite batches ({consecutive_nonfinite})')
             continue
+        consecutive_nonfinite = 0
+        last_grad_norm = float(grad_norm.detach().cpu())
 
         scaler.step(opt)
         scaler.update()
         scheduler.step()
 
         with torch.no_grad():
-            m = compute_metrics(logits.float(), y, text_lens)
+            m = compute_metrics(logits.detach(), y, text_lens)
 
         lv = loss.item()
         running['loss']       += lv
@@ -313,10 +378,12 @@ def main():
                   f'| acc_N {avg["acc_N"]:.3f} '
                   f'| acc_parent {avg["acc_parent"]:.3f} '
                   f'| acc_edge {avg["acc_edge"]:.3f} '
+                  f'| grad {last_grad_norm:.2f} '
                   f'| lr {lr_now:.2e} | {elapsed:.1f}s')
 
             log_file.write(json.dumps({
                 'step': step, **{k: round(v, 4) for k, v in avg.items()},
+                'grad_norm': round(last_grad_norm, 4),
                 'lr': round(lr_now, 8), 'elapsed': round(elapsed, 1),
             }, ensure_ascii=False) + '\n')
 
