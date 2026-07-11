@@ -326,12 +326,12 @@ class BaseDataset(Dataset, ABC):
             max_length=50,
         )
 
-        assert input_tok.input_ids.size(0) == output_tok['input_ids'].size(0)
-        assert input_tok.input_ids.size(0) == boundary_tok.input_ids.size(0)
+        assert input_tok['input_ids'].size(0) == output_tok['input_ids'].size(0)
+        assert input_tok['input_ids'].size(0) == boundary_tok['input_ids'].size(0)
     
         features = []
         if self.data_args.boundary_in_where == 'Encoder':
-            for sentence_input_ids, att_mask, label_input_ids, num_room, regr_l in zip(input_tok.input_ids, input_tok.attention_mask,
+            for sentence_input_ids, att_mask, label_input_ids, num_room, regr_l in zip(input_tok['input_ids'], input_tok['attention_mask'],
                                                                     output_tok['input_ids'], num_rooms, regr_labels):
                 features.append(InputFeatures(
                     input_ids=sentence_input_ids.tolist(),
@@ -352,8 +352,13 @@ class BaseDataset(Dataset, ABC):
             #     ))
         
         else: # boundary_in_where == 'Decoder"
-            for sentence_input_ids, att_mask, label_input_ids, boundary_input_ids, boundary_tok_mask in zip(input_tok.input_ids, input_tok.attention_mask,
-                                                                    output_tok.input_ids, boundary_tok.input_ids, boundary_tok.attention_mask):
+            for sentence_input_ids, att_mask, label_input_ids, boundary_input_ids, boundary_tok_mask in zip(
+                input_tok['input_ids'],
+                input_tok['attention_mask'],
+                output_tok['input_ids'],
+                boundary_tok['input_ids'],
+                boundary_tok['attention_mask'],
+            ):
                 features.append(InputFeatures(
                     input_ids=sentence_input_ids.tolist(),
                     attention_mask=att_mask.tolist(),
