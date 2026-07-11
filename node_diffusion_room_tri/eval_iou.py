@@ -363,8 +363,8 @@ def main():
                    help="TextCondGNN 节点类型分类器权重")
     p.add_argument("--vocab",       default="node_diffusion_room_tri/type_combo_vocab_v3.json")
     p.add_argument("--jsonl",       default="data/jsonl/test_graph_dataset_18k5.jsonl")
-    p.add_argument("--n_samples",   type=int, default=224)
-    p.add_argument("--sampler",     default="ddim", choices=["ddim", "ddpm"])
+    p.add_argument("--n_samples",   type=int, default=224, help="0=全量")
+    p.add_argument("--sampler",     default="ddim", choices=["ddim", "ddpm", "both"])
     p.add_argument("--ddim_steps",  type=int, default=200,
                    help="DDIM 步数（--sampler ddim 时生效）")
     p.add_argument("--timesteps",   type=int, default=1000,
@@ -378,6 +378,8 @@ def main():
     p.add_argument("--out",         default="", help="可选：结果保存路径(.json)")
     p.add_argument("--no_type_model", action="store_true",
                    help="不加载 TextCondGNN，直接用 GT node_types 作为预测类型")
+    p.add_argument("--ddim_jsonl",  default="", help="Save per-sample DDIM inference results as JSONL")
+    p.add_argument("--ddpm_jsonl",  default="", help="Save per-sample DDPM inference results as JSONL")
     args = p.parse_args()
 
     device    = torch.device(args.device)
@@ -426,7 +428,7 @@ def main():
     skipped  = 0
     with open(args.jsonl, encoding="utf-8") as f:
         for line in f:
-            if len(prepared) + skipped >= args.n_samples:
+            if args.n_samples > 0 and len(prepared) + skipped >= args.n_samples:
                 break
             line = line.strip()
             if not line:
@@ -484,6 +486,8 @@ def main():
                 "adj_list":      adj_list,
                 "gt_polys":      gt_polys,
                 "gt_node_types": gt_node_types,
+                "prompt":        prompt,
+                "gt_node_coords": gt_centered.tolist(),
             })
 
     print(f"预处理完成: {len(prepared)} 条有效，{skipped} 条跳过")
@@ -493,6 +497,137 @@ def main():
         print(f"DDPM {args.timesteps} 步，batch_size={args.batch_size}，开始推理...")
 
     # ── 第二步：批次 DDIM + 类型预测 ─────────────────────────────────────────
+    def run_one_eval(sampler, ddim_steps=None, timesteps=None, jsonl_path=""):
+        sampler_info = f"DDIM {ddim_steps} steps" if sampler == "ddim" else f"DDPM {timesteps} steps"
+        print(f"{sampler_info}, batch_size={args.batch_size}, start inference...", flush=True)
+
+        all_pred_np = []
+        all_pred_types = []
+        t0 = time.time()
+        VB = args.batch_size
+
+        with torch.no_grad():
+            for bi in range(0, len(prepared), VB):
+                chunk = prepared[bi: bi + VB]
+                B = len(chunk)
+
+                mask_t = torch.from_numpy(np.stack([s["mask_np"] for s in chunk])).to(device)
+                memb_t = torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device)
+                adj_t = torch.from_numpy(np.stack([s["adj_pad"] for s in chunk])).to(device)
+                ptok_t = torch.from_numpy(np.stack([s["ptok"] for s in chunk])).to(device)
+                pmsk_t = torch.from_numpy(np.stack([s["pmsk"] for s in chunk])).to(device)
+
+                cond_b = {
+                    "node_mask": mask_t,
+                    "room_membership": memb_t,
+                    "adj_matrix": adj_t,
+                    "prompt_tokens": ptok_t,
+                    "prompt_mask": pmsk_t,
+                }
+
+                if sampler == "ddim":
+                    pred_xy = ddim_sample(model, diffusion, cond_b, device, ddim_steps)
+                else:
+                    pred_xy = ddpm_sample(model, diffusion, cond_b, device, timesteps)
+
+                if type_model is not None:
+                    type_logits = type_model(
+                        pred_xy,
+                        adj_matrix=adj_t,
+                        node_mask=mask_t,
+                        prompt_tokens=ptok_t,
+                        prompt_mask=pmsk_t,
+                    )
+                    combo_ids = type_logits.argmax(dim=-1).cpu().numpy()
+
+                for j in range(B):
+                    all_pred_np.append(pred_xy[j].cpu().numpy().T)
+                    n_j = chunk[j]["n"]
+                    if type_model is not None:
+                        node_types_j = [
+                            id_to_combo.get(int(combo_ids[j, k]), ["other"])
+                            for k in range(n_j)
+                        ]
+                    else:
+                        node_types_j = chunk[j]["gt_node_types"]
+                    all_pred_types.append(node_types_j)
+
+                done = min(bi + VB, len(prepared))
+                print(f"  [{done}/{len(prepared)}]  {time.time() - t0:.1f}s", flush=True)
+
+        micro_list, macro_list, samples_out = [], [], []
+        for s, pred_np, pred_types in zip(prepared, all_pred_np, all_pred_types):
+            n = s["n"]
+            pred_centered = center_at_origin(pred_np, s["mask_np"])
+            pred_polys = coords_to_polys_by_type(
+                pred_centered[:n], s["adj_list"], pred_types, n)
+            micro, macro = compute_iou(s["gt_polys"], pred_polys)
+            micro_list.append(micro)
+            macro_list.append(macro)
+            samples_out.append({
+                "prompt": s["prompt"],
+                "n_nodes": n,
+                "adj_matrix": s["adj_list"],
+                "gt_node_coords": s["gt_node_coords"],
+                "gt_node_types": s["gt_node_types"],
+                "pred_node_coords": pred_centered[:n].tolist(),
+                "pred_node_types": pred_types,
+                "micro_iou": round(micro, 6),
+                "macro_iou": round(macro, 6),
+            })
+
+        result = {
+            "sampler": sampler,
+            "ddim_steps": ddim_steps if sampler == "ddim" else None,
+            "timesteps": timesteps if sampler == "ddpm" else None,
+            "ckpt": args.ckpt,
+            "type_ckpt": None if args.no_type_model else args.type_ckpt,
+            "n": len(micro_list),
+            "skipped": skipped,
+            "micro_iou": float(np.mean(micro_list)),
+            "macro_iou": float(np.mean(macro_list)),
+            "micro_list": micro_list,
+            "macro_list": macro_list,
+            "samples": samples_out,
+        }
+
+        print(f"\n=== Eval done ({sampler_info}, {len(micro_list)} samples, skipped={skipped}) ===")
+        print(f"Micro-IoU : {result['micro_iou']:.6f}")
+        print(f"Macro-IoU : {result['macro_iou']:.6f}")
+        print(f"Elapsed   : {time.time() - t0:.1f}s")
+
+        if jsonl_path:
+            sample_path = Path(jsonl_path)
+            sample_path.parent.mkdir(parents=True, exist_ok=True)
+            with sample_path.open("w", encoding="utf-8") as f:
+                for row in samples_out:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            print(f"per-sample JSONL saved -> {sample_path}")
+
+        return result
+
+    results = []
+    if args.sampler == "ddim":
+        results.append(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
+    elif args.sampler == "ddpm":
+        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
+    elif args.sampler == "both":
+        results.append(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
+    else:
+        raise ValueError(f"unsupported sampler: {args.sampler}")
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        summary = [{k: v for k, v in res.items() if k != "samples"} for res in results]
+        payload = summary[0] if len(summary) == 1 else {"results": summary}
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(f"summary saved -> {out_path}")
+    return
+
     all_pred_np        = []   # [MAX_NODES, 2] per sample
     all_pred_types     = []   # List[List[str]] per sample (len=n)
     t0 = time.time()
