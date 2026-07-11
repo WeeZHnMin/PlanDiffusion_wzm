@@ -25,6 +25,7 @@ SUPPORTED_BASE_TYPES = {
     "bedroom",
     "living_room",
     "kitchen",
+    "corridor",
     "dining_room",
 }
 
@@ -277,6 +278,8 @@ def tell2design_name_plan(face_types: List[str]) -> Optional[Dict[int, str]]:
         return None
     if counts["bedroom"] > 5:
         return None
+    if max(counts["bedroom"] - 1, 0) + counts["corridor"] > 4:
+        return None
 
     mapping: Dict[int, str] = {}
     bath_i = 1
@@ -301,6 +304,11 @@ def tell2design_name_plan(face_types: List[str]) -> Optional[Dict[int, str]]:
                     return None
                 mapping[idx] = f"common room {common_i}"
                 common_i += 1
+        elif base == "corridor":
+            if common_i > 4:
+                return None
+            mapping[idx] = f"common room {common_i}"
+            common_i += 1
         else:
             return None
     return mapping
@@ -443,7 +451,7 @@ def parse_args():
     p.add_argument(
         "--drop-types",
         nargs="*",
-        default=["corridor", "other"],
+        default=["other"],
         help="Base room types that make a sample ineligible.",
     )
     p.add_argument(

@@ -48,6 +48,7 @@ openvla/
 Thumbs.db
 viz_output
 outputs/
+Tell2Design-comp/T5/data/
 
 # Kaggle upload staging directory
 kaggle_upload/
