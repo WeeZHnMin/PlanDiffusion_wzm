@@ -2,12 +2,15 @@ import argparse
 import ast
 import json
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
+from tqdm import tqdm
 
 
 ROOM_TYPE_ORDER = [
@@ -34,6 +37,8 @@ DEFAULT_TRAIN_INPUT = "data/jsonl/graph_160k_spatial_train.jsonl"
 DEFAULT_VAL_INPUT = "data/jsonl/graph_160k_spatial_val.jsonl"
 DEFAULT_COMBO_VOCAB = "Tell2Design-comp/type_combo_vocab_v3.json"
 DEFAULT_OUTPUT_DIR = "Tell2Design-comp/T5/data/floorplan"
+WORKER_ID_TO_COMBO: Optional[Dict[int, List[str]]] = None
+WORKER_DROP_TYPES: Optional[set] = None
 
 
 def load_jsonl(path: Path):
@@ -425,6 +430,18 @@ def convert_sample(
     return out, "ok"
 
 
+def init_worker(id_to_combo: Dict[int, List[str]], drop_types: set):
+    global WORKER_ID_TO_COMBO, WORKER_DROP_TYPES
+    WORKER_ID_TO_COMBO = id_to_combo
+    WORKER_DROP_TYPES = drop_types
+
+
+def convert_sample_worker(task: Tuple[int, Dict[str, object]]) -> Tuple[int, Optional[Dict[str, object]], str]:
+    raw_idx, sample = task
+    converted, reason = convert_sample(sample, WORKER_ID_TO_COMBO, WORKER_DROP_TYPES)
+    return raw_idx, converted, reason
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Convert graph JSONL to Tell2Design floorplan JSON.")
     p.add_argument(
@@ -471,6 +488,18 @@ def parse_args():
         default=None,
         help="Convert at most N raw jsonl samples after --offset. Useful for quick validation.",
     )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 1) - 1),
+        help="Number of worker processes for parallel conversion. Use 1 to disable multiprocessing.",
+    )
+    p.add_argument(
+        "--chunksize",
+        type=int,
+        default=64,
+        help="Task chunksize passed to the process pool.",
+    )
     return p.parse_args()
 
 
@@ -503,18 +532,44 @@ def main():
     id_to_combo = load_vocab(Path(args.combo_vocab))
     drop_types = set(args.drop_types)
 
-    results = []
-    stats = Counter()
+    tasks = []
     for raw_idx, (_, sample) in enumerate(load_jsonl(input_path)):
         if raw_idx < args.offset:
             continue
-        if args.limit is not None and stats["total"] >= args.limit:
+        if args.limit is not None and len(tasks) >= args.limit:
             break
-        converted, reason = convert_sample(sample, id_to_combo, drop_types)
-        stats["total"] += 1
-        stats[reason] += 1
-        if converted is not None:
-            results.append(converted)
+        tasks.append((raw_idx, sample))
+
+    results = []
+    stats = Counter()
+    if args.workers <= 1:
+        init_worker(id_to_combo, drop_types)
+        iterator = (
+            convert_sample_worker(task)
+            for task in tqdm(tasks, desc="convert", unit="sample")
+        )
+    else:
+        pool = ProcessPoolExecutor(
+            max_workers=args.workers,
+            initializer=init_worker,
+            initargs=(id_to_combo, drop_types),
+        )
+        iterator = pool.map(convert_sample_worker, tasks, chunksize=args.chunksize)
+        iterator = tqdm(iterator, total=len(tasks), desc="convert", unit="sample")
+
+    ordered_results: List[Tuple[int, Dict[str, object]]] = []
+    try:
+        for raw_idx, converted, reason in iterator:
+            stats["total"] += 1
+            stats[reason] += 1
+            if converted is not None:
+                ordered_results.append((raw_idx, converted))
+    finally:
+        if args.workers > 1:
+            pool.shutdown(wait=True)
+
+    ordered_results.sort(key=lambda item: item[0])
+    results = [converted for _, converted in ordered_results]
 
     output_path.write_text(
         json.dumps(results, ensure_ascii=False, indent=2),
@@ -526,6 +581,7 @@ def main():
         "output": str(output_path),
         "offset": args.offset,
         "limit": args.limit,
+        "workers": args.workers,
         "total_samples": stats["total"],
         "kept_samples": len(results),
         "drop_samples": stats["total"] - len(results),
