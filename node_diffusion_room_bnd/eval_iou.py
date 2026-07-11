@@ -294,7 +294,7 @@ def main():
     p.add_argument("--ckpt",       default="checkpoints/node_diffusion_room_bnd/run1/latest.pt")
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_10k.jsonl")
     p.add_argument("--n_samples",  type=int, default=0, help="0=全量")
-    p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm"])
+    p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm", "both"])
     p.add_argument("--ddim_steps", type=int, nargs="+", default=[200], help="DDIM 步数，可传多个：50 200 500")
     p.add_argument("--timesteps",  type=int, default=1000, help="DDPM 全步数")
     p.add_argument("--batch_size", type=int, default=16)
@@ -304,6 +304,8 @@ def main():
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
     p.add_argument("--out",        default="", help="可选：结果保存路径(.json)")
+    p.add_argument("--ddim_jsonl", default="", help="Save per-sample DDIM inference results as JSONL")
+    p.add_argument("--ddpm_jsonl", default="", help="Save per-sample DDPM inference results as JSONL")
     args = p.parse_args()
 
     device    = torch.device(args.device)
@@ -400,11 +402,11 @@ def main():
     print(f"预处理完成：{len(prepared)} 条有效（跳过 {skipped} 条）")
 
     # ── 第二步：批次 DDPM 推理（GPU）────────────────────────────────────────
-    def run_one_eval(ddim_steps=None):
+    def run_one_eval(sampler, ddim_steps=None, timesteps=None, jsonl_path=""):
         all_pred_np = []
         t0  = time.time()
         BS  = args.batch_size
-        sampler_info = f"DDIM {ddim_steps} 步" if args.sampler == "ddim" else f"DDPM {args.timesteps} 步"
+        sampler_info = f"DDIM {ddim_steps} steps" if sampler == "ddim" else f"DDPM {timesteps} steps"
         print(f"批次推理 batch={BS}，{sampler_info}...", flush=True)
 
         for bi in range(0, len(prepared), BS):
@@ -421,10 +423,10 @@ def main():
             }
             gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
 
-            if args.sampler == "ddim":
+            if sampler == "ddim":
                 pred_xy = ddim_sample(model, diffusion, cond_b, gt_coords_b, device, ddim_steps)
             else:
-                pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
+                pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, timesteps)
             for j in range(B):
                 all_pred_np.append(pred_xy[j].cpu().numpy().T * COORD_SCALE)   # [MAX_NODES, 2]
 
@@ -432,6 +434,7 @@ def main():
             elapsed = time.time() - t0
             print(f"  [{done}/{len(prepared)}]  elapsed={elapsed:.1f}s", flush=True)
 
+        sampler_info = f"DDIM {ddim_steps} steps" if sampler == "ddim" else f"DDPM {timesteps} steps"
         micro_list, macro_list, samples_out = [], [], []
         for s, pred_np in zip(prepared, all_pred_np):
             n = s["n"]
@@ -451,9 +454,9 @@ def main():
             })
 
         result = {
-            "sampler": args.sampler,
-            "ddim_steps": ddim_steps if args.sampler == "ddim" else None,
-            "timesteps": args.timesteps if args.sampler == "ddpm" else None,
+            "sampler": sampler,
+            "ddim_steps": ddim_steps if sampler == "ddim" else None,
+            "timesteps": timesteps if sampler == "ddpm" else None,
             "n": len(micro_list),
             "skipped": skipped,
             "micro_iou": float(np.mean(micro_list)),
@@ -463,16 +466,31 @@ def main():
         print(f"\n=== 评估完成 ({sampler_info}, {len(micro_list)} 条, skipped={skipped}) ===")
         print(f"Micro-IoU : {result['micro_iou']:.6f}")
         print(f"Macro-IoU : {result['macro_iou']:.6f}")
+        if jsonl_path:
+            sample_path = Path(jsonl_path)
+            sample_path.parent.mkdir(parents=True, exist_ok=True)
+            with sample_path.open("w", encoding="utf-8") as f:
+                for row in samples_out:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            print(f"per-sample JSONL saved -> {sample_path}")
         return result
 
     results = []
     if args.sampler == "ddim":
         for steps in args.ddim_steps:
-            results.append(run_one_eval(ddim_steps=steps))
+            results.append(run_one_eval("ddim", ddim_steps=steps, jsonl_path=args.ddim_jsonl))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+    elif args.sampler == "ddpm":
+        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
+    elif args.sampler == "both":
+        for steps in args.ddim_steps:
+            results.append(run_one_eval("ddim", ddim_steps=steps, jsonl_path=args.ddim_jsonl))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
     else:
-        results.append(run_one_eval())
+        raise ValueError(f"unsupported sampler: {args.sampler}")
 
     if args.out:
         out_path = Path(args.out)
