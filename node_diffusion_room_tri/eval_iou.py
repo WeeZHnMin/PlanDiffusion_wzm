@@ -376,11 +376,16 @@ def main():
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
     p.add_argument("--out",         default="", help="可选：结果保存路径(.json)")
+    p.add_argument("--type_source", default="both", choices=["model", "gt", "both"],
+                   help="model=use TextCondGNN types; gt=use JSONL GT types; both=evaluate both")
     p.add_argument("--no_type_model", action="store_true",
                    help="不加载 TextCondGNN，直接用 GT node_types 作为预测类型")
     p.add_argument("--ddim_jsonl",  default="", help="Save per-sample DDIM inference results as JSONL")
     p.add_argument("--ddpm_jsonl",  default="", help="Save per-sample DDPM inference results as JSONL")
     args = p.parse_args()
+    if args.no_type_model:
+        args.type_source = "gt"
+    type_sources = ["model", "gt"] if args.type_source == "both" else [args.type_source]
 
     device    = torch.device(args.device)
     tokenizer = BertTokenizer.from_pretrained(args.bert)
@@ -403,7 +408,7 @@ def main():
     diffusion = GaussianDiffusion(timesteps=1000)
 
     # ── 加载类型分类器 ─────────────────────────────────────────────────────────
-    if not args.no_type_model:
+    if "model" in type_sources:
         type_model = TextCondGNN(
             d_model=args.model_channels,
             num_layers=4,
@@ -502,7 +507,7 @@ def main():
         print(f"{sampler_info}, batch_size={args.batch_size}, start inference...", flush=True)
 
         all_pred_np = []
-        all_pred_types = []
+        all_model_types = [] if "model" in type_sources else None
         t0 = time.time()
         VB = args.batch_size
 
@@ -530,7 +535,7 @@ def main():
                 else:
                     pred_xy = ddpm_sample(model, diffusion, cond_b, device, timesteps)
 
-                if type_model is not None:
+                if "model" in type_sources:
                     type_logits = type_model(
                         pred_xy,
                         adj_matrix=adj_t,
@@ -542,58 +547,79 @@ def main():
 
                 for j in range(B):
                     all_pred_np.append(pred_xy[j].cpu().numpy().T)
-                    n_j = chunk[j]["n"]
-                    if type_model is not None:
-                        node_types_j = [
+                    if all_model_types is not None:
+                        n_j = chunk[j]["n"]
+                        all_model_types.append([
                             id_to_combo.get(int(combo_ids[j, k]), ["other"])
                             for k in range(n_j)
-                        ]
-                    else:
-                        node_types_j = chunk[j]["gt_node_types"]
-                    all_pred_types.append(node_types_j)
+                        ])
 
                 done = min(bi + VB, len(prepared))
                 print(f"  [{done}/{len(prepared)}]  {time.time() - t0:.1f}s", flush=True)
 
-        micro_list, macro_list, samples_out = [], [], []
-        for s, pred_np, pred_types in zip(prepared, all_pred_np, all_pred_types):
+        pred_centered_list = [
+            center_at_origin(pred_np, s["mask_np"])
+            for s, pred_np in zip(prepared, all_pred_np)
+        ]
+        type_map = {}
+        if "model" in type_sources:
+            type_map["model"] = all_model_types
+        if "gt" in type_sources:
+            type_map["gt"] = [s["gt_node_types"] for s in prepared]
+
+        results = []
+        result_by_source = {}
+        for source, type_lists in type_map.items():
+            micro_list, macro_list = [], []
+            for s, pred_centered, pred_types in zip(prepared, pred_centered_list, type_lists):
+                n = s["n"]
+                pred_polys = coords_to_polys_by_type(
+                    pred_centered[:n], s["adj_list"], pred_types, n)
+                micro, macro = compute_iou(s["gt_polys"], pred_polys)
+                micro_list.append(micro)
+                macro_list.append(macro)
+
+            result = {
+                "sampler": sampler,
+                "type_source": source,
+                "ddim_steps": ddim_steps if sampler == "ddim" else None,
+                "timesteps": timesteps if sampler == "ddpm" else None,
+                "ckpt": args.ckpt,
+                "type_ckpt": args.type_ckpt if source == "model" else None,
+                "n": len(micro_list),
+                "skipped": skipped,
+                "micro_iou": float(np.mean(micro_list)),
+                "macro_iou": float(np.mean(macro_list)),
+                "micro_list": micro_list,
+                "macro_list": macro_list,
+            }
+            results.append(result)
+            result_by_source[source] = result
+
+            print(f"\n=== Eval done ({sampler_info}, type_source={source}, {len(micro_list)} samples, skipped={skipped}) ===")
+            print(f"Micro-IoU : {result['micro_iou']:.6f}")
+            print(f"Macro-IoU : {result['macro_iou']:.6f}")
+
+        samples_out = []
+        for idx, (s, pred_centered) in enumerate(zip(prepared, pred_centered_list)):
             n = s["n"]
-            pred_centered = center_at_origin(pred_np, s["mask_np"])
-            pred_polys = coords_to_polys_by_type(
-                pred_centered[:n], s["adj_list"], pred_types, n)
-            micro, macro = compute_iou(s["gt_polys"], pred_polys)
-            micro_list.append(micro)
-            macro_list.append(macro)
-            samples_out.append({
+            row = {
                 "prompt": s["prompt"],
                 "n_nodes": n,
                 "adj_matrix": s["adj_list"],
                 "gt_node_coords": s["gt_node_coords"],
                 "gt_node_types": s["gt_node_types"],
                 "pred_node_coords": pred_centered[:n].tolist(),
-                "pred_node_types": pred_types,
-                "micro_iou": round(micro, 6),
-                "macro_iou": round(macro, 6),
-            })
-
-        result = {
-            "sampler": sampler,
-            "ddim_steps": ddim_steps if sampler == "ddim" else None,
-            "timesteps": timesteps if sampler == "ddpm" else None,
-            "ckpt": args.ckpt,
-            "type_ckpt": None if args.no_type_model else args.type_ckpt,
-            "n": len(micro_list),
-            "skipped": skipped,
-            "micro_iou": float(np.mean(micro_list)),
-            "macro_iou": float(np.mean(macro_list)),
-            "micro_list": micro_list,
-            "macro_list": macro_list,
-            "samples": samples_out,
-        }
-
-        print(f"\n=== Eval done ({sampler_info}, {len(micro_list)} samples, skipped={skipped}) ===")
-        print(f"Micro-IoU : {result['micro_iou']:.6f}")
-        print(f"Macro-IoU : {result['macro_iou']:.6f}")
+            }
+            if "model" in type_map:
+                row["pred_node_types_model"] = type_map["model"][idx]
+                row["micro_iou_model"] = round(result_by_source["model"]["micro_list"][idx], 6)
+                row["macro_iou_model"] = round(result_by_source["model"]["macro_list"][idx], 6)
+            if "gt" in type_map:
+                row["pred_node_types_gt"] = type_map["gt"][idx]
+                row["micro_iou_gt"] = round(result_by_source["gt"]["micro_list"][idx], 6)
+                row["macro_iou_gt"] = round(result_by_source["gt"]["macro_list"][idx], 6)
+            samples_out.append(row)
         print(f"Elapsed   : {time.time() - t0:.1f}s")
 
         if jsonl_path:
@@ -604,18 +630,18 @@ def main():
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
             print(f"per-sample JSONL saved -> {sample_path}")
 
-        return result
+        return results
 
     results = []
     if args.sampler == "ddim":
-        results.append(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
+        results.extend(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
     elif args.sampler == "ddpm":
-        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
+        results.extend(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
     elif args.sampler == "both":
-        results.append(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
+        results.extend(run_one_eval("ddim", ddim_steps=args.ddim_steps, jsonl_path=args.ddim_jsonl))
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        results.append(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
+        results.extend(run_one_eval("ddpm", timesteps=args.timesteps, jsonl_path=args.ddpm_jsonl))
     else:
         raise ValueError(f"unsupported sampler: {args.sampler}")
 
