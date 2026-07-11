@@ -291,20 +291,22 @@ class Trainer(object):
                     torch.cuda.empty_cache()
                 pbar.update(1)
 
-    def val(self, milestone=None, load_model=None):
+    def val(self, milestone=None, load_model=None, output_suffix=None):
         if milestone is not None:
-            if not os.path.exists(self.results_folder / f"step-{milestone}"):
-                os.makedirs(self.results_folder / f"step-{milestone}")
             filepath = f"step-{milestone}"
+            if output_suffix:
+                filepath = f"{filepath}-{output_suffix}"
+            if not os.path.exists(self.results_folder / filepath):
+                os.makedirs(self.results_folder / filepath)
         elif load_model is not None:
             self.load(load_model)
             self.ema.copy_params_from_model_to_ema()
             self.ema.ema_model.eval()
-            if not os.path.exists(
-                self.results_folder / f"cond_scale-{self.cond_scale}-{load_model}"
-            ):
-                os.makedirs(self.results_folder / f"cond_scale-{self.cond_scale}-{load_model}")
             filepath = f"cond_scale-{self.cond_scale}-{load_model}"
+            if output_suffix:
+                filepath = f"{filepath}-{output_suffix}"
+            if not os.path.exists(self.results_folder / filepath):
+                os.makedirs(self.results_folder / filepath)
         else:
             print("Error: no model")
             return
