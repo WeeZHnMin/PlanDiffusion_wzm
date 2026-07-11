@@ -3,13 +3,14 @@ import json
 import os
 from pathlib import Path
 
+os.environ.setdefault("T5_SKIP_RUNTIME_VERSION_CHECK", "1")
+
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, T5Config, T5ForConditionalGeneration
 
 from arguments import DataTrainingArguments
 from datasets import load_dataset
 from evaluate import evaluate, print_results
-from transformers_src import T5ForConditionalGeneration, T5Config
 
 
 def parse_args():
@@ -96,7 +97,6 @@ def collate_features(features):
 
 def main():
     args = parse_args()
-    os.environ.setdefault("T5_SKIP_RUNTIME_VERSION_CHECK", "1")
 
     source_floorplan_dir = Path(args.source_data_dir) / "floorplan"
     smoke_floorplan_dir = Path(args.smoke_data_dir) / "floorplan"
