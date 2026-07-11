@@ -14,6 +14,8 @@ def parse_args():
                    help='加载 model-{milestone}.pt，可用 latest / best')
     p.add_argument('--results',   default='./results/ours_v1')
     p.add_argument('--data_root', default='../data/chathousediffusion/chat_train')
+    p.add_argument('--ddim_steps', type=int, default=200,
+                   help='DDIM sampling steps.')
     return p.parse_args()
 
 
@@ -23,7 +25,7 @@ if __name__ == "__main__":
     with open(os.path.join(args.results, "params.pkl"), "rb") as f:
         params = pickle.load(f)
 
-    params["diffusion_dict"]["sampling_timesteps"] = 200
+    params["diffusion_dict"]["sampling_timesteps"] = args.ddim_steps
     model     = Unet(**params["unet_dict"])
     diffusion = GaussianDiffusion(model, **params["diffusion_dict"])
 
@@ -40,5 +42,5 @@ if __name__ == "__main__":
     )
 
     seed_torch()
-    print(f"测试集共 {len(trainer.val_ds)} 条，milestone={args.milestone}")
+    print(f"测试集共 {len(trainer.val_ds)} 条，milestone={args.milestone}, ddim_steps={args.ddim_steps}")
     trainer.val(load_model=args.milestone)
