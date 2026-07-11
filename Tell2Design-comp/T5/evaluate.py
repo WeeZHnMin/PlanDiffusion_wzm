@@ -6,6 +6,7 @@ from typing import List, Dict
 import torch
 import logging
 import numpy as np
+import random
 from transformers import PreTrainedTokenizer
 
 from arguments import DataTrainingArguments
@@ -68,6 +69,13 @@ def evaluate(model, dataset_name: str, data_args: DataTrainingArguments, tokeniz
         max_output_length=data_args.max_output_seq_length_eval,
         tokenizer=tokenizer, split=split, seed=seed, shuffle=False, is_eval=True,
     )
+
+    if getattr(data_args, "eval_n_samples", 0) and data_args.eval_n_samples > 0 and len(test_dataset) > data_args.eval_n_samples:
+        rng = random.Random(seed)
+        sampled_positions = sorted(rng.sample(range(len(test_dataset.indices)), data_args.eval_n_samples))
+        test_dataset.indices = [test_dataset.indices[i] for i in sampled_positions]
+        test_dataset.effective_size = len(test_dataset.indices)
+        logging.info(f"Eval subset enabled: sampled {test_dataset.effective_size} examples from split {split}")
 
     return test_dataset.evaluate_dataset(
         data_args=data_args,

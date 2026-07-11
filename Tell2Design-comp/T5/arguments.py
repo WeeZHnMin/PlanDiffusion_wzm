@@ -71,6 +71,11 @@ class DataTrainingArguments:
         metadata={"help": "Comma separated list of dataset names. Defaults to the train datasets."}
     )
 
+    eval_n_samples: int = field(
+        default=0,
+        metadata={"help": "If > 0, randomly sample this many examples from the eval split for faster validation."}
+    )
+
     train_split: str = field(
         default='train',
         metadata={"help": "The datasplit for training. Can be 'train', 'dev', 'test', etc."}
