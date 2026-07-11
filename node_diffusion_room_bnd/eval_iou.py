@@ -293,9 +293,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt",       default="checkpoints/node_diffusion_room_bnd/run1/latest.pt")
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_10k.jsonl")
-    p.add_argument("--n_samples",  type=int, default=200)
+    p.add_argument("--n_samples",  type=int, default=0, help="0=全量")
     p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm"])
-    p.add_argument("--ddim_steps", type=int, default=200, help="DDIM 步数")
+    p.add_argument("--ddim_steps", type=int, nargs="+", default=[200], help="DDIM 步数，可传多个：50 200 500")
     p.add_argument("--timesteps",  type=int, default=1000, help="DDPM 全步数")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--bert",       default="models/bert-base-uncased")
@@ -316,7 +316,10 @@ def main():
         num_heads=args.num_heads,
         bert_name=args.bert,
     ).to(device)
-    ckpt   = torch.load(args.ckpt, map_location=device)
+    try:
+        ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(args.ckpt, map_location=device)
     raw_sd = ckpt["model"]
     if any(k.startswith("module.") for k in raw_sd):
         raw_sd = {k[7:]: v for k, v in raw_sd.items()}
@@ -333,7 +336,7 @@ def main():
     skipped  = 0
     with open(args.jsonl, encoding="utf-8") as f:
         for line in f:
-            if len(prepared) + skipped >= args.n_samples:
+            if args.n_samples > 0 and len(prepared) + skipped >= args.n_samples:
                 break
             line = line.strip()
             if not line:
@@ -397,68 +400,98 @@ def main():
     print(f"预处理完成：{len(prepared)} 条有效（跳过 {skipped} 条）")
 
     # ── 第二步：批次 DDPM 推理（GPU）────────────────────────────────────────
-    all_pred_np = []
-    t0  = time.time()
-    BS  = args.batch_size
-    sampler_info = f"DDIM {args.ddim_steps} 步" if args.sampler == "ddim" else f"DDPM {args.timesteps} 步"
-    print(f"批次推理 batch={BS}，{sampler_info}...", flush=True)
+    def run_one_eval(ddim_steps=None):
+        all_pred_np = []
+        t0  = time.time()
+        BS  = args.batch_size
+        sampler_info = f"DDIM {ddim_steps} 步" if args.sampler == "ddim" else f"DDPM {args.timesteps} 步"
+        print(f"批次推理 batch={BS}，{sampler_info}...", flush=True)
 
-    for bi in range(0, len(prepared), BS):
-        chunk = prepared[bi: bi + BS]
-        B = len(chunk)
+        for bi in range(0, len(prepared), BS):
+            chunk = prepared[bi: bi + BS]
+            B = len(chunk)
 
-        cond_b = {
-            "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
-            "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
-            "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
-            "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
-            "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
-            "is_boundary":     torch.from_numpy(np.stack([s["is_bnd_np"]  for s in chunk])).to(device),
-        }
-        gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
+            cond_b = {
+                "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+                "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+                "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+                "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+                "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+                "is_boundary":     torch.from_numpy(np.stack([s["is_bnd_np"]  for s in chunk])).to(device),
+            }
+            gt_coords_b = np.stack([s["coords_pad"] for s in chunk])   # [B, MAX_NODES, 2]
 
-        if args.sampler == "ddim":
-            pred_xy = ddim_sample(model, diffusion, cond_b, gt_coords_b, device, args.ddim_steps)
-        else:
-            pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
-        for j in range(B):
-            all_pred_np.append(pred_xy[j].cpu().numpy().T * COORD_SCALE)   # [MAX_NODES, 2]
+            if args.sampler == "ddim":
+                pred_xy = ddim_sample(model, diffusion, cond_b, gt_coords_b, device, ddim_steps)
+            else:
+                pred_xy = ddpm_sample(model, diffusion, cond_b, gt_coords_b, device, args.timesteps)
+            for j in range(B):
+                all_pred_np.append(pred_xy[j].cpu().numpy().T * COORD_SCALE)   # [MAX_NODES, 2]
 
-        done = min(bi + BS, len(prepared))
-        elapsed = time.time() - t0
-        print(f"  [{done}/{len(prepared)}]  elapsed={elapsed:.1f}s", flush=True)
+            done = min(bi + BS, len(prepared))
+            elapsed = time.time() - t0
+            print(f"  [{done}/{len(prepared)}]  elapsed={elapsed:.1f}s", flush=True)
 
-    # ── 第三步：逐样本计算 IoU（CPU）────────────────────────────────────────
-    micro_list, macro_list, samples_out = [], [], []
-    for s, pred_np in zip(prepared, all_pred_np):
-        n = s["n"]
-        pred_cen   = center_at_origin(pred_np, s["mask_np"])
-        pred_polys = coords_to_polys_by_type(pred_cen[:n], s["adj_list"], s["node_types"], n)
-        micro, macro = compute_iou(s["gt_polys"], pred_polys)
-        micro_list.append(micro)
-        macro_list.append(macro)
-        samples_out.append({
-            "prompt":           s["prompt"],
-            "n_nodes":          n,
-            "adj_matrix":       s["adj_list"],
-            "gt_node_coords":   s["gt_node_coords"],
-            "pred_node_coords": pred_cen[:n].tolist(),
-            "micro_iou":        round(micro, 6),
-            "macro_iou":        round(macro, 6),
-        })
+        micro_list, macro_list, samples_out = [], [], []
+        for s, pred_np in zip(prepared, all_pred_np):
+            n = s["n"]
+            pred_cen   = center_at_origin(pred_np, s["mask_np"])
+            pred_polys = coords_to_polys_by_type(pred_cen[:n], s["adj_list"], s["node_types"], n)
+            micro, macro = compute_iou(s["gt_polys"], pred_polys)
+            micro_list.append(micro)
+            macro_list.append(macro)
+            samples_out.append({
+                "prompt":           s["prompt"],
+                "n_nodes":          n,
+                "adj_matrix":       s["adj_list"],
+                "gt_node_coords":   s["gt_node_coords"],
+                "pred_node_coords": pred_cen[:n].tolist(),
+                "micro_iou":        round(micro, 6),
+                "macro_iou":        round(macro, 6),
+            })
 
-    print(f"\n=== 评估完成 ({len(micro_list)} 条, skipped={skipped}) ===")
-    print(f"Micro-IoU : {np.mean(micro_list):.6f}")
-    print(f"Macro-IoU : {np.mean(macro_list):.6f}")
-
-    if args.out:
-        Path(args.out).write_text(json.dumps({
-            "n":        len(micro_list),
+        result = {
+            "sampler": args.sampler,
+            "ddim_steps": ddim_steps if args.sampler == "ddim" else None,
+            "timesteps": args.timesteps if args.sampler == "ddpm" else None,
+            "n": len(micro_list),
+            "skipped": skipped,
             "micro_iou": float(np.mean(micro_list)),
             "macro_iou": float(np.mean(macro_list)),
-            "samples":  samples_out,
-        }, indent=2))
-        print(f"结果保存 → {args.out}")
+            "samples": samples_out,
+        }
+        print(f"\n=== 评估完成 ({sampler_info}, {len(micro_list)} 条, skipped={skipped}) ===")
+        print(f"Micro-IoU : {result['micro_iou']:.6f}")
+        print(f"Macro-IoU : {result['macro_iou']:.6f}")
+        return result
+
+    results = []
+    if args.sampler == "ddim":
+        for steps in args.ddim_steps:
+            results.append(run_one_eval(ddim_steps=steps))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    else:
+        results.append(run_one_eval())
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if len(results) == 1:
+            out_path.write_text(json.dumps(results[0], indent=2))
+        else:
+            stem = out_path.with_suffix("")
+            suffix = out_path.suffix or ".json"
+            summary = []
+            for res in results:
+                step = res["ddim_steps"] if res["ddim_steps"] is not None else res["timesteps"]
+                tag = f"ddim{step}" if args.sampler == "ddim" else f"ddpm{step}"
+                per_path = Path(f"{stem}_{tag}{suffix}")
+                per_path.write_text(json.dumps(res, indent=2))
+                summary.append({k: v for k, v in res.items() if k != "samples"})
+                print(f"结果保存 → {per_path}")
+            out_path.write_text(json.dumps({"results": summary}, indent=2))
+        print(f"汇总保存 → {out_path}")
 
 
 if __name__ == "__main__":
