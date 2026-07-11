@@ -459,6 +459,18 @@ def parse_args():
         default=None,
         help="Optional stats json path. Defaults next to output json with _stats suffix.",
     )
+    p.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip the first N raw jsonl samples before conversion.",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Convert at most N raw jsonl samples after --offset. Useful for quick validation.",
+    )
     return p.parse_args()
 
 
@@ -493,7 +505,11 @@ def main():
 
     results = []
     stats = Counter()
-    for _, sample in load_jsonl(input_path):
+    for raw_idx, (_, sample) in enumerate(load_jsonl(input_path)):
+        if raw_idx < args.offset:
+            continue
+        if args.limit is not None and stats["total"] >= args.limit:
+            break
         converted, reason = convert_sample(sample, id_to_combo, drop_types)
         stats["total"] += 1
         stats[reason] += 1
@@ -508,6 +524,8 @@ def main():
     summary = {
         "input": str(input_path),
         "output": str(output_path),
+        "offset": args.offset,
+        "limit": args.limit,
         "total_samples": stats["total"],
         "kept_samples": len(results),
         "drop_samples": stats["total"] - len(results),
