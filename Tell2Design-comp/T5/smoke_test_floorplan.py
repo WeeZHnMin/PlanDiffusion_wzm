@@ -88,7 +88,11 @@ def feature_to_dict(feature):
 
 def collate_features(features):
     batch = {}
-    keys = features[0].keys()
+    keys = ["input_ids", "attention_mask", "label_ids"]
+    optional_keys = ["boundary_ids", "boundary_mask", "decoder_attention_mask"]
+    for key in optional_keys:
+        if key in features[0]:
+            keys.append(key)
     for key in keys:
         values = [feat[key] for feat in features]
         batch[key] = torch.tensor(values, dtype=torch.long)
