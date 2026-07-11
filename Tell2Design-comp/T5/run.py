@@ -13,6 +13,10 @@ import json
 import logging
 import os
 from collections import defaultdict
+
+os.environ.setdefault("T5_SKIP_RUNTIME_VERSION_CHECK", "1")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 from torch.utils import data
 from torch.utils.data import DataLoader
@@ -26,9 +30,6 @@ from utils import get_episode_indices
 from base_dataset import seq2seq_data_collator
 # from transformers_src import T5ForConditionalGeneration,Trainer, T5Config
 from transformers_src import T5ForConditionalGeneration, T5Config
-
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class PeriodicFloorplanEvalCallback(TrainerCallback):
