@@ -196,6 +196,38 @@ class BaseDataset(Dataset, ABC):
                 f'{max_length_needed} long'
             )
 
+    def _batched_token_lengths(self, sentences: List[str], chunk_size: int = 512) -> List[int]:
+        lengths = []
+        for start in range(0, len(sentences), chunk_size):
+            chunk = sentences[start:start + chunk_size]
+            encoded = self.tokenizer.batch_encode_plus(
+                chunk,
+                add_special_tokens=True,
+                padding=False,
+                truncation=False,
+            )
+            lengths.extend(len(ids) for ids in encoded["input_ids"])
+        return lengths
+
+    def _chunked_batch_encode(self, sentences: List[str], max_length: int, chunk_size: int = 512):
+        all_input_ids = []
+        all_attention_masks = []
+        for start in range(0, len(sentences), chunk_size):
+            chunk = sentences[start:start + chunk_size]
+            encoded = self.tokenizer.batch_encode_plus(
+                chunk,
+                max_length=max_length,
+                return_tensors=None,
+                padding='max_length',
+                truncation=True,
+            )
+            all_input_ids.extend(encoded["input_ids"])
+            all_attention_masks.extend(encoded["attention_mask"])
+        return {
+            "input_ids": torch.tensor(all_input_ids, dtype=torch.int64),
+            "attention_mask": torch.tensor(all_attention_masks, dtype=torch.int64),
+        }
+
     def batch_encode_output_(self, output_index, max_output_length):
         input_ids = []
         attention_mask = []
@@ -229,12 +261,12 @@ class BaseDataset(Dataset, ABC):
                 # input_sentences = [( ' '.join(example.boundary_tokens) ) + (self.input_format.format_input(example, multitask=multitask)) for example in self.examples] # reverse description and boundary token orders
 
         if getattr(self.data_args, "drop_overlength", False):
+            input_lengths = self._batched_token_lengths(input_sentences)
+            output_lengths = self._batched_token_lengths(output_sentences)
             keep_indices = []
             dropped_input = 0
             dropped_output = 0
-            for idx, (inp, out) in enumerate(zip(input_sentences, output_sentences)):
-                input_len = len(self.tokenizer.tokenize(inp))
-                output_len = len(self.tokenizer.tokenize(out))
+            for idx, (input_len, output_len) in enumerate(zip(input_lengths, output_lengths)):
                 if input_len > max_input_length:
                     dropped_input += 1
                     continue
@@ -272,33 +304,26 @@ class BaseDataset(Dataset, ABC):
         for i in range(len(num_rooms)):
             assert num_rooms[i] == len(regr_labels[i])/4
 
-        input_tok = self.tokenizer.batch_encode_plus(
+        input_tok = self._chunked_batch_encode(
             input_sentences,
             max_length=max_input_length,
-            return_tensors='pt',
-            padding='max_length',
-            truncation=True,
         )
-        self._warn_max_sequence_length(max_input_length, input_sentences, "input")
+        if not getattr(self.data_args, "drop_overlength", False):
+            self._warn_max_sequence_length(max_input_length, input_sentences, "input")
 
         # output_index = [self.output_format.format_output_index(example) for example in self.examples]
         # output_tok = self.batch_encode_output_(output_index, max_output_length)
 
-        output_tok = self.tokenizer.batch_encode_plus(
+        output_tok = self._chunked_batch_encode(
             output_sentences,
             max_length=max_output_length,
-            return_tensors='pt',
-            padding='max_length',
-            truncation=True,
         )
-        self._warn_max_sequence_length(max_output_length, output_sentences, "output")
+        if not getattr(self.data_args, "drop_overlength", False):
+            self._warn_max_sequence_length(max_output_length, output_sentences, "output")
 
-        boundary_tok = self.tokenizer.batch_encode_plus(
+        boundary_tok = self._chunked_batch_encode(
             boundary_sentences,
             max_length=50,
-            return_tensors='pt',
-            padding='max_length',
-            truncation=True,
         )
 
         assert input_tok.input_ids.size(0) == output_tok['input_ids'].size(0)
