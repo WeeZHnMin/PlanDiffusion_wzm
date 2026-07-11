@@ -282,11 +282,14 @@ def main():
                         model.config.pad_token_id = tokenizer.pad_token_id
                         model.config.vocab_size = model.config.decoder.vocab_size
                     if data_args.exp.endswith('finetune'):
-                        config = T5Config.from_pretrained("t5-base")
-                        model = T5ForConditionalGeneration.from_pretrained("/home/sicong/min_max_Floorplan_Generation_Baseline/experiments/floorplan-t5-base-no_boundary-ep20-len512-b12-train-original-baseline/episode0/pytorch_model.bin",config=config)
+                        config = T5Config.from_pretrained(model_args.model_name_or_path)
+                        model = T5ForConditionalGeneration.from_pretrained(
+                            model_args.model_name_or_path,
+                            config=config,
+                        )
                         pass
                     else:
-                        model = T5ForConditionalGeneration.from_pretrained("t5-base")
+                        model = T5ForConditionalGeneration.from_pretrained(model_args.model_name_or_path)
                         # model = AutoModelForSeq2SeqLM.from_pretrained(
                         #     model_args.model_name_or_path,
                         #     config=config,
@@ -296,7 +299,7 @@ def main():
                 # model = AutoModelForSeq2SeqLM.from_config(
                 #     config=config
                 elif data_args.boundary_in_where == "Decoder":
-                    model = T5ForConditionalGeneration.from_pretrained("t5-base")
+                    model = T5ForConditionalGeneration.from_pretrained(model_args.model_name_or_path)
                 else:
                     raise Exception("pleae indicate where to add boundary information in the argument: boundary_in_where (Encoder or Decoder)")
 
@@ -407,18 +410,14 @@ def main():
                             #         't5-base',
                             #         config=config,
                             # )
-                            t5_config = T5Config.from_pretrained("t5-base")
-                            model = T5ForConditionalGeneration(t5_config)
-                            # model.load_state_dict(model_dir)
-                            checkpoint = torch.load(os.path.join(model_dir,'pytorch_model.bin'))
-                            model.load_state_dict(checkpoint)
-                            # model = model.from_pretrained(pretrained_model_name_or_path=model_dir, config='t5-base')
+                            t5_config = T5Config.from_pretrained(model_dir)
+                            model = T5ForConditionalGeneration.from_pretrained(model_dir, config=t5_config)
                     elif data_args.boundary_in_where == "Decoder":
                         # model = T5ForConditionalGeneration.from_pretrained(
                         #     model_dir,
                         #     config=config,
                         # )
-                        model = T5ForConditionalGeneration.from_pretrained(pretrained_model_name_or_path=model_dir, config='t5-base')
+                        model = T5ForConditionalGeneration.from_pretrained(pretrained_model_name_or_path=model_dir)
                     else:
                         raise Exception("pleae indicate where to add boundary information in the argument: boundary_in_where (Encoder or Decoder)")
 
