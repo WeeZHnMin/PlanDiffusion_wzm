@@ -16,7 +16,7 @@ from collections import defaultdict
 import torch
 from torch.utils import data
 from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, AutoModelForSeq2SeqLM, EncoderDecoderModel, BertConfig, EncoderDecoderConfig, Trainer, default_data_collator
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, AutoModelForSeq2SeqLM, EncoderDecoderModel, BertConfig, EncoderDecoderConfig, Trainer, TrainerCallback, default_data_collator
 import transformers
 
 from arguments import ModelArguments, DataTrainingArguments, TrainingArguments
@@ -28,6 +28,50 @@ from transformers_src import T5ForConditionalGeneration, T5Config
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+class PeriodicFloorplanEvalCallback(TrainerCallback):
+    def __init__(self, *, enabled, dataset_name, data_args, tokenizer, seed, gpu, batch_size, episode_output_dir):
+        self.enabled = enabled
+        self.dataset_name = dataset_name
+        self.data_args = data_args
+        self.tokenizer = tokenizer
+        self.seed = seed
+        self.gpu = gpu
+        self.batch_size = batch_size
+        self.episode_output_dir = episode_output_dir
+        self.last_eval_step = None
+
+    def _run_eval(self, model, step, suffix):
+        if not self.enabled or self.last_eval_step == step:
+            return
+        self.last_eval_step = step
+        metrics = evaluate(
+            model=model,
+            dataset_name=self.dataset_name,
+            data_args=self.data_args,
+            tokenizer=self.tokenizer,
+            split='dev',
+            seed=self.seed,
+            batch_size=self.batch_size,
+            gpu=self.gpu,
+            output_dir=None,
+        )
+        metrics_record = {'step': int(step), 'suffix': suffix, **metrics}
+        metrics_path = os.path.join(self.episode_output_dir, 'eval_dev_metrics.jsonl')
+        with open(metrics_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(metrics_record, ensure_ascii=False) + '\n')
+        logging.info(f'[periodic-eval] step={step} suffix={suffix}')
+        print_results(metrics)
+
+    def on_save(self, args, state, control, model=None, **kwargs):
+        self._run_eval(model, state.global_step, 'save')
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if args.save_steps == 0:
+            self._run_eval(model, state.global_step, 'epoch_end')
+
+
 def main():
     assert torch.cuda.is_available(), 'CUDA not available'
     
@@ -269,6 +313,18 @@ def main():
                 datasets.append(dataset)
 
             train_dataset = torch.utils.data.ConcatDataset(datasets) if training_args.do_train else None
+            periodic_eval_callback = None
+            if training_args.do_eval and 'floorplan' in dataset_names:
+                periodic_eval_callback = PeriodicFloorplanEvalCallback(
+                    enabled=True,
+                    dataset_name='floorplan',
+                    data_args=data_args,
+                    tokenizer=tokenizer,
+                    seed=ep_idx,
+                    gpu=args.gpu,
+                    batch_size=training_args.per_device_eval_batch_size,
+                    episode_output_dir=episode_output_dir,
+                )
 
             # construct trainer
             trainer = Trainer(
@@ -277,6 +333,8 @@ def main():
                 train_dataset=train_dataset,
                 data_collator = default_data_collator
             )
+            if periodic_eval_callback is not None:
+                trainer.add_callback(periodic_eval_callback)
 
             # start trainer
             logging.info('Start training')

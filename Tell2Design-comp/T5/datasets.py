@@ -869,80 +869,80 @@ class FloorplanDataset(JointERDataset):
             xmax = predicted_boxes[room][3][0]
             predicted_boxes[room] = (ymin, xmin, ymax, xmax)
         
-        # render images for gt and predicted boxes for preview 
-        render_image_(example,predicted_boxes,all_gt_rooms,gt_boxes,output_dir)
+        if output_dir:
+            render_image_(example, predicted_boxes, all_gt_rooms, gt_boxes, output_dir)
 
-        # macro_average_iou, micro_average_iou = calculate_iou(gt_boxes, predicted_boxes)
+        macro_average_iou, micro_average_iou = calculate_iou(gt_boxes, predicted_boxes)
 
-        # average_iou = (macro_average_iou+micro_average_iou)/2
-
-        # res = Counter({
-        #     'num_sentences': 1,
-        #     'wrong_reconstructions': 1 if wrong_reconstruction else 0,
-        #     'label_error': 1 if label_error else 0,
-        #     'format_error': 1 if format_error else 0,
-        #     'gt_rooms': len(example.rooms),
-        #     'predicted_rooms': len(predicted_rooms),
-        #     'macro_average_iou': macro_average_iou,
-        #     'micro_average_iou' : micro_average_iou
-        # })
-
-        # return res, average_iou
-        return
+        res = Counter({
+            'num_sentences': 1,
+            'wrong_reconstructions': 1 if wrong_reconstruction else 0,
+            'label_error': 1 if label_error else 0,
+            'format_error': 1 if format_error else 0,
+            'gt_rooms': len(example.rooms),
+            'predicted_rooms': len(predicted_rooms),
+            'macro_average_iou': macro_average_iou,
+            'micro_average_iou': micro_average_iou,
+        })
+        return res
 
 
-    def evaluate_dataset(self, data_args: DataTrainingArguments, model, device, batch_size: int, output_dir:str, macro: bool = False) -> Dict[str, float]:
+    def evaluate_dataset(self, data_args: DataTrainingArguments, model, device, batch_size: int, output_dir:str = None, macro: bool = False) -> Dict[str, float]:
         """
         Evaluate model on this dataset.
         """
         results = Counter()
-        try:
-            os.mkdir(f'{output_dir}output_images/')
-        except FileExistsError:
-            pass
+        if output_dir:
+            try:
+                os.mkdir(f'{output_dir}output_images/')
+            except FileExistsError:
+                pass
+            try:
+                os.mkdir(f'{output_dir}draw/')
+            except FileExistsError:
+                pass
+            try:
+                os.mkdir(f'{output_dir}no_label/')
+            except FileExistsError:
+                pass
 
         editing_instances = []
         iou = defaultdict()
         for example, output_sentence, predicted_index in self.generate_output_sentences(data_args, model, device, batch_size, self.features):
-            self.evaluate_example(
-                    example=example,
-                    output_sentence=output_sentence,
-                    model=model,
-                    tokenizer=self.tokenizer,
-                    output_dir=output_dir,
-                    prediction = predicted_index
-                )
-        return "Rendering Done!"
-        #     new_result, average_iou = self.evaluate_example(
-        #             example=example,
-        #             output_sentence=output_sentence,
-        #             model=model,
-        #             tokenizer=self.tokenizer,
-        #             output_dir=output_dir,
-        #             prediction = predicted_index
-        #         )
-        #     results+=new_result
-        #     iou[example.id] = average_iou
+            new_result = self.evaluate_example(
+                example=example,
+                output_sentence=output_sentence,
+                model=model,
+                tokenizer=self.tokenizer,
+                output_dir=output_dir,
+                prediction=predicted_index,
+            )
+            results += new_result
+            iou[example.id] = (new_result['macro_average_iou'] + new_result['micro_average_iou']) / 2.0
 
-        #     #TODO: store data for Editing model
-        #     if data_args.editing_data == True:
-        #         editing_instance = generate_editing_data(self, example, output_sentence)
-        #         editing_instances.append(editing_instance)
-        
-        # sorted_iou = {k: v for k, v in sorted(iou.items(), key=lambda item: item[1])}
-        # with open(f'{output_dir}sorted_iou.json', 'w', encoding='utf-8') as f:
-        #         json.dump(sorted_iou, f)
-        
-        # if data_args.editing_data == True:
-        #     #TODO: save editing data
-        #     with open(f'./data/floorplan/{data_args.exp}_editing.json', 'w', encoding='utf-8') as f:
-        #         json.dump(editing_instances, f)
-            
+            if data_args.editing_data is True:
+                editing_instance = generate_editing_data(self, example, output_sentence)
+                editing_instances.append(editing_instance)
 
-        # results['macro_average_iou'] = results['macro_average_iou']/results['num_sentences']
-        # results['micro_average_iou'] = results['micro_average_iou']/results['num_sentences']
+        if output_dir:
+            sorted_iou = {k: v for k, v in sorted(iou.items(), key=lambda item: item[1])}
+            with open(f'{output_dir}sorted_iou.json', 'w', encoding='utf-8') as f:
+                json.dump(sorted_iou, f)
 
-        # return results
+        if data_args.editing_data is True:
+            with open(f'./data/floorplan/{data_args.exp}_editing.json', 'w', encoding='utf-8') as f:
+                json.dump(editing_instances, f)
+
+        if results['num_sentences'] > 0:
+            results['macro_average_iou'] = results['macro_average_iou'] / results['num_sentences']
+            results['micro_average_iou'] = results['micro_average_iou'] / results['num_sentences']
+            results['wrong_reconstruction_rate'] = results['wrong_reconstructions'] / results['num_sentences']
+            results['label_error_rate'] = results['label_error'] / results['num_sentences']
+            results['format_error_rate'] = results['format_error'] / results['num_sentences']
+            results['avg_gt_rooms'] = results['gt_rooms'] / results['num_sentences']
+            results['avg_predicted_rooms'] = results['predicted_rooms'] / results['num_sentences']
+
+        return dict(results)
 
 @register_dataset
 class Conll04Dataset(JointERDataset):

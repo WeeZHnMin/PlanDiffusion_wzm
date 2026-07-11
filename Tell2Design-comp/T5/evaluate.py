@@ -45,13 +45,16 @@ def print_results(results: dict):
 
 
 def evaluate(model, dataset_name: str, data_args: DataTrainingArguments, tokenizer: PreTrainedTokenizer, split: str,
-             seed: int, gpu: int, batch_size: int, output_dir: str) -> Dict[str, float]:
+             seed: int, gpu: int, batch_size: int, output_dir: str = None) -> Dict[str, float]:
     """
     Evaluate a model on some dataset.
     """
     model.eval()
 
-    device = torch.device("cuda", gpu)
+    if gpu is None or gpu < 0 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda", gpu)
     model.to(device)
 
     logging.info(f'Batch size: {batch_size}')
@@ -66,4 +69,10 @@ def evaluate(model, dataset_name: str, data_args: DataTrainingArguments, tokeniz
         tokenizer=tokenizer, split=split, seed=seed, shuffle=False, is_eval=True,
     )
 
-    return test_dataset.evaluate_dataset(data_args=data_args, model=model, device=device, batch_size=batch_size, output_dir=output_dir)
+    return test_dataset.evaluate_dataset(
+        data_args=data_args,
+        model=model,
+        device=device,
+        batch_size=batch_size,
+        output_dir=output_dir,
+    )
