@@ -92,7 +92,12 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
             n = int(rec['n_nodes'])
             adj_raw = rec['adj_matrix']
             gt_adj  = [list(row[:n]) for row in adj_raw[:n]]
-            gt_list.append({'n_nodes': n, 'adj': gt_adj, 'prompt': prompt})
+            gt_list.append({
+                'source_index': rec.get('_source_index'),
+                'n_nodes': n,
+                'adj': gt_adj,
+                'prompt': prompt,
+            })
 
         if one_by_one:
             gen_seqs = [generate(model, prefixes[0], device,
@@ -111,6 +116,7 @@ def evaluate(model, rows, vocab, device, temperature=1.0, batch_size=16, one_by_
                 gt_degrees[d] += 1
 
             sample = {
+                'source_index': gt['source_index'],
                 'prompt':      gt['prompt'],
                 'gt_n_nodes':  gt['n_nodes'],
                 'gt_adj':      gt['adj'],
@@ -208,10 +214,12 @@ def main():
     print(f'读取数据集: {args.data}')
     rows = []
     with open(args.data, encoding='utf-8') as f:
-        for line in f:
+        for source_index, line in enumerate(f):
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                rec = json.loads(line)
+                rec['_source_index'] = source_index
+                rows.append(rec)
 
     if args.n_samples > 0 and args.n_samples < len(rows):
         rng  = np.random.default_rng(args.seed)
@@ -266,6 +274,7 @@ def main():
                         adj_full[i][j] = adj[i][j]
                 node_mask = [1] * n + [0] * (MAX_N - n)
                 rec = {
+                    'source_index': s.get('source_index'),
                     'prompt':     s['prompt'],
                     'n_nodes':    n,
                     'adj_matrix': adj_full,
