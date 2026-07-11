@@ -426,7 +426,10 @@ def parse_args():
 
 
 def load_model(ckpt_path: str, device: torch.device):
-    ckpt = torch.load(ckpt_path, map_location=device)
+    try:
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(ckpt_path, map_location=device)
     sd = {k.replace('module.', ''): v for k, v in ckpt['model'].items()}
 
     # 从 checkpoint 实际的 embedding 权重推断 vocab_size，避免硬编码不匹配
