@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import os
+import shutil
 from collections import defaultdict
 
 os.environ.setdefault("T5_SKIP_RUNTIME_VERSION_CHECK", "1")
@@ -31,7 +32,7 @@ from base_dataset import seq2seq_data_collator
 
 
 class PeriodicFloorplanEvalCallback(TrainerCallback):
-    def __init__(self, *, enabled, dataset_name, data_args, tokenizer, seed, gpu, batch_size, episode_output_dir):
+    def __init__(self, *, enabled, dataset_name, data_args, tokenizer, seed, gpu, batch_size, episode_output_dir, save_steps):
         self.enabled = enabled
         self.dataset_name = dataset_name
         self.data_args = data_args
@@ -40,9 +41,34 @@ class PeriodicFloorplanEvalCallback(TrainerCallback):
         self.gpu = gpu
         self.batch_size = batch_size
         self.episode_output_dir = episode_output_dir
+        self.save_steps = save_steps
         self.last_eval_step = None
+        self.best_metric = None
 
-    def _run_eval(self, model, step, suffix):
+    def _save_dir(self, name: str) -> str:
+        return os.path.join(self.episode_output_dir, name)
+
+    def _save_model_bundle(self, model, state, target_dir, optimizer=None, lr_scheduler=None, extra=None):
+        model_to_save = model.module if hasattr(model, "module") else model
+        tmp_dir = target_dir + ".tmp"
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+        model_to_save.save_pretrained(tmp_dir)
+        self.tokenizer.save_pretrained(tmp_dir)
+        if optimizer is not None:
+            torch.save(optimizer.state_dict(), os.path.join(tmp_dir, "optimizer.pt"))
+        if lr_scheduler is not None:
+            torch.save(lr_scheduler.state_dict(), os.path.join(tmp_dir, "scheduler.pt"))
+        state.save_to_json(os.path.join(tmp_dir, "trainer_state.json"))
+        if extra is not None:
+            with open(os.path.join(tmp_dir, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump(extra, f, ensure_ascii=False, indent=2)
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir)
+        os.replace(tmp_dir, target_dir)
+
+    def _run_eval(self, model, state, step, suffix, optimizer=None, lr_scheduler=None):
         if not self.enabled or self.last_eval_step == step:
             return
         self.last_eval_step = step
@@ -61,15 +87,49 @@ class PeriodicFloorplanEvalCallback(TrainerCallback):
         metrics_path = os.path.join(self.episode_output_dir, 'eval_dev_metrics.jsonl')
         with open(metrics_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(metrics_record, ensure_ascii=False) + '\n')
+        self._save_model_bundle(
+            model,
+            state,
+            self._save_dir("latest"),
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            extra={"step": int(step), "suffix": suffix, "metrics": metrics},
+        )
+        current_metric = metrics.get("macro_average_iou", None)
+        if current_metric is not None and (self.best_metric is None or current_metric > self.best_metric):
+            self.best_metric = current_metric
+            self._save_model_bundle(
+                model,
+                state,
+                self._save_dir("best"),
+                optimizer=None,
+                lr_scheduler=None,
+                extra={"step": int(step), "suffix": suffix, "metrics": metrics, "best_metric": self.best_metric},
+            )
+            logging.info(f'[best] step={step} macro_average_iou={self.best_metric:.6f}')
         logging.info(f'[periodic-eval] step={step} suffix={suffix}')
         print_results(metrics)
 
-    def on_save(self, args, state, control, model=None, **kwargs):
-        self._run_eval(model, state.global_step, 'save')
+    def on_step_end(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
+        if self.save_steps <= 0:
+            return
+        if state.global_step > 0 and state.global_step % self.save_steps == 0:
+            self._run_eval(model, state, state.global_step, 'save', optimizer=optimizer, lr_scheduler=lr_scheduler)
 
-    def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        if args.save_steps == 0:
-            self._run_eval(model, state.global_step, 'epoch_end')
+    def on_epoch_end(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
+        if self.save_steps == 0:
+            self._run_eval(model, state, state.global_step, 'epoch_end', optimizer=optimizer, lr_scheduler=lr_scheduler)
+
+    def on_train_end(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
+        if state.global_step > 0:
+            self._save_model_bundle(
+                model,
+                state,
+                self._save_dir("latest"),
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                extra={"step": int(state.global_step), "suffix": "train_end"},
+            )
 
 
 def main():
@@ -127,6 +187,9 @@ def main():
     second_parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     second_parser.set_defaults(**defaults)
     model_args, data_args, training_args = second_parser.parse_args_into_dataclasses(remaining_args)
+    periodic_save_steps = training_args.save_steps
+    training_args.save_strategy = "no"
+    training_args.save_steps = 0
 
     try:
         os.mkdir(training_args.output_dir)
@@ -328,6 +391,7 @@ def main():
                     gpu=args.gpu,
                     batch_size=training_args.per_device_eval_batch_size,
                     episode_output_dir=episode_output_dir,
+                    save_steps=periodic_save_steps,
                 )
 
             # construct trainer
@@ -346,9 +410,6 @@ def main():
             #     model_path=model_args.model_name_or_path
             # )
             trainer.train()
-
-            # save model parameters
-            trainer.save_model(episode_output_dir)
         
         # run evaluation
         if training_args.local_rank in [-1, 0] and (training_args.do_eval or training_args.do_predict):
