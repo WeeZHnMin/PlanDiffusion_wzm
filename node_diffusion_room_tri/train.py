@@ -33,6 +33,7 @@ from .diffusion import GaussianDiffusion
 from .dataset import load_node_data, NodeDataset
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .eval_iou import coords_to_polys_by_type, compute_iou, center_at_origin
+from .graph_prune import prune_dangling_nodes
 from text_graph_align.model import TextGraphAlign
 
 MAX_NODES    = 40
@@ -140,6 +141,14 @@ def _run_val(model, diffusion, tokenizer, val_records, args, device, step, log_f
             (t if isinstance(t, list) else [t])
             for t in rec["node_types"][:n]
         ]
+        raw_coords, adj_raw, gt_node_types, _ = prune_dangling_nodes(
+            raw_coords, adj_raw, gt_node_types
+        )
+        n = len(raw_coords)
+        if n < 3:
+            continue
+        adj_raw = adj_raw.astype(np.int32)
+
         gt_centered = center_at_origin(raw_coords, np.ones(n, dtype=np.float32))
         adj_list    = adj_raw.tolist()
         gt_polys    = coords_to_polys_by_type(gt_centered, adj_list, gt_node_types, n)

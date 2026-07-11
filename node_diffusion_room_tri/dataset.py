@@ -9,6 +9,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
+from .graph_prune import prune_dangling_nodes
+from .model import MAX_ROOMS, _assign_room_membership_single
+
+MAX_NODES = 40
+
 
 class NodeDataset(Dataset):
     """
@@ -24,13 +29,13 @@ class NodeDataset(Dataset):
 
     def __init__(self, npz_path):
         d = np.load(npz_path, allow_pickle=True)
-        self.coords        = d['node_coords'].astype(np.float32)
-        self.node_mask     = d['node_mask'].astype(np.uint8)
-        self.prompt_tokens = d['prompt_tokens'].astype(np.int64)
-        self._prompt_mask  = d['prompt_mask'].astype(np.float32) \
-                             if 'prompt_mask' in d else None
-        self._prompt_lens  = d['prompt_lens'].astype(np.int32) \
-                             if 'prompt_lens' in d else None
+        raw_coords        = d['node_coords'].astype(np.float32)
+        raw_node_mask     = d['node_mask'].astype(np.uint8)
+        raw_prompt_tokens = d['prompt_tokens'].astype(np.int64)
+        raw_prompt_mask   = d['prompt_mask'].astype(np.float32) \
+                            if 'prompt_mask' in d else None
+        raw_prompt_lens   = d['prompt_lens'].astype(np.int32) \
+                            if 'prompt_lens' in d else None
 
         for field in ('room_membership', 'adj_matrix'):
             if field not in d:
@@ -38,10 +43,53 @@ class NodeDataset(Dataset):
                     f"npz '{npz_path}' 缺少 {field} 字段。\n"
                     "请重新运行 node_diffusion_room copy/build_graph_npz.py 生成新 npz。"
                 )
-        self.room_membership = d['room_membership'].astype(np.float32)  # [N, 40, MAX_ROOMS]
-        self.adj_matrix      = d['adj_matrix'].astype(np.float32)       # [N, 40, 40]
-        self.n_nodes         = d['n_nodes'].astype(np.int32)            # [N]
-        print(f"NodeDataset(TriStream adj+room+global): {len(self.coords)} samples from {npz_path}")
+        raw_adj = d['adj_matrix'].astype(np.float32)
+        raw_n_nodes = d['n_nodes'].astype(np.int32) if 'n_nodes' in d else raw_node_mask.sum(axis=1).astype(np.int32)
+
+        coords_list, mask_list, adj_list, membership_list, n_list = [], [], [], [], []
+        kept_rows = []
+        skipped = 0
+        for i in range(len(raw_coords)):
+            n = int(raw_n_nodes[i])
+            coords_i = raw_coords[i, :n]
+            adj_i = raw_adj[i, :n, :n]
+            coords_i, adj_i, _, _ = prune_dangling_nodes(coords_i, adj_i)
+            n_pruned = len(coords_i)
+            if n_pruned < 3:
+                skipped += 1
+                continue
+
+            coords_pad = np.zeros((MAX_NODES, 2), dtype=np.float32)
+            coords_pad[:n_pruned] = coords_i
+            mask = np.zeros(MAX_NODES, dtype=np.uint8)
+            mask[:n_pruned] = 1
+            adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)
+            adj_pad[:n_pruned, :n_pruned] = adj_i.astype(np.float32)
+            membership = np.zeros((MAX_NODES, MAX_ROOMS), dtype=np.float32)
+            membership[:n_pruned] = _assign_room_membership_single(adj_i.astype(bool), n_pruned)
+
+            coords_list.append(coords_pad)
+            mask_list.append(mask)
+            adj_list.append(adj_pad)
+            membership_list.append(membership)
+            n_list.append(n_pruned)
+            kept_rows.append(i)
+
+        if not coords_list:
+            raise ValueError(f"npz '{npz_path}' has no valid samples after dangling-node pruning")
+
+        self.coords          = np.stack(coords_list, axis=0)
+        self.node_mask       = np.stack(mask_list, axis=0)
+        self.adj_matrix      = np.stack(adj_list, axis=0)
+        self.room_membership = np.stack(membership_list, axis=0)
+        self.n_nodes         = np.array(n_list, dtype=np.int32)
+        self.prompt_tokens   = raw_prompt_tokens[kept_rows]
+        self._prompt_mask    = raw_prompt_mask[kept_rows] if raw_prompt_mask is not None else None
+        self._prompt_lens    = raw_prompt_lens[kept_rows] if raw_prompt_lens is not None else None
+        print(
+            f"NodeDataset(TriStream adj+room+global): {len(self.coords)} samples from {npz_path} "
+            f"(pruned dangling nodes, skipped {skipped})"
+        )
 
     def __len__(self):
         return len(self.coords)

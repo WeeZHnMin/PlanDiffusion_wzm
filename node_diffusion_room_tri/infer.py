@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .diffusion import GaussianDiffusion
+from .graph_prune import prune_dangling_nodes
 from transformers import BertTokenizer
 
 MAX_NODES    = 40
@@ -346,6 +347,14 @@ def main():
                 ]
             else:
                 gt_node_types = [["other"]] * n
+            raw_coords, adj_raw, gt_node_types, _ = prune_dangling_nodes(
+                raw_coords, adj_raw, gt_node_types
+            )
+            n = len(raw_coords)
+            if n < 3:
+                skipped += 1
+                continue
+            adj_raw = adj_raw.astype(np.int32)
 
             mask_np = np.zeros(MAX_NODES, dtype=np.float32); mask_np[:n] = 1.0
             adj_pad = np.zeros((MAX_NODES, MAX_NODES), dtype=np.float32)

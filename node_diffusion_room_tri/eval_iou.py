@@ -35,6 +35,7 @@ from transformers import BertModel, BertTokenizer
 
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .diffusion import GaussianDiffusion
+from .graph_prune import prune_dangling_nodes
 
 
 # ── 内联 TextCondGNN（来自 node_diffusion_cross_att，避免跨包依赖）──────────────
@@ -445,6 +446,14 @@ def main():
                 (t if isinstance(t, list) else [t])
                 for t in rec["node_types"][:n]
             ]
+            raw_coords, adj_raw, gt_node_types, _ = prune_dangling_nodes(
+                raw_coords, adj_raw, gt_node_types
+            )
+            n = len(raw_coords)
+            if n < 3:
+                skipped += 1
+                continue
+            adj_raw = adj_raw.astype(np.int32)
 
             gt_centered = center_at_origin(raw_coords, np.ones(n))
             adj_list    = adj_raw.tolist()
