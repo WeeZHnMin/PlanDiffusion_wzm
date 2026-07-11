@@ -23,6 +23,7 @@ from arguments import ModelArguments, DataTrainingArguments, TrainingArguments
 from datasets import load_dataset
 from evaluate import evaluate, get_avg_results, print_results
 from utils import get_episode_indices
+from base_dataset import seq2seq_data_collator
 # from transformers_src import T5ForConditionalGeneration,Trainer, T5Config
 from transformers_src import T5ForConditionalGeneration, T5Config
 
@@ -331,7 +332,7 @@ def main():
                 model=model,
                 args=training_args,
                 train_dataset=train_dataset,
-                data_collator = default_data_collator
+                data_collator=seq2seq_data_collator,
             )
             if periodic_eval_callback is not None:
                 trainer.add_callback(periodic_eval_callback)
