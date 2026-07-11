@@ -228,6 +228,36 @@ class BaseDataset(Dataset, ABC):
                 input_sentences = [( (self.input_format.format_input(example, multitask=multitask))+' '.join(example.boundary_tokens) ) for example in self.examples]
                 # input_sentences = [( ' '.join(example.boundary_tokens) ) + (self.input_format.format_input(example, multitask=multitask)) for example in self.examples] # reverse description and boundary token orders
 
+        if getattr(self.data_args, "drop_overlength", False):
+            keep_indices = []
+            dropped_input = 0
+            dropped_output = 0
+            for idx, (inp, out) in enumerate(zip(input_sentences, output_sentences)):
+                input_len = len(self.tokenizer.tokenize(inp))
+                output_len = len(self.tokenizer.tokenize(out))
+                if input_len > max_input_length:
+                    dropped_input += 1
+                    continue
+                if output_len > max_output_length:
+                    dropped_output += 1
+                    continue
+                keep_indices.append(idx)
+
+            original_count = len(self.examples)
+            if len(keep_indices) != len(self.examples):
+                self.examples = [self.examples[i] for i in keep_indices]
+                input_sentences = [input_sentences[i] for i in keep_indices]
+                output_sentences = [output_sentences[i] for i in keep_indices]
+                boundary_sentences = [boundary_sentences[i] for i in keep_indices]
+            total_dropped = dropped_input + dropped_output
+            if total_dropped > 0:
+                logging.info(
+                    f"Dropped {total_dropped} overlength examples out of {original_count} "
+                    f"(input>{max_input_length}: {dropped_input}, output>{max_output_length}: {dropped_output})"
+                )
+                if not self.examples:
+                    raise ValueError("All examples were filtered out by drop_overlength.")
+
         logging.info(f'Example input sententece: {input_sentences[0]}')
         logging.info(f'Example output sententece: {output_sentences[0]}')
 

@@ -96,6 +96,11 @@ class DataTrainingArguments:
         },
     )
 
+    drop_overlength: bool = field(
+        default=True,
+        metadata={"help": "Drop examples whose tokenized input/output exceed the configured max lengths instead of truncating them."}
+    )
+
     overwrite_cache: bool = field(
         default=True, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
