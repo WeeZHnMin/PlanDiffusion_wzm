@@ -478,18 +478,11 @@ def main():
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if len(results) == 1:
-            out_path.write_text(json.dumps(results[0], indent=2))
+            out_path.write_text(json.dumps({k: v for k, v in results[0].items() if k != "samples"}, indent=2))
         else:
-            stem = out_path.with_suffix("")
-            suffix = out_path.suffix or ".json"
             summary = []
             for res in results:
-                step = res["ddim_steps"] if res["ddim_steps"] is not None else res["timesteps"]
-                tag = f"ddim{step}" if args.sampler == "ddim" else f"ddpm{step}"
-                per_path = Path(f"{stem}_{tag}{suffix}")
-                per_path.write_text(json.dumps(res, indent=2))
                 summary.append({k: v for k, v in res.items() if k != "samples"})
-                print(f"结果保存 → {per_path}")
             out_path.write_text(json.dumps({"results": summary}, indent=2))
         print(f"汇总保存 → {out_path}")
 
