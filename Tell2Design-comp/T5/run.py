@@ -231,6 +231,7 @@ def main():
     # create tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
+        use_fast=False,
     )
 
     # get list of dataset names
