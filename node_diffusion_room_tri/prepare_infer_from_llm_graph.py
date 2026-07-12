@@ -15,6 +15,8 @@ import numpy as np
 
 from .graph_prune import prune_non_cycle_nodes
 
+MAX_NODES = 40
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -28,7 +30,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = kept = skipped_missing_adj = 0
+    total = kept = skipped_missing_adj = skipped_over_max_nodes = 0
     with open(args.llm_jsonl, encoding="utf-8") as fin, \
             out_path.open("w", encoding="utf-8") as fout:
         for line in fin:
@@ -47,6 +49,9 @@ def main():
             adj_np = np.array(gen_adj, dtype=np.int32)[:gen_n, :gen_n]
             adj_np, _ = prune_non_cycle_nodes(adj_np)
             gen_n = int(adj_np.shape[0])
+            if gen_n > MAX_NODES:
+                skipped_over_max_nodes += 1
+                continue
             rec = {
                 "prompt": llm.get("prompt", ""),
                 "n_nodes": gen_n,
@@ -58,6 +63,7 @@ def main():
     print(f"read llm rows: {total}")
     print(f"kept: {kept}")
     print(f"skipped_missing_gen_adj: {skipped_missing_adj}")
+    print(f"skipped_over_max_nodes: {skipped_over_max_nodes}")
     print(f"saved -> {out_path}")
 
 
