@@ -282,7 +282,7 @@ def main():
     p.add_argument("--ckpt",       default="checkpoints/node_diffusion_room_tri/latest.pt")
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_18k5.jsonl")
     p.add_argument("--out",        default="outputs/tri_infer.jsonl")
-    p.add_argument("--n_samples",  type=int, default=1000)
+    p.add_argument("--n_samples",  type=int, default=1000, help="0=all; 16=only first 16 valid samples")
     p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm"])
     p.add_argument("--ddim_steps", type=int, default=500)
     p.add_argument("--timesteps",  type=int, default=1000)
@@ -292,6 +292,7 @@ def main():
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
+    p.add_argument("--save_imgs", action="store_true", help="Save rendered node-coordinate images")
     p.add_argument("--img_dir",        default="outputs/tri_infer_imgs",
                    help="节点连接图保存目录")
     p.add_argument("--img_size",       type=int, default=768)
@@ -322,7 +323,7 @@ def main():
     skipped  = 0
     with open(args.jsonl, encoding="utf-8") as f:
         for line in f:
-            if len(prepared) + skipped >= args.n_samples:
+            if args.n_samples > 0 and len(prepared) + skipped >= args.n_samples:
                 break
             line = line.strip()
             if not line:
@@ -427,7 +428,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    img_dir = Path(args.img_dir) if args.img_dir else None
+    img_dir = Path(args.img_dir) if args.save_imgs else None
     if img_dir:
         img_dir.mkdir(parents=True, exist_ok=True)
 
