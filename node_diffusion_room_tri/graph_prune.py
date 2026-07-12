@@ -86,6 +86,7 @@ def prune_non_cycle_nodes(
     adj = np.asarray(adj).copy()
     n = min(adj.shape[0], adj.shape[1])
     adj = adj[:n, :n]
+    adj = ((adj + adj.T) > 0).astype(np.int32)
     np.fill_diagonal(adj, 0)
 
     keep_global = np.arange(n)

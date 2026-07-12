@@ -45,14 +45,17 @@ def main():
 
             gen_n = int(gen_n) if gen_n is not None else len(gen_adj)
             adj_np = np.array(gen_adj, dtype=np.int32)[:gen_n, :gen_n]
+            original_gen_n = gen_n
             adj_np, kept_idx = prune_non_cycle_nodes(adj_np)
             gen_n = int(adj_np.shape[0])
             rec = {
                 "source_index": llm.get("source_index"),
                 "prompt": llm.get("prompt", ""),
+                "original_gen_n_nodes": original_gen_n,
                 "n_nodes": gen_n,
                 "adj_matrix": adj_np.astype(int).tolist(),
                 "kept_node_indices": kept_idx.astype(int).tolist(),
+                "pruned_non_cycle_nodes": int(original_gen_n - gen_n),
                 "llm_gen_valid": llm.get("gen_valid"),
                 "llm_ged": llm.get("ged"),
                 "llm_face_diff": llm.get("face_diff"),
