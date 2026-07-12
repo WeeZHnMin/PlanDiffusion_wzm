@@ -283,7 +283,7 @@ def main():
     p.add_argument("--jsonl",      default="data/jsonl/test_graph_dataset_18k5.jsonl")
     p.add_argument("--out",        default="outputs/tri_infer.jsonl")
     p.add_argument("--n_samples",  type=int, default=1000, help="0=all; 16=only first 16 valid samples")
-    p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm"])
+    p.add_argument("--sampler",    default="ddim", choices=["ddim", "ddpm", "both"])
     p.add_argument("--ddim_steps", type=int, default=500)
     p.add_argument("--timesteps",  type=int, default=1000)
     p.add_argument("--batch_size", type=int, default=16)
@@ -388,6 +388,87 @@ def main():
     print(f"{sampler_info}，batch={args.batch_size}，开始推理...")
 
     # ── 批次采样 ──────────────────────────────────────────────────────────────
+    def _out_with_suffix(path_str, suffix):
+        path = Path(path_str)
+        return path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+
+    jobs = []
+    if args.sampler in ("ddim", "both"):
+        out_path = _out_with_suffix(args.out, f"ddim{args.ddim_steps}") if args.sampler == "both" else Path(args.out)
+        jobs.append(("ddim", args.ddim_steps, out_path))
+    if args.sampler in ("ddpm", "both"):
+        out_path = _out_with_suffix(args.out, f"ddpm{args.timesteps}") if args.sampler == "both" else Path(args.out)
+        jobs.append(("ddpm", args.timesteps, out_path))
+
+    VB = args.batch_size
+    for sampler_name, steps, out_path in jobs:
+        sampler_info = f"DDIM {steps}" if sampler_name == "ddim" else f"DDPM {steps}"
+        print(f"{sampler_info}, batch={args.batch_size}, start inference...")
+        all_pred = []
+        t0 = time.time()
+
+        with torch.no_grad():
+            for bi in range(0, len(prepared), VB):
+                chunk = prepared[bi: bi + VB]
+                B = len(chunk)
+
+                cond_b = {
+                    "node_mask":       torch.from_numpy(np.stack([s["mask_np"]    for s in chunk])).to(device),
+                    "room_membership": torch.from_numpy(np.stack([s["membership"] for s in chunk])).to(device),
+                    "adj_matrix":      torch.from_numpy(np.stack([s["adj_pad"]    for s in chunk])).to(device),
+                    "prompt_tokens":   torch.from_numpy(np.stack([s["ptok"]       for s in chunk])).to(device),
+                    "prompt_mask":     torch.from_numpy(np.stack([s["pmsk"]       for s in chunk])).to(device),
+                }
+
+                if sampler_name == "ddim":
+                    pred_xy = ddim_sample(model, diffusion, cond_b, device, steps)
+                else:
+                    pred_xy = ddpm_sample(model, diffusion, cond_b, device, steps)
+
+                for j in range(B):
+                    pred_np = pred_xy[j].cpu().numpy().T * 160.0
+                    n_j = chunk[j]["n"]
+                    mask_j = chunk[j]["mask_np"]
+                    pred_centered = center_at_origin(pred_np, mask_j)
+                    coords_j = pred_centered[:n_j].tolist()
+                    adj_j = chunk[j]["adj_list"]
+                    all_pred.append((coords_j, adj_j, n_j))
+
+                done = min(bi + VB, len(prepared))
+                print(f"  [{done}/{len(prepared)}]  {time.time() - t0:.1f}s", flush=True)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        img_dir = None
+        if args.save_imgs:
+            img_dir = Path(args.img_dir)
+            if args.sampler == "both":
+                img_dir = img_dir / f"{sampler_name}{steps}"
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            for idx, (s, (pred_coords, pred_adj, pred_n)) in enumerate(zip(prepared, all_pred)):
+                f.write(json.dumps({
+                    "prompt":           s["prompt"],
+                    "n_nodes":          pred_n,
+                    "adj_matrix":       pred_adj,
+                    "gt_node_coords":   s["gt_coords"],
+                    "gt_node_types":    s["gt_types"],
+                    "pred_node_coords": pred_coords,
+                }, ensure_ascii=False) + "\n")
+
+                if img_dir:
+                    img = render_graph(pred_coords, pred_adj, pred_n,
+                                       img_size=args.img_size)
+                    img.save(img_dir / f"{idx:05d}.png")
+
+        print(f"\nDone {sampler_info}: {len(all_pred)} samples  elapsed {time.time() - t0:.1f}s")
+        print(f"result -> {out_path}")
+        if img_dir:
+            print(f"images -> {img_dir}/")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return
+
     all_pred = []
     VB = args.batch_size
     t0 = time.time()
