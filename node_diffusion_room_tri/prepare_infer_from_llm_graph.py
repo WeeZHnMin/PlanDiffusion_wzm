@@ -67,6 +67,9 @@ def main():
             gt = val_rows[source_index]
 
             gen_n = int(gen_n) if gen_n is not None else len(gen_adj)
+            if gen_n > MAX_NODES:
+                skipped_over_max_nodes += 1
+                continue
             adj_np = np.array(gen_adj, dtype=np.int32)[:gen_n, :gen_n]
             adj_np, _ = prune_non_cycle_nodes(adj_np)
             gen_n = int(adj_np.shape[0])
