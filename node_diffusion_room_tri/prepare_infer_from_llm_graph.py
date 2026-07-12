@@ -1,10 +1,8 @@
-"""Build tri diffusion infer JSONL from LLM graph evaluation output.
+"""Convert LLM graph eval JSONL to node_diffusion_room_tri.infer input.
 
-The LLM graph evaluator writes prompt + generated adjacency only. This script
-joins those rows back to the original JSONL by source_index, then emits the
-format expected by node_diffusion_room_tri.infer:
-
-  prompt, n_nodes, adj_matrix, optional node_coords/node_types
+This is intentionally a thin field mapping:
+  gen_n_nodes -> n_nodes
+  gen_adj     -> adj_matrix
 """
 
 from __future__ import annotations
@@ -16,101 +14,49 @@ from pathlib import Path
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--val_jsonl", default="data/jsonl/graph_160k_spatial_val.jsonl")
     p.add_argument("--llm_jsonl", default="outputs/llm_graph_eval_val.jsonl")
     p.add_argument("--out", default="outputs/llm_graph_for_tri_infer.jsonl")
-    p.add_argument("--drop_invalid", action="store_true",
-                   help="Drop invalid LLM generations instead of falling back to GT adj.")
     return p.parse_args()
-
-
-def read_jsonl(path: str):
-    rows = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def fit_list(values, n, fill_value):
-    values = list(values[:n])
-    while len(values) < n:
-        values.append(fill_value)
-    return values
-
-
-def normalize_adj(adj, n):
-    out = [[0] * n for _ in range(n)]
-    for i, row in enumerate(adj[:n]):
-        for j, value in enumerate(row[:n]):
-            if i != j:
-                out[i][j] = int(value)
-    return out
 
 
 def main():
     args = parse_args()
-    val_rows = read_jsonl(args.val_jsonl)
-
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = kept = fallback_invalid = skipped_invalid = skipped_missing = 0
+    total = kept = skipped = 0
     with open(args.llm_jsonl, encoding="utf-8") as fin, \
             out_path.open("w", encoding="utf-8") as fout:
-        for line_no, line in enumerate(fin):
+        for line in fin:
             line = line.strip()
             if not line:
                 continue
             total += 1
             llm = json.loads(line)
-            source_index = llm.get("source_index", line_no)
-            if source_index is None or source_index < 0 or source_index >= len(val_rows):
-                skipped_missing += 1
+            gen_n = llm.get("gen_n_nodes")
+            gen_adj = llm.get("gen_adj")
+            if gen_n is None or gen_adj is None:
+                skipped += 1
                 continue
 
-            if not llm.get("gen_valid", False):
-                if args.drop_invalid:
-                    skipped_invalid += 1
-                    continue
-                gen_n = int(llm.get("gt_n_nodes", 0))
-                gen_adj = llm.get("gt_adj") or [[0] * gen_n for _ in range(gen_n)]
-                fallback_invalid += 1
-            else:
-                gen_n = int(llm["gen_n_nodes"])
-                gen_adj = llm["gen_adj"]
-
-            val = val_rows[source_index]
-            orig_n = int(val["n_nodes"])
-            if gen_n <= 0:
-                gen_n = orig_n
-                gen_adj = val["adj_matrix"]
-
+            gen_n = int(gen_n)
             rec = {
-                "source_index": source_index,
-                "prompt": llm.get("prompt", val.get("prompt", "")),
+                "source_index": llm.get("source_index"),
+                "prompt": llm.get("prompt", ""),
                 "n_nodes": gen_n,
-                "adj_matrix": normalize_adj(gen_adj, gen_n),
-                "llm_gen_valid": bool(llm.get("gen_valid", False)),
+                "adj_matrix": [row[:gen_n] for row in gen_adj[:gen_n]],
+                "llm_gen_valid": llm.get("gen_valid"),
                 "llm_ged": llm.get("ged"),
+                "llm_face_diff": llm.get("face_diff"),
                 "llm_gen_faces": llm.get("gen_faces"),
                 "llm_gt_faces": llm.get("gt_faces"),
             }
-            if "node_coords" in val:
-                rec["node_coords"] = fit_list(val["node_coords"], gen_n, [0.0, 0.0])
-            if "node_types" in val:
-                rec["node_types"] = fit_list(val["node_types"], gen_n, ["other"])
-
             fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
             kept += 1
 
     print(f"read llm rows: {total}")
     print(f"kept: {kept}")
-    print(f"fallback_invalid_to_gt_adj: {fallback_invalid}")
-    print(f"skipped_invalid: {skipped_invalid}")
-    print(f"skipped_missing_source: {skipped_missing}")
+    print(f"skipped_missing_gen_graph: {skipped}")
     print(f"saved -> {out_path}")
 
 
