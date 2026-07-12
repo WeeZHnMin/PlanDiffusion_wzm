@@ -546,7 +546,7 @@ def main():
                     combo_ids = type_logits.argmax(dim=-1).cpu().numpy()
 
                 for j in range(B):
-                    all_pred_np.append(pred_xy[j].cpu().numpy().T)
+                    all_pred_np.append(pred_xy[j].cpu().numpy().T * 160.0)
                     if all_model_types is not None:
                         n_j = chunk[j]["n"]
                         all_model_types.append([
