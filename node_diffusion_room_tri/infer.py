@@ -235,6 +235,9 @@ def render_graph(coords, adj, n, img_size=768, margin=48, node_r=18):
     span   = np.maximum(hi - lo, 1e-6)
     draw_range = img_size - 2 * margin
     pts_px = ((pts - lo) / span * draw_range + margin).astype(int)
+    # visualize_gt_adj.py displays the data y-axis upward. PIL pixels grow
+    # downward, so flip only the rendered y pixel and keep json coordinates as-is.
+    pts_px[:, 1] = (img_size - 1) - pts_px[:, 1]
 
     img  = Image.new("RGB", (img_size, img_size), color=(250, 250, 250))
     draw = ImageDraw.Draw(img)
@@ -292,7 +295,10 @@ def main():
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
     p.add_argument("--num_heads",      type=int, default=6)
-    p.add_argument("--save_imgs", action="store_true", help="Save rendered node-coordinate images")
+    p.add_argument("--save_imgs", action="store_true", default=True,
+                   help="Save rendered node-coordinate images (default: on)")
+    p.add_argument("--no_save_imgs", action="store_false", dest="save_imgs",
+                   help="Disable rendered node-coordinate images")
     p.add_argument("--img_dir",        default="outputs/tri_infer_imgs",
                    help="节点连接图保存目录")
     p.add_argument("--img_size",       type=int, default=768)
