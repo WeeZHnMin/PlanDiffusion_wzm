@@ -28,7 +28,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = kept = skipped = 0
+    total = kept = skipped_missing_adj = 0
     with open(args.llm_jsonl, encoding="utf-8") as fin, \
             out_path.open("w", encoding="utf-8") as fout:
         for line in fin:
@@ -39,17 +39,14 @@ def main():
             llm = json.loads(line)
             gen_n = llm.get("gen_n_nodes")
             gen_adj = llm.get("gen_adj")
-            if gen_n is None or gen_adj is None:
-                skipped += 1
+            if gen_adj is None:
+                skipped_missing_adj += 1
                 continue
 
-            gen_n = int(gen_n)
+            gen_n = int(gen_n) if gen_n is not None else len(gen_adj)
             adj_np = np.array(gen_adj, dtype=np.int32)[:gen_n, :gen_n]
             adj_np, kept_idx = prune_non_cycle_nodes(adj_np)
             gen_n = int(adj_np.shape[0])
-            if gen_n < 3:
-                skipped += 1
-                continue
             rec = {
                 "source_index": llm.get("source_index"),
                 "prompt": llm.get("prompt", ""),
@@ -67,7 +64,7 @@ def main():
 
     print(f"read llm rows: {total}")
     print(f"kept: {kept}")
-    print(f"skipped_missing_gen_graph: {skipped}")
+    print(f"skipped_missing_gen_adj: {skipped_missing_adj}")
     print(f"saved -> {out_path}")
 
 
