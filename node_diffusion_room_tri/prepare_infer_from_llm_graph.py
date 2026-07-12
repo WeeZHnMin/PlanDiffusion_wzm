@@ -11,6 +11,10 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
+from .graph_prune import prune_non_cycle_nodes
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -40,11 +44,18 @@ def main():
                 continue
 
             gen_n = int(gen_n)
+            adj_np = np.array(gen_adj, dtype=np.int32)[:gen_n, :gen_n]
+            adj_np, kept_idx = prune_non_cycle_nodes(adj_np)
+            gen_n = int(adj_np.shape[0])
+            if gen_n < 3:
+                skipped += 1
+                continue
             rec = {
                 "source_index": llm.get("source_index"),
                 "prompt": llm.get("prompt", ""),
                 "n_nodes": gen_n,
-                "adj_matrix": [row[:gen_n] for row in gen_adj[:gen_n]],
+                "adj_matrix": adj_np.astype(int).tolist(),
+                "kept_node_indices": kept_idx.astype(int).tolist(),
                 "llm_gen_valid": llm.get("gen_valid"),
                 "llm_ged": llm.get("ged"),
                 "llm_face_diff": llm.get("face_diff"),
