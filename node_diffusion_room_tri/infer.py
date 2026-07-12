@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
 from .diffusion import GaussianDiffusion
-from .graph_prune import prune_dangling_nodes
+from .graph_prune import prune_dangling_nodes, prune_non_cycle_nodes
 from transformers import BertTokenizer
 
 MAX_NODES    = 40
@@ -419,6 +419,11 @@ def main():
                 adj_j    = chunk[j]["adj_list"]
                 coords_j, adj_j = snap_nodes(coords_j, adj_j, n_j)
                 coords_j, adj_j, n_j = insert_crossing_nodes(coords_j, adj_j, n_j)
+                adj_np = np.array(adj_j, dtype=np.int32)[:n_j, :n_j]
+                adj_np, kept_idx = prune_non_cycle_nodes(adj_np)
+                coords_j = [coords_j[int(i)] for i in kept_idx]
+                adj_j = adj_np.astype(int).tolist()
+                n_j = len(coords_j)
                 all_pred.append((coords_j, adj_j, n_j))
 
             done = min(bi + VB, len(prepared))
