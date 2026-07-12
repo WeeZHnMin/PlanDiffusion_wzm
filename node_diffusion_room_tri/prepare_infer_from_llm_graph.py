@@ -19,10 +19,8 @@ def parse_args():
     p.add_argument("--val_jsonl", default="data/jsonl/graph_160k_spatial_val.jsonl")
     p.add_argument("--llm_jsonl", default="outputs/llm_graph_eval_val.jsonl")
     p.add_argument("--out", default="outputs/llm_graph_for_tri_infer.jsonl")
-    p.add_argument("--keep_invalid", action="store_true",
-                   help="Keep invalid LLM generations as zero-edge placeholders.")
-    p.add_argument("--allow_truncate", action="store_true",
-                   help="Allow gen_n_nodes <= original n_nodes and truncate coords/types.")
+    p.add_argument("--drop_invalid", action="store_true",
+                   help="Drop invalid LLM generations instead of falling back to GT adj.")
     return p.parse_args()
 
 
@@ -36,6 +34,22 @@ def read_jsonl(path: str):
     return rows
 
 
+def fit_list(values, n, fill_value):
+    values = list(values[:n])
+    while len(values) < n:
+        values.append(fill_value)
+    return values
+
+
+def normalize_adj(adj, n):
+    out = [[0] * n for _ in range(n)]
+    for i, row in enumerate(adj[:n]):
+        for j, value in enumerate(row[:n]):
+            if i != j:
+                out[i][j] = int(value)
+    return out
+
+
 def main():
     args = parse_args()
     val_rows = read_jsonl(args.val_jsonl)
@@ -43,7 +57,7 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = kept = skipped_invalid = skipped_missing = skipped_n = 0
+    total = kept = fallback_invalid = skipped_invalid = skipped_missing = 0
     with open(args.llm_jsonl, encoding="utf-8") as fin, \
             out_path.open("w", encoding="utf-8") as fout:
         for line_no, line in enumerate(fin):
@@ -58,46 +72,45 @@ def main():
                 continue
 
             if not llm.get("gen_valid", False):
-                if not args.keep_invalid:
+                if args.drop_invalid:
                     skipped_invalid += 1
                     continue
                 gen_n = int(llm.get("gt_n_nodes", 0))
-                gen_adj = [[0] * gen_n for _ in range(gen_n)]
+                gen_adj = llm.get("gt_adj") or [[0] * gen_n for _ in range(gen_n)]
+                fallback_invalid += 1
             else:
                 gen_n = int(llm["gen_n_nodes"])
                 gen_adj = llm["gen_adj"]
 
             val = val_rows[source_index]
             orig_n = int(val["n_nodes"])
-            if gen_n > orig_n:
-                skipped_n += 1
-                continue
-            if gen_n != orig_n and not args.allow_truncate:
-                skipped_n += 1
-                continue
+            if gen_n <= 0:
+                gen_n = orig_n
+                gen_adj = val["adj_matrix"]
 
             rec = {
                 "source_index": source_index,
                 "prompt": llm.get("prompt", val.get("prompt", "")),
                 "n_nodes": gen_n,
-                "adj_matrix": [row[:gen_n] for row in gen_adj[:gen_n]],
+                "adj_matrix": normalize_adj(gen_adj, gen_n),
+                "llm_gen_valid": bool(llm.get("gen_valid", False)),
                 "llm_ged": llm.get("ged"),
                 "llm_gen_faces": llm.get("gen_faces"),
                 "llm_gt_faces": llm.get("gt_faces"),
             }
             if "node_coords" in val:
-                rec["node_coords"] = val["node_coords"][:gen_n]
+                rec["node_coords"] = fit_list(val["node_coords"], gen_n, [0.0, 0.0])
             if "node_types" in val:
-                rec["node_types"] = val["node_types"][:gen_n]
+                rec["node_types"] = fit_list(val["node_types"], gen_n, ["other"])
 
             fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
             kept += 1
 
     print(f"read llm rows: {total}")
     print(f"kept: {kept}")
+    print(f"fallback_invalid_to_gt_adj: {fallback_invalid}")
     print(f"skipped_invalid: {skipped_invalid}")
     print(f"skipped_missing_source: {skipped_missing}")
-    print(f"skipped_node_count: {skipped_n}")
     print(f"saved -> {out_path}")
 
 
