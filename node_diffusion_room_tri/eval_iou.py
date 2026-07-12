@@ -370,7 +370,7 @@ def main():
     p.add_argument("--timesteps",   type=int, default=1000,
                    help="DDPM 步数（--sampler ddpm 时生效）")
     p.add_argument("--batch_size",  type=int, default=16)
-    p.add_argument("--bert",        default="models/bert-base-uncased")
+    p.add_argument("--bert",        default="checkpoints/text_graph_align/bert_aligned")
     p.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--model_channels", type=int, default=384)
     p.add_argument("--num_layers",     type=int, default=6)
