@@ -85,10 +85,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeout", type=float, default=30.0)
     p.add_argument("--retry-times", type=int, default=3)
     p.add_argument("--retry-delay", type=float, default=1.0)
-    p.add_argument("--disable-thinking", action="store_true",
-                   help="Disable model thinking mode")
-    p.add_argument("--enable-thinking", action="store_true", default=True,
-                   help="Enable model thinking mode (default: on)")
+    p.add_argument("--enable-thinking", action="store_true",
+                   help="Enable model thinking mode. Default: off")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
     p.add_argument("--image_dir", default="outputs/tri_from_llm_graph_imgs/ddim500")
@@ -543,7 +541,7 @@ def main() -> None:
         print(f"model={args.model} base_url={args.base_url}")
     else:
         client = None
-    disable_thinking = args.disable_thinking
+    disable_thinking = not args.enable_thinking
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
