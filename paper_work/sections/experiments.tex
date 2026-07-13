@@ -97,7 +97,7 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 \end{table}
 
 TextGraphAlign 采用 AdamW 优化器，图编码器与投影头学习率为 $10^{-4}$，
-BERT 最后 4 层解冻并使用较小学习率 $10^{-5}$，
+BERT 最后 6 层解冻并使用较小学习率 $10^{-5}$，
 weight decay 为 $10^{-2}$，warmup 500 steps，batch size 为 256，
 总训练 30k steps。验证时报告双向检索准确率（graph-to-text 与 text-to-graph），
 并保存验证损失最低的 aligned BERT 供后续 NodeDiffusionTransformer 使用。

@@ -239,7 +239,8 @@ $\mathrm{GlobalAttn}$ 捕获全局布局关系。
     \frac{g_\phi(\mathbf{X}_i,\mathbf{A}_i,\mathbf{m}_i)}
          {\|g_\phi(\mathbf{X}_i,\mathbf{A}_i,\mathbf{m}_i)\|_2}.
 \end{equation}
-文本编码器 $t_\phi$ 以 BERT-base-uncased 为主干，冻结大部分层，仅解冻最后若干层，
+文本编码器 $t_\phi$ 以预训练的 BERT-base-uncased 为初始化，
+冻结底部 6 层，仅解冻顶部 6 层参与图文对比训练；
 取 \texttt{[CLS]} token 表示，经 MLP 投影并归一化得到：
 \begin{equation}
     \mathbf{z}^{t}_i =
