@@ -13,7 +13,6 @@ parses the JSON answer with one retry, then computes IoU against GT rooms.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import os
@@ -46,7 +45,6 @@ ALLOWED_TYPES = {
 }
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_MODEL = "qwen3.5-plus"
 
 TYPE_ALIASES = {
@@ -76,20 +74,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", default="outputs/tri_llm_room_type_iou.jsonl")
     p.add_argument("--summary", default=None, help="Optional summary JSON path")
     p.add_argument("--model", default=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL))
-    p.add_argument("--provider", choices=["auto", "dashscope", "openai", "mimo"], default="auto")
     p.add_argument("--base-url", "--base_url", dest="base_url",
-                   default=os.environ.get("OPENAI_BASE_URL"))
+                   default=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL))
     p.add_argument("--api-key", "--api_key", dest="api_key",
-                   default=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("MIMO_API_KEY"))
+                   default=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY"))
     p.add_argument("--temperature", type=float, default=0.0)
-    p.add_argument("--top-p", "--top_p", dest="top_p", type=float, default=0.95)
-    p.add_argument("--max-completion-tokens", "--max_completion_tokens",
-                   dest="max_completion_tokens", type=int, default=None,
-                   help="Optional. Default: do not limit completion tokens.")
-    p.add_argument("--frequency-penalty", "--frequency_penalty",
-                   dest="frequency_penalty", type=float, default=0.0)
-    p.add_argument("--presence-penalty", "--presence_penalty",
-                   dest="presence_penalty", type=float, default=0.0)
     p.add_argument("--timeout", type=float, default=30.0)
     p.add_argument("--retry-times", type=int, default=3)
     p.add_argument("--retry-delay", type=float, default=1.0)
@@ -375,14 +364,9 @@ def parse_llm_response(text: str, expected_room_ids: Sequence[str]) -> Dict[str,
 
 def call_llm(
     client: Any,
-    provider: str,
     model: str,
     prompt: str,
     temperature: float,
-    top_p: float,
-    max_completion_tokens: Optional[int],
-    frequency_penalty: float,
-    presence_penalty: float,
     disable_thinking: bool,
     retry_times: int,
     retry_delay: float,
@@ -390,19 +374,7 @@ def call_llm(
     last_error = ""
     for attempt in range(1, retry_times + 1):
         try:
-            kwargs = {}
-            if provider == "mimo":
-                kwargs.update({
-                    "top_p": top_p,
-                    "stream": False,
-                    "stop": None,
-                    "frequency_penalty": frequency_penalty,
-                    "presence_penalty": presence_penalty,
-                })
-                if max_completion_tokens is not None:
-                    kwargs["max_completion_tokens"] = max_completion_tokens
-            else:
-                kwargs["extra_body"] = {"enable_thinking": not disable_thinking}
+            kwargs = {"extra_body": {"enable_thinking": not disable_thinking}}
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -460,8 +432,7 @@ def process_one(
     row_index: int,
     row: Dict[str, Any],
     args: argparse.Namespace,
-    clients: Sequence[Any],
-    provider: str,
+    client: Any,
     disable_thinking: bool,
 ) -> Dict[str, Any]:
     out = base_output(row, row_index)
@@ -481,11 +452,8 @@ def process_one(
             return out
 
         expected_ids = [r["room_id"] for r in rooms]
-        client = clients[row_index % len(clients)]
         raw1 = call_llm(
-            client, provider, args.model, prompt, args.temperature,
-            args.top_p, args.max_completion_tokens,
-            args.frequency_penalty, args.presence_penalty,
+            client, args.model, prompt, args.temperature,
             disable_thinking, args.retry_times, args.retry_delay,
         )
         try:
@@ -497,9 +465,7 @@ def process_one(
                 "Return only strict JSON. Cover every room_id exactly once."
             )
             raw2 = call_llm(
-                client, provider, args.model, retry_prompt, args.temperature,
-                args.top_p, args.max_completion_tokens,
-                args.frequency_penalty, args.presence_penalty,
+                client, args.model, retry_prompt, args.temperature,
                 disable_thinking, args.retry_times, args.retry_delay,
             )
             room_types = parse_llm_response(raw2, expected_ids)
@@ -539,58 +505,17 @@ def process_one(
         return out
 
 
-def resolve_provider(args: argparse.Namespace) -> str:
-    if args.provider != "auto":
-        return args.provider
-    if args.model.lower().startswith("mimo") or (args.base_url and "xiaomimimo" in args.base_url):
-        return "mimo"
-    if args.base_url:
-        return "openai"
-    return "dashscope"
-
-
-def load_mimo_keys() -> List[str]:
-    keys: List[str] = []
-    env_key = os.environ.get("MIMO_API_KEY")
-    if env_key:
-        keys.append(env_key)
-    key_file = Path("api_keys.py")
-    if key_file.exists():
-        spec = importlib.util.spec_from_file_location("local_api_keys", key_file)
-        if spec and spec.loader:
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            keys.extend([str(k) for k in getattr(mod, "MIMO_API_KEYS", []) if k])
-    # Preserve order while removing duplicates.
-    return list(dict.fromkeys(keys))
-
-
-def make_clients(args: argparse.Namespace, provider: str) -> Tuple[List[Any], str]:
-    base_url = args.base_url
-    if provider == "mimo":
-        base_url = base_url or MIMO_BASE_URL
-        keys = [args.api_key] if args.api_key else load_mimo_keys()
-    elif provider == "dashscope":
-        base_url = base_url or DEFAULT_BASE_URL
-        keys = [args.api_key] if args.api_key else []
-    else:
-        keys = [args.api_key] if args.api_key else []
-    keys = [k for k in keys if k]
-    if not keys:
-        raise RuntimeError(f"API key is required for provider={provider}")
-    return [OpenAI(api_key=k, base_url=base_url, timeout=args.timeout) for k in keys], base_url or ""
-
-
 def main() -> None:
     args = parse_args()
-    provider = resolve_provider(args)
     if not args.dry_run:
         if OpenAI is None:
             raise RuntimeError("openai package is not installed")
-        clients, base_url = make_clients(args, provider)
-        print(f"provider={provider} model={args.model} base_url={base_url} clients={len(clients)}")
+        if not args.api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY, OPENAI_API_KEY, or --api-key is required")
+        client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=args.timeout)
+        print(f"model={args.model} base_url={args.base_url}")
     else:
-        clients = []
+        client = None
     disable_thinking = args.disable_thinking
 
     out_path = Path(args.out)
@@ -607,12 +532,12 @@ def main() -> None:
     workers = max(1, int(args.workers))
     if workers == 1:
         for idx, row in rows:
-            results[idx] = process_one(idx, row, args, clients, provider, disable_thinking)
+            results[idx] = process_one(idx, row, args, client, disable_thinking)
             print(f"[{len(results)}/{len(rows)}] row={idx} status={results[idx]['status']}", flush=True)
     else:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {
-                ex.submit(process_one, idx, row, args, clients, provider, disable_thinking): idx
+                ex.submit(process_one, idx, row, args, client, disable_thinking): idx
                 for idx, row in rows
             }
             for fut in as_completed(futs):
