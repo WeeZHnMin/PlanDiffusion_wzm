@@ -36,6 +36,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep unmatched/ambiguous rows unchanged. Default: drop them.",
     )
+    p.add_argument(
+        "--image_dir",
+        default=None,
+        help="Optional image directory whose 00000.png-style files should be deleted for dropped rows.",
+    )
+    p.add_argument(
+        "--image_ext",
+        default=".png",
+        help="Image extension used with --image_dir. Default: .png",
+    )
     p.add_argument("--write_source_index", action="store_true", default=True)
     return p.parse_args()
 
@@ -111,6 +121,8 @@ def main() -> None:
     args = parse_args()
     val_rows = read_jsonl(args.val_jsonl)
     indexes = build_indexes(val_rows)
+    image_dir = Path(args.image_dir) if args.image_dir else None
+    image_ext = args.image_ext if args.image_ext.startswith(".") else f".{args.image_ext}"
 
     in_path = Path(args.in_jsonl)
     out_path = Path(args.out) if args.out else in_path
@@ -122,12 +134,14 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     total = matched = kept_unmatched = dropped_unmatched = 0
+    deleted_images = missing_images = 0
     reasons: Dict[str, int] = defaultdict(int)
     with in_path.open(encoding="utf-8") as fin, write_path.open("w", encoding="utf-8") as fout:
         for line in fin:
             line = line.strip()
             if not line:
                 continue
+            row_index = total
             total += 1
             row = json.loads(line)
             idx, reason = find_match(row, val_rows, indexes)
@@ -140,6 +154,13 @@ def main() -> None:
                     kept_unmatched += 1
                 else:
                     dropped_unmatched += 1
+                    if image_dir is not None:
+                        image_path = image_dir / f"{row_index:05d}{image_ext}"
+                        if image_path.exists():
+                            image_path.unlink()
+                            deleted_images += 1
+                        else:
+                            missing_images += 1
                 continue
 
             patched = dict(row)
@@ -159,6 +180,9 @@ def main() -> None:
     print(f"matched: {matched}")
     print(f"kept_unmatched: {kept_unmatched}")
     print(f"dropped_unmatched: {dropped_unmatched}")
+    if image_dir is not None:
+        print(f"deleted_images: {deleted_images}")
+        print(f"missing_images: {missing_images}")
     for reason, count in sorted(reasons.items()):
         print(f"{reason}: {count}")
     if write_path != out_path:
