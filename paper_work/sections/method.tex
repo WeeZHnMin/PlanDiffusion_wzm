@@ -218,6 +218,59 @@ grad clip $= 1.0$，FP16 混合精度~\cite{micikevicius2018mixed}。
 训练数据对每张图从不同起始节点执行 BFS，共 ${\times}12$ 倍数据增强。
 
 % -----------------------------------------------------------------------------
+\subsection{图文对比对齐预训练}
+\label{subsec:text_graph_align}
+
+仅使用通用 BERT 表征文本会带来一个明显问题：自然语言中的空间关系
+（如 ``left of'', ``adjacent to'', ``connected with''）并不必然与平面图的拓扑结构和节点几何在同一语义空间中对齐。
+为此，在训练坐标扩散模型之前，本文额外构建一个 CLIP 风格的
+\textbf{TextGraphAlign} 模块，对文本描述与真实顶点图进行对比预训练。
+该模块不直接生成平面图，而是学习一个共享的文本--图结构嵌入空间，并将对齐后的 BERT 权重导出为后续扩散模型的文本编码器。
+
+给定一批配对样本 $\{(\mathcal{T}_i,\mathbf{X}_i,\mathbf{A}_i)\}_{i=1}^{B}$，
+图编码器 $g_\phi$ 接收节点坐标、邻接矩阵、节点掩码和由环检测得到的 room membership。
+其内部采用与坐标扩散网络一致的三流结构注意力：
+$\mathrm{AdjAttn}$ 捕获直接相邻边关系，
+$\mathrm{RoomAttn}$ 捕获同一房间面的节点关系，
+$\mathrm{GlobalAttn}$ 捕获全局布局关系。
+多层编码后，通过 attention pooling 得到图级表示，并经 MLP 投影与 $\ell_2$ 归一化：
+\begin{equation}
+    \mathbf{z}^{g}_i =
+    \frac{g_\phi(\mathbf{X}_i,\mathbf{A}_i,\mathbf{m}_i)}
+         {\|g_\phi(\mathbf{X}_i,\mathbf{A}_i,\mathbf{m}_i)\|_2}.
+\end{equation}
+文本编码器 $t_\phi$ 以 BERT-base-uncased 为主干，冻结大部分层，仅解冻最后若干层，
+取 \texttt{[CLS]} token 表示，经 MLP 投影并归一化得到：
+\begin{equation}
+    \mathbf{z}^{t}_i =
+    \frac{t_\phi(\mathcal{T}_i)}
+         {\|t_\phi(\mathcal{T}_i)\|_2}.
+\end{equation}
+
+训练目标采用对称 InfoNCE 损失。令 $\tau$ 为可学习温度，
+批内图--文相似度为
+\begin{equation}
+    s_{ij} = \frac{(\mathbf{z}^{g}_i)^\top \mathbf{z}^{t}_j}{\tau},
+\end{equation}
+则对比损失为：
+\begin{equation}
+    \mathcal{L}_{\mathrm{align}}
+    =
+    \frac{1}{2}
+    \left[
+    \frac{1}{B}\sum_i
+    -\log\frac{\exp(s_{ii})}{\sum_j \exp(s_{ij})}
+    +
+    \frac{1}{B}\sum_i
+    -\log\frac{\exp(s_{ii})}{\sum_j \exp(s_{ji})}
+    \right].
+    \label{eq:clip_align}
+\end{equation}
+其中第一项对应 graph-to-text 检索，第二项对应 text-to-graph 检索。
+预训练结束后，保留对齐后的 BERT 权重作为 $\theta_2$ 的文本编码器初始化；
+在坐标扩散训练与推理阶段，该 BERT 编码器保持冻结，只提供稳定的文本条件特征。
+
+% -----------------------------------------------------------------------------
 \subsection{节点坐标扩散}
 \label{subsec:node_diffusion}
 
@@ -338,8 +391,9 @@ $t=0$ 为真实节点坐标，随时间步增大逐渐被高斯噪声淹没，
     + \mathrm{Dropout}\!\left(\mathrm{CrossAttn}(\mathbf{H}^{(\ell)},\, \mathbf{H}_{\mathrm{text}})\right)_{\!i}
     \label{eq:cross_attn}
 \end{equation}
-文本特征 $\mathbf{H}_{\mathrm{text}}$ 由冻结的 BERT-base-uncased 编码后经线性投影（$768\to d$）得到，
-推理全程保持不变。
+文本特征 $\mathbf{H}_{\mathrm{text}}$ 由\S\ref{subsec:text_graph_align} 中图文对比预训练后的
+aligned BERT 编码后经线性投影（$768\to d$）得到；
+在坐标扩散训练与推理阶段，该文本编码器保持冻结，推理全程仅需预计算一次。
 
 共堆叠 6 层，$d = 384$，6 头，dropout $= 0.1$，约 15M 参数。
 

@@ -78,7 +78,7 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 \end{table}
 
 \paragraph{实现细节}
-两个可训练子模块均在单张 NVIDIA GPU 上独立训练，其超参数如表~\ref{tab:impl} 所示。
+三个可训练子模块均在 NVIDIA GPU 上独立训练，其超参数如表~\ref{tab:impl} 所示。
 
 \begin{table}[h]
 \centering
@@ -90,10 +90,17 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 子模块 & 模型 & GPU & Batch & Steps & 时长 \\
 \midrule
 图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
+图文对比对齐   & TextGraphAlign（39M 可训练）     & RTX 3090（24\,GB） & 256 & 30k          & -- \\
 节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & $\sim$201\,h  \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+TextGraphAlign 采用 AdamW 优化器，图编码器与投影头学习率为 $10^{-4}$，
+BERT 最后 4 层解冻并使用较小学习率 $10^{-5}$，
+weight decay 为 $10^{-2}$，warmup 500 steps，batch size 为 256，
+总训练 30k steps。验证时报告双向检索准确率（graph-to-text 与 text-to-graph），
+并保存验证损失最低的 aligned BERT 供后续 NodeDiffusionTransformer 使用。
 
 推理时各阶段串联执行：图拓扑生成（自回归解码）$\to$
 坐标扩散（DDPM 1000 步逆采样）$\to$ 面提取与语义标注 $\to$ 渲染输出。
