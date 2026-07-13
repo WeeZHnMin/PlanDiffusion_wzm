@@ -245,9 +245,9 @@ def draw_graph(ax, row: Dict[str, Any]) -> None:
     ax.set_title("GT rendered layout from node_coords / node_types / adj_matrix", fontsize=11)
     ax.set_aspect("equal")
     ax.set_xlim(0, 1)
-    ax.set_ylim(1, 0)
+    ax.set_ylim(0, 1)
     ax.set_xlabel("x -> right/east")
-    ax.set_ylabel("image y -> down/south")
+    ax.set_ylabel("y -> up/north")
     ax.set_xticks([])
     ax.set_yticks([])
 
