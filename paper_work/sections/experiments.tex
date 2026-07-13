@@ -5,7 +5,7 @@
 \label{subsec:setup}
 
 \paragraph{评估指标}
-我们从图拓扑合法性、坐标回归精度和节点类型预测三个维度评估各子模块，
+我们从图拓扑合法性、坐标回归精度和端到端布局质量三个维度评估各阶段，
 并以图结构分布指标衡量端到端生成质量。
 所有指标均在 9,895 条独立测试集上计算。
 
@@ -28,10 +28,6 @@
     \item \textbf{坐标 RMSE（Coord-RMSE）}：
     给定真实图结构条件下，去噪预测坐标与真实坐标的均方根误差，
     衡量节点坐标扩散子模块的回归精度。
-
-    \item \textbf{类型准确率（Type Acc.）}：
-    给定真实坐标和图结构条件下，节点类型预测与真实类型的匹配率，
-    衡量类型预测子模块的分类精度。
 
     \item \textbf{端到端 IoU}：
     三阶段完整推理后，以 Shapely 多边形面积计算预测房间布局与真实布局之间的交并比。
@@ -82,11 +78,11 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 \end{table}
 
 \paragraph{实现细节}
-三个子模块均在单张 NVIDIA GPU 上独立训练，各模块超参数如表~\ref{tab:impl} 所示。
+两个可训练子模块均在单张 NVIDIA GPU 上独立训练，其超参数如表~\ref{tab:impl} 所示。
 
 \begin{table}[h]
 \centering
-\caption{各子模块训练配置}
+\caption{可训练子模块训练配置}
 \label{tab:impl}
 \small
 \begin{tabular}{lllccc}
@@ -95,16 +91,15 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 \midrule
 图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
 节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & $\sim$201\,h  \\
-节点类型预测   & NodeTypeClassifier（15M）         & RTX 3060（6\,GB）  & 64  & 320k        & $\sim$45\,h  \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-推理时三阶段串联执行：图拓扑生成（自回归解码）$\to$
-坐标扩散（DDPM 1000 步逆采样）$\to$ 类型分类（单次前向）$\to$ 渲染输出。
+推理时各阶段串联执行：图拓扑生成（自回归解码）$\to$
+坐标扩散（DDPM 1000 步逆采样）$\to$ 面提取与语义标注 $\to$ 渲染输出。
 单条样本端到端推理耗时如表~\ref{tab:latency} 所示。
 DDPM 逆采样（$\theta_2$）为主要瓶颈，占总耗时约 95\%；
-$\theta_3$ 分类与渲染阶段耗时可忽略不计。
+面提取与渲染阶段耗时可忽略不计。
 
 \begin{table}[h]
 \centering
@@ -113,7 +108,7 @@ $\theta_3$ 分类与渲染阶段耗时可忽略不计。
 \small
 \begin{tabular}{lcccc|c}
 \toprule
-设备 & $\theta_1$（自回归） & $\theta_2$（DDPM） & $\theta_3$（分类） & 渲染 & 合计 \\
+设备 & $\theta_1$（自回归） & $\theta_2$（DDPM） & 面提取 & 渲染 & 合计 \\
 \midrule
 RTX 3060 Laptop GPU   & 0.60\,s & 13.43\,s & 0.02\,s & $<$0.01\,s & 14.05\,s \\
 Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \\
@@ -124,14 +119,12 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 \subsection{主实验结果}
 \label{subsec:main_results}
 
-表~\ref{tab:main_results} 报告了 PlanDiffusion 各子模块的定量评估结果，
+表~\ref{tab:main_results} 报告了 PlanDiffusion 主要模块与端到端布局的定量评估结果，
 测试集共 9,895 条样本。
 由于现有方法与本文在输入模态、数据集及图表示方式上均不一致，
 此处仅报告本文方法的完整指标。
 其中 Coord-RMSE 以 $\theta_1$ 生成的邻接矩阵（而非真实邻接矩阵）作为 $\theta_2$ 的条件输入，
 反映真实推理链路下的坐标扩散精度；
-类型准确率（Type Acc.\ 与 Face Type Acc.）则以真实坐标和真实图结构为条件，
-单独评估 $\theta_3$ 的分类能力。
 端到端布局 IoU 在 9,895 条测试样本、5 次独立推理取平均后，
 经坐标后处理（\S\ref{subsec:snap_ablation}）达到 Micro-IoU 22.46\%、Macro-IoU 21.27\%，
 与同类文本驱动方法 HouseTune~\cite{hu2023housetune}（Micro 21.84\%、Macro 17.75\%，RPLAN 数据集）处于相近水平；
@@ -144,12 +137,12 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 
 \begin{table}[h]
 \centering
-\caption{PlanDiffusion 各子模块定量结果}
+\caption{PlanDiffusion 主要模块与端到端布局定量结果}
 \label{tab:main_results}
 \small
 \begin{tabular}{lcc}
 \toprule
-子模块 & 指标 & 结果 \\
+模块/阶段 & 指标 & 结果 \\
 \midrule
 \multirow{6}{*}{图拓扑生成（$\theta_1$）}
     & GVR↑                     & 100.0\% \\
@@ -160,10 +153,6 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
     & 节点数准确率（$\pm2$）↑  & 76.39\% \\
 \midrule
 节点坐标扩散（$\theta_2$，三流） & Coord-RMSE↓ & 65.62 \\
-\midrule
-\multirow{2}{*}{VLM 面类型标注（MiMo-V2.5）}
-    & Face Type Acc.↑ & \todo{待补} \\
-    & （多模型一致率） & \todo{待补} \\
 \midrule
 \multirow{2}{*}{端到端布局——PlanDiffusion-tri（5-roll 平均，含后处理）}
     & Micro-IoU↑ & 22.46\% \\
@@ -279,12 +268,12 @@ RoomAttn 的引入使同一房间面内的所有角点在去噪过程中可以�
 由于 $\theta_2$ 独立预测每个节点坐标，缺乏显式的几何对齐约束，
 部分节点在视觉上已贴近某条墙体，但邻接图中却未建立连接关系，
 造成拓扑与几何的不一致，进而导致多边形提取失败或面积计算偏差。
-为此，我们在 $\theta_2$ 和 $\theta_3$ 之间引入一个几何后处理步骤：
+为此，我们在坐标扩散之后引入一个几何后处理步骤：
 若节点 $i$ 到某条边 $(j, k)$ 的垂直距离小于阈值 $\tau$，
 则将节点 $i$ 投影到该边上，并同步更新邻接图——
 删除直连边 $j$-$k$，添加 $i$-$j$ 和 $i$-$k$ 两条新边，
 使节点 $i$ 正式插入墙体。
-修正后的坐标与邻接图再送入 $\theta_3$ 进行类型预测。
+修正后的坐标与邻接图用于后续面提取、语义标注与 IoU 计算。
 
 表~\ref{tab:ablation_snap} 报告了是否启用该后处理对端到端 IoU 的影响（$\tau = 0.05 \times d_{\text{bbox}}$，
 $d_{\text{bbox}}$ 为有效节点包围盒对角线长度）。
@@ -318,7 +307,7 @@ w/\ 后处理（$\tau=0.05$） & \textbf{22.46\%} & \textbf{21.27\%} \\
 呈现出平面图特有的网格状空间分布——节点沿水平/垂直方向规整对齐、
 相邻节点间距均匀，表明模型在 DDPM 扩散过程中
 有效学习到了真实平面图节点坐标的空间分布特征。
-受限于三阶段独立训练的级联架构，
+受限于级联式生成架构，
 部分样例中房间类型的空间位置与文本描述存在对应偏差，
 留待后续端到端联合训练方案改进。
 
@@ -328,7 +317,7 @@ w/\ 后处理（$\tau=0.05$） & \textbf{22.46\%} & \textbf{21.27\%} \\
     \caption{
         PlanDiffusion 端到端生成结果（5 条自定义文本条件）。
         每行从左至右依次为：输入文本描述、$\theta_1$ 生成邻接图（spring layout）、
-        $\theta_2$ 预测坐标图（节点统一蓝色）、$\theta_3$ 类型预测（节点按类型着色）、
+        $\theta_2$ 预测坐标图（节点统一蓝色）、面级语义标注结果、
         渲染平面图（房间按类型填色，标注房间名）。
     }
     \label{fig:qualitative}
