@@ -79,8 +79,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeout", type=float, default=30.0)
     p.add_argument("--retry-times", type=int, default=3)
     p.add_argument("--retry-delay", type=float, default=1.0)
-    p.add_argument("--disable-thinking", action="store_true", default=True)
-    p.add_argument("--enable-thinking", action="store_true", help="override disable-thinking")
+    p.add_argument("--disable-thinking", action="store_true",
+                   help="Disable model thinking mode")
+    p.add_argument("--enable-thinking", action="store_true", default=True,
+                   help="Enable model thinking mode (default: on)")
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
     p.add_argument("--sleep", type=float, default=0.0)
     p.add_argument("--dry_run", action="store_true", help="Build prompts only; do not call LLM")
@@ -395,7 +397,7 @@ def main() -> None:
         client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=args.timeout)
     else:
         client = None
-    disable_thinking = args.disable_thinking and not args.enable_thinking
+    disable_thinking = args.disable_thinking
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
