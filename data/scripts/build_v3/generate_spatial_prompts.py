@@ -99,7 +99,7 @@ def generate_prompt(node_types, node_coords, adj_matrix, n):
     x_span = x_max - x_min if x_max > x_min else 1.0
     y_span = y_max - y_min if y_max > y_min else 1.0
     nx_arr = (coords[:, 0] - x_min) / x_span
-    ny_arr = (coords[:, 1] - y_min) / y_span
+    ny_arr = (y_max - coords[:, 1]) / y_span
 
     # 按 primary_type 分组节点
     type_groups = {}
