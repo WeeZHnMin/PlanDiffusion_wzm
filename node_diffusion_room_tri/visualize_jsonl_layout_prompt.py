@@ -51,7 +51,7 @@ ROOM_LABELS = {
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--jsonl", default="data/jsonl/graph_160k_spatial_val.jsonl")
+    p.add_argument("--jsonl", default="outputs/tri_from_llm_graph_ddim500.jsonl")
     p.add_argument("--out_dir", default="outputs/val_jsonl_layout_prompt")
     p.add_argument("--n", type=int, default=8, help="Number of rows to visualize when --rows is omitted")
     p.add_argument("--rows", nargs="*", type=int, default=None, help="0-based row indices to visualize")
@@ -77,7 +77,10 @@ def read_selected(path: str, rows: List[int] | None, n: int) -> Iterable[Tuple[i
 
 def valid_indices(row: Dict[str, Any]) -> List[int]:
     mask = row.get("node_mask")
-    n_nodes = int(row.get("n_nodes", 0))
+    if "gt_node_coords" in row and "gt_n_nodes" in row:
+        n_nodes = int(row.get("gt_n_nodes", 0))
+    else:
+        n_nodes = int(row.get("n_nodes", 0))
     if mask is None:
         return list(range(n_nodes))
     return [i for i, v in enumerate(mask) if float(v) > 0.5]
@@ -188,21 +191,31 @@ def normalize_coords(coords: List[Tuple[float, float]]):
 
 
 def draw_graph(ax, row: Dict[str, Any]) -> None:
-    coords = np.asarray(row["node_coords"], dtype=float)
-    adj = np.asarray(row["adj_matrix"], dtype=float)
+    if "node_coords" in row:
+        coords_key, adj_key, types_key = "node_coords", "adj_matrix", "node_types"
+        n_key = "n_nodes"
+    elif "gt_node_coords" in row:
+        coords_key, adj_key, types_key = "gt_node_coords", "gt_adj_matrix", "gt_node_types"
+        n_key = "gt_n_nodes" if "gt_n_nodes" in row else "n_nodes"
+    else:
+        coords_key, adj_key, types_key = "pred_node_coords", "adj_matrix", "gt_node_types"
+        n_key = "n_nodes"
+
+    coords = np.asarray(row[coords_key], dtype=float)
+    adj = np.asarray(row[adj_key], dtype=float)
     valid = valid_indices(row)
     if not valid:
         ax.text(0.5, 0.5, "No valid nodes", ha="center", va="center", transform=ax.transAxes)
         ax.axis("off")
         return
 
-    n = int(row.get("n_nodes", len(valid)))
+    n = int(row.get(n_key, len(valid)))
     n = min(n, len(valid))
     coords_list = [(float(coords[i, 0]), float(coords[i, 1])) for i in range(n)]
     adj_list = [[int(adj[i, j]) for j in range(n)] for i in range(n)]
     node_types = [
         (t if isinstance(t, list) else [t])
-        for t in row.get("node_types", [])[:n]
+        for t in row.get(types_key, [])[:n]
     ]
     if len(node_types) < n:
         node_types.extend([["other"]] * (n - len(node_types)))
@@ -242,7 +255,7 @@ def draw_graph(ax, row: Dict[str, Any]) -> None:
         ax.text(x, y, str(i), ha="center", va="center", color="white",
                 fontsize=7, fontweight="bold", zorder=5)
 
-    ax.set_title("GT rendered layout from node_coords / node_types / adj_matrix", fontsize=11)
+    ax.set_title(f"Rendered layout from {coords_key} / {types_key} / {adj_key}", fontsize=11)
     ax.set_aspect("equal")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
