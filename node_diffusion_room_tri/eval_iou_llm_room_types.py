@@ -81,6 +81,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--retry-delay", type=float, default=1.0)
     p.add_argument("--disable-thinking", action="store_true", default=True)
     p.add_argument("--enable-thinking", action="store_true", help="override disable-thinking")
+    p.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default=None,
+                   help="Optional reasoning level passed through extra_body")
+    p.add_argument("--thinking-budget", type=int, default=None,
+                   help="Optional thinking token budget passed through extra_body")
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
     p.add_argument("--sleep", type=float, default=0.0)
     p.add_argument("--dry_run", action="store_true", help="Build prompts only; do not call LLM")
@@ -337,6 +341,8 @@ def call_llm(
     prompt: str,
     temperature: float,
     disable_thinking: bool,
+    reasoning_effort: Optional[str],
+    thinking_budget: Optional[int],
     retry_times: int,
     retry_delay: float,
 ) -> str:
@@ -344,8 +350,17 @@ def call_llm(
     for attempt in range(1, retry_times + 1):
         try:
             kwargs = {}
+            extra_body = {}
             if disable_thinking:
-                kwargs["extra_body"] = {"enable_thinking": False}
+                extra_body["enable_thinking"] = False
+            else:
+                extra_body["enable_thinking"] = True
+            if reasoning_effort is not None:
+                extra_body["reasoning_effort"] = reasoning_effort
+            if thinking_budget is not None:
+                extra_body["thinking_budget"] = thinking_budget
+            if extra_body:
+                kwargs["extra_body"] = extra_body
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -390,7 +405,8 @@ def main() -> None:
         client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=args.timeout)
     else:
         client = None
-    disable_thinking = args.disable_thinking and not args.enable_thinking
+    force_thinking = args.enable_thinking or args.reasoning_effort is not None or args.thinking_budget is not None
+    disable_thinking = args.disable_thinking and not force_thinking
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,7 +442,8 @@ def main() -> None:
                 expected_ids = [r["room_id"] for r in rooms]
                 raw1 = call_llm(
                     client, args.model, prompt, args.temperature,
-                    disable_thinking, args.retry_times, args.retry_delay,
+                    disable_thinking, args.reasoning_effort, args.thinking_budget,
+                    args.retry_times, args.retry_delay,
                 )
                 try:
                     room_types = parse_llm_response(raw1, expected_ids)
@@ -438,7 +455,8 @@ def main() -> None:
                     )
                     raw2 = call_llm(
                         client, args.model, retry_prompt, args.temperature,
-                        disable_thinking, args.retry_times, args.retry_delay,
+                        disable_thinking, args.reasoning_effort, args.thinking_budget,
+                        args.retry_times, args.retry_delay,
                     )
                     room_types = parse_llm_response(raw2, expected_ids)
                     retry_count = 1
