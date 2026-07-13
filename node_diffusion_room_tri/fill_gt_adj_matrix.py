@@ -1,15 +1,11 @@
-"""Backfill gt_adj_matrix into tri inference JSONL outputs.
+"""Backfill GT fields into tri inference JSONL outputs.
 
 The input inference JSONL may already contain prompt, generated adjacency,
-GT coordinates/types, and predicted coordinates, but miss gt_adj_matrix. This
+and predicted coordinates, but may have missing/placeholder GT fields. This
 script rematches each row against the original validation JSONL and copies the
-validation adj_matrix into gt_adj_matrix.
+validation GT fields back into the inference JSONL.
 
-Matching is intentionally conservative and uses only:
-  prompt + gt_node_coords + gt_node_types
-
-source_index is not trusted here because old intermediate files may have been
-filtered, regenerated, or merged in ways that make index-based matching unsafe.
+Matching uses normalized prompt text only.
 """
 
 from __future__ import annotations
@@ -28,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--out",
         default=None,
-        help="Output JSONL with gt_adj_matrix. Default: overwrite --in_jsonl in place.",
+        help="Output JSONL with GT fields. Default: overwrite --in_jsonl in place.",
     )
     p.add_argument(
         "--strict",
@@ -40,11 +36,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Drop unmatched rows. Default: keep unmatched rows unchanged.",
     )
-    p.add_argument(
-        "--write_source_index",
-        action="store_true",
-        help="Also write matched validation row index as source_index",
-    )
+    p.add_argument("--write_source_index", action="store_true", default=True)
     return p.parse_args()
 
 
@@ -81,29 +73,19 @@ def _canonical_obj(obj: Any) -> Any:
     return obj
 
 
-def coords_of(row: Dict[str, Any]) -> Any:
-    return row.get("gt_node_coords", row.get("node_coords"))
-
-
-def types_of(row: Dict[str, Any]) -> Any:
-    return row.get("gt_node_types", row.get("node_types"))
-
-
 Key = Tuple[str, str, str, str]
 
 
 def make_keys(row: Dict[str, Any]) -> Iterable[Tuple[str, Key]]:
     prompt = prompt_of(row)
-    coords = coords_of(row)
-    types = types_of(row)
 
-    if prompt and coords is not None and types is not None:
-        yield ("prompt_coords_types", ("pct", prompt, canonical(coords), canonical(types)))
+    if prompt:
+        yield ("prompt", ("prompt", prompt, "", ""))
 
 
 def build_indexes(val_rows: List[Dict[str, Any]]) -> Dict[str, Dict[Key, List[int]]]:
     indexes: Dict[str, Dict[Key, List[int]]] = {
-        "prompt_coords_types": defaultdict(list),
+        "prompt": defaultdict(list),
     }
     for idx, row in enumerate(val_rows):
         for name, key in make_keys(row):
@@ -161,8 +143,11 @@ def main() -> None:
                 continue
 
             patched = dict(row)
+            patched["gt_n_nodes"] = int(val_rows[idx]["n_nodes"])
             patched["gt_adj_matrix"] = val_rows[idx]["adj_matrix"]
-            if args.write_source_index and "source_index" not in patched:
+            patched["gt_node_coords"] = val_rows[idx].get("node_coords")
+            patched["gt_node_types"] = val_rows[idx].get("node_types")
+            if args.write_source_index:
                 patched["source_index"] = idx
             fout.write(json.dumps(patched, ensure_ascii=False) + "\n")
             matched += 1
