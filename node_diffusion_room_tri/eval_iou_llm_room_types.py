@@ -327,8 +327,11 @@ def build_prompt(row: Dict[str, Any], rooms: List[Dict[str, Any]]) -> str:
         "rooms": rooms,
     }
     return (
-        "Assign a semantic room type to each recovered room in the generated floor plan.\n"
-        "Use only the allowed room types. Do not use ground-truth information.\n"
+        "You are given a generated floor-plan graph and a natural-language description of the intended layout.\n"
+        "Each recovered room includes its nodes, node coordinates, center, bounding box, coarse location, and adjacent rooms.\n"
+        "Use all of this information together with the text_prompt to assign the most plausible semantic type to every recovered room.\n"
+        "Choose the room types that make the generated rooms best match the text description, including relative positions and adjacency relationships.\n"
+        "Use only the allowed room types. Do not use or infer from any ground-truth fields.\n"
         "Return only strict JSON in this exact schema:\n"
         '{"rooms":[{"room_id":"R1","type":"bedroom"}]}\n\n'
         f"Input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
