@@ -182,12 +182,18 @@ DDIM 500 步加速采样达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 方法 & 轮廓条件形式 & Micro-IoU↑ & Macro-IoU↑ \\
 \midrule
 ChatHouseDiffusion~\cite{qin2025chathousediffusion} & 像素轮廓 mask  & 89.09\% & 87.24\% \\
-PlanDiffusion-bnd（本文） & 轮廓节点固定  & \textbf{91.15\%} & \textbf{89.88\%} \\
+PlanDiffusion-bnd（本文，DDIM 50） & 轮廓节点固定  & \textbf{98.49\%} & \textbf{98.23\%} \\
+PlanDiffusion-bnd（本文，DDIM 200） & 轮廓节点固定  & 98.45\% & 98.18\% \\
 \midrule
 PlanDiffusion-tri（本文，主线） & 无（纯文本）  & 57.83\% & 56.51\% \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+在有轮廓条件设置下，PlanDiffusion-bnd 在 15,656 条验证集样本上全量评估，
+DDIM 50 步即可达到 Micro-IoU 98.49\%、Macro-IoU 98.23\%；
+增加到 DDIM 200 步后结果基本不变，说明固定外轮廓节点与 $\mathrm{BndAttn}$
+已经提供了足够强的几何约束，采样步数不再是影响 IoU 的主要因素。
 
 \subsection{消融实验}
 \label{subsec:ablation}
