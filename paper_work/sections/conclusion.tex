@@ -9,10 +9,11 @@
 包含 149,950 条具有高质量自然语言描述的平面图样本，
 是目前规模最大的带文本标注住宅平面图数据集之一。
 
-定量实验以端到端布局 IoU 作为本文最主要的任务指标。
-在无轮廓条件下，PlanDiffusion-tri 于 15,656 条验证集样本上全量评估，
-DDPM 1000 步采样达到 Micro-IoU 57.83\%、Macro-IoU 56.51\%，
-DDIM 500 步加速采样达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
+定量实验以布局 IoU 作为本文最主要的任务指标。
+在无轮廓条件下，当输入为测试集文本与真实邻接图时，
+PlanDiffusion-tri 的坐标扩散模块在 DDPM 1000 步采样下达到
+Micro-IoU 57.83\%、Macro-IoU 56.51\%，
+在 DDIM 500 步加速采样下达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 在有轮廓条件下，PlanDiffusion-bnd 通过固定外轮廓节点并引入 $\mathrm{BndAttn}$，
 DDIM 50 步即可达到 Micro-IoU 98.49\%、Macro-IoU 98.23\%，
 并在 DDIM 200/500 步下保持 Micro-IoU 98.45\%/98.42\%、
