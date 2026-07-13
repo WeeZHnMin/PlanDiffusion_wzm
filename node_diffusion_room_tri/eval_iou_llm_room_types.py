@@ -6,15 +6,18 @@ containing:
   gt_adj_matrix, gt_node_coords, gt_node_types
 
 For each sample, the script recovers generated room faces from
-adj_matrix + pred_node_coords, asks an LLM to assign one room type per face,
-parses the JSON answer with one retry, then computes IoU against GT rooms.
+adj_matrix + pred_node_coords, sends the aligned rendered image plus room
+rings to a multimodal LLM, parses the JSON answer with one retry, then
+computes IoU against GT rooms.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
+import mimetypes
 import os
 import re
 import time
@@ -45,7 +48,7 @@ ALLOWED_TYPES = {
 }
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3.5-plus"
+DEFAULT_MODEL = "qwen-vl-plus"
 
 TYPE_ALIASES = {
     "bath": "bathroom",
@@ -88,6 +91,8 @@ def parse_args() -> argparse.Namespace:
                    help="Enable model thinking mode (default: on)")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
+    p.add_argument("--image_dir", default="outputs/tri_from_llm_graph_imgs/ddim500")
+    p.add_argument("--image_ext", default=".png")
     p.add_argument("--sleep", type=float, default=0.0)
     p.add_argument("--dry_run", action="store_true", help="Build prompts only; do not call LLM")
     p.add_argument("--strict", action="store_true", help="Fail on missing required fields")
@@ -310,21 +315,36 @@ def recover_pred_rooms(row: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[
 
 def build_prompt(row: Dict[str, Any], rooms: List[Dict[str, Any]]) -> str:
     payload = {
-        "coordinate_system": "x increases east/right; y increases north/up",
         "allowed_room_types": sorted(ALLOWED_TYPES),
         "text_prompt": row.get("prompt", ""),
-        "rooms": rooms,
+        "room_rings": [
+            {"room_id": r["room_id"], "nodes": r["nodes"]}
+            for r in rooms
+        ],
     }
     return (
-        "You are given a generated floor-plan graph and a natural-language description of the intended layout.\n"
-        "Each recovered room includes its nodes, node coordinates, center, bounding box, coarse location, and adjacent rooms.\n"
-        "Use all of this information together with the text_prompt to assign the most plausible semantic type to every recovered room.\n"
-        "Choose the room types that make the generated rooms best match the text description, including relative positions and adjacency relationships.\n"
-        "Use only the allowed room types. Do not use or infer from any ground-truth fields.\n"
+        "Look at the floor-plan image. The blue numbers are graph node indices.\n"
+        "Each room is one recovered minimal node ring listed below.\n"
+        "Assign one semantic room type to every room ring using the image and text description.\n"
+        "Allowed room types: bathroom, bedroom, living_room, kitchen, corridor, dining_room.\n"
         "Return only strict JSON in this exact schema:\n"
         '{"rooms":[{"room_id":"R1","type":"bedroom"}]}\n\n'
         f"Input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
+
+
+def image_path_for_row(row: Dict[str, Any], row_index: int, image_dir: str, image_ext: str) -> Path:
+    ext = image_ext if image_ext.startswith(".") else f".{image_ext}"
+    image_index = int(row.get("image_index", row_index))
+    return Path(image_dir) / f"{image_index:05d}{ext}"
+
+
+def encode_image_data_url(image_path: Path) -> str:
+    if not image_path.exists():
+        raise FileNotFoundError(f"image not found: {image_path}")
+    mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
+    data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
 
 
 def extract_json(text: str) -> Any:
@@ -366,6 +386,7 @@ def call_llm(
     client: Any,
     model: str,
     prompt: str,
+    image_path: Path,
     temperature: float,
     disable_thinking: bool,
     retry_times: int,
@@ -375,11 +396,15 @@ def call_llm(
     for attempt in range(1, retry_times + 1):
         try:
             kwargs = {"extra_body": {"enable_thinking": not disable_thinking}}
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": encode_image_data_url(image_path)}},
+            ]
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You label floor-plan rooms. Output strict JSON only."},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": "You label floor-plan room rings from an image. Output strict JSON only."},
+                    {"role": "user", "content": content},
                 ],
                 temperature=temperature,
                 **kwargs,
@@ -446,6 +471,8 @@ def process_one(
             raise ValueError("no recovered generated rooms")
 
         prompt = build_prompt(row, rooms)
+        image_path = image_path_for_row(row, row_index, args.image_dir, args.image_ext)
+        out["image_path"] = str(image_path)
         if args.dry_run:
             out["status"] = "dry_run"
             out["llm_prompt"] = prompt
@@ -453,7 +480,7 @@ def process_one(
 
         expected_ids = [r["room_id"] for r in rooms]
         raw1 = call_llm(
-            client, args.model, prompt, args.temperature,
+            client, args.model, prompt, image_path, args.temperature,
             disable_thinking, args.retry_times, args.retry_delay,
         )
         try:
@@ -465,7 +492,7 @@ def process_one(
                 "Return only strict JSON. Cover every room_id exactly once."
             )
             raw2 = call_llm(
-                client, args.model, retry_prompt, args.temperature,
+                client, args.model, retry_prompt, image_path, args.temperature,
                 disable_thinking, args.retry_times, args.retry_delay,
             )
             room_types = parse_llm_response(raw2, expected_ids)
