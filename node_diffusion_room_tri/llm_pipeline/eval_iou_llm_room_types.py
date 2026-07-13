@@ -19,6 +19,7 @@ import json
 import math
 import mimetypes
 import os
+import random
 import re
 import time
 from collections import Counter
@@ -48,7 +49,9 @@ ALLOWED_TYPES = {
 }
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen-vl-plus"
+DEFAULT_MODEL = "qwen-plus3.7"
+DEFAULT_OUT = "outputs/tri_llm_room_type_iou/tri_llm_room_type_iou_ddim500.jsonl"
+DEFAULT_SUMMARY = "outputs/tri_llm_room_type_iou/tri_llm_room_type_iou_ddim500_summary.json"
 
 TYPE_ALIASES = {
     "bath": "bathroom",
@@ -74,21 +77,27 @@ TYPE_ALIASES = {
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--jsonl", required=True, help="tri inference output JSONL")
-    p.add_argument("--out", default="outputs/tri_llm_room_type_iou.jsonl")
-    p.add_argument("--summary", default=None, help="Optional summary JSON path")
+    p.add_argument("--out", default=DEFAULT_OUT)
+    p.add_argument("--summary", default=DEFAULT_SUMMARY, help="Optional summary JSON path")
     p.add_argument("--model", default=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL))
     p.add_argument("--base-url", "--base_url", dest="base_url",
                    default=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL))
     p.add_argument("--api-key", "--api_key", dest="api_key",
                    default=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY"))
     p.add_argument("--temperature", type=float, default=0.0)
-    p.add_argument("--timeout", type=float, default=30.0)
+    p.add_argument("--timeout", type=float, default=180.0)
     p.add_argument("--retry-times", type=int, default=3)
     p.add_argument("--retry-delay", type=float, default=1.0)
     p.add_argument("--enable-thinking", action="store_true",
                    help="Enable model thinking mode. Default: off")
-    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--workers", type=int, default=10)
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
+    p.add_argument("--sample_rounds", type=int, default=0,
+                   help="If >0, run repeated random sampling with replacement")
+    p.add_argument("--sample_size", type=int, default=512,
+                   help="Samples per random round when --sample_rounds > 0")
+    p.add_argument("--sample_seed", type=int, default=1234,
+                   help="Base random seed for repeated sampling")
     p.add_argument("--image_dir", default="outputs/tri_from_llm_graph_imgs/ddim500")
     p.add_argument("--image_ext", default=".png")
     p.add_argument("--sleep", type=float, default=0.0)
@@ -530,6 +539,59 @@ def process_one(
         return out
 
 
+def run_rows(
+    rows: List[Tuple[int, Dict[str, Any]]],
+    args: argparse.Namespace,
+    client: Any,
+    disable_thinking: bool,
+    workers: int,
+    round_index: Optional[int] = None,
+) -> Dict[int, Dict[str, Any]]:
+    results: Dict[int, Dict[str, Any]] = {}
+    total = len(rows)
+    label = f"round={round_index} " if round_index is not None else ""
+    if workers == 1:
+        for draw_index, (idx, row) in enumerate(rows):
+            result = process_one(idx, row, args, client, disable_thinking)
+            if round_index is not None:
+                result["sample_round"] = round_index
+                result["sample_draw_index"] = draw_index
+            results[draw_index] = result
+            print(f"[{label}{len(results)}/{total}] row={idx} status={result['status']}", flush=True)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {
+                ex.submit(process_one, idx, row, args, client, disable_thinking): (draw_index, idx)
+                for draw_index, (idx, row) in enumerate(rows)
+            }
+            for fut in as_completed(futs):
+                draw_index, idx = futs[fut]
+                result = fut.result()
+                if round_index is not None:
+                    result["sample_round"] = round_index
+                    result["sample_draw_index"] = draw_index
+                results[draw_index] = result
+                print(f"[{label}{len(results)}/{total}] row={idx} status={result['status']}", flush=True)
+    return results
+
+
+def summarize_results(results: Iterable[Dict[str, Any]], workers: int) -> Dict[str, Any]:
+    results_list = list(results)
+    ok_rows = [r for r in results_list if r["status"] == "ok"]
+    micro_list = [float(r["micro_iou"]) for r in ok_rows if r["micro_iou"] is not None]
+    macro_list = [float(r["macro_iou"]) for r in ok_rows if r["macro_iou"] is not None]
+    return {
+        "total": len(results_list),
+        "ok": sum(1 for r in results_list if r["status"] == "ok"),
+        "parse_failed": sum(1 for r in results_list if r["status"] == "parse_failed"),
+        "invalid": sum(1 for r in results_list if r["status"] == "invalid"),
+        "dry_run": sum(1 for r in results_list if r["status"] == "dry_run"),
+        "workers": workers,
+        "micro_iou": float(np.mean(micro_list)) if micro_list else 0.0,
+        "macro_iou": float(np.mean(macro_list)) if macro_list else 0.0,
+    }
+
+
 def main() -> None:
     args = parse_args()
     if not args.dry_run:
@@ -547,47 +609,58 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = Path(args.summary) if args.summary else out_path.with_suffix(".summary.json")
 
-    rows: List[Tuple[int, Dict[str, Any]]] = []
-    for idx, row in enumerate(read_jsonl(args.jsonl)):
-        if args.n_samples > 0 and len(rows) >= args.n_samples:
-            break
-        rows.append((idx, row))
-
-    results: Dict[int, Dict[str, Any]] = {}
+    all_rows = list(enumerate(read_jsonl(args.jsonl)))
+    if not all_rows:
+        raise RuntimeError(f"no rows loaded from {args.jsonl}")
     workers = max(1, int(args.workers))
-    if workers == 1:
-        for idx, row in rows:
-            results[idx] = process_one(idx, row, args, client, disable_thinking)
-            print(f"[{len(results)}/{len(rows)}] row={idx} status={results[idx]['status']}", flush=True)
+
+    if args.sample_rounds > 0:
+        rng = random.Random(args.sample_seed)
+        round_summaries: List[Dict[str, Any]] = []
+        with out_path.open("w", encoding="utf-8") as fout:
+            for round_index in range(args.sample_rounds):
+                sampled_rows = [rng.choice(all_rows) for _ in range(args.sample_size)]
+                print(
+                    f"sample round {round_index + 1}/{args.sample_rounds}: "
+                    f"{args.sample_size} draws with replacement",
+                    flush=True,
+                )
+                results = run_rows(
+                    sampled_rows, args, client, disable_thinking, workers,
+                    round_index=round_index,
+                )
+                ordered = [results[i] for i in range(len(sampled_rows))]
+                for result in ordered:
+                    fout.write(json.dumps(result, ensure_ascii=False) + "\n")
+                round_summary = summarize_results(ordered, workers)
+                round_summary["round"] = round_index
+                round_summaries.append(round_summary)
+                print(f"round {round_index} summary: {json.dumps(round_summary, ensure_ascii=False)}")
+
+        summary = {
+            "mode": "sample_with_replacement",
+            "sample_rounds": args.sample_rounds,
+            "sample_size": args.sample_size,
+            "sample_seed": args.sample_seed,
+            "total_draws": args.sample_rounds * args.sample_size,
+            "workers": workers,
+            "rounds": round_summaries,
+            "mean_micro_iou": float(np.mean([s["micro_iou"] for s in round_summaries])) if round_summaries else 0.0,
+            "mean_macro_iou": float(np.mean([s["macro_iou"] for s in round_summaries])) if round_summaries else 0.0,
+            "mean_ok": float(np.mean([s["ok"] for s in round_summaries])) if round_summaries else 0.0,
+            "mean_invalid": float(np.mean([s["invalid"] for s in round_summaries])) if round_summaries else 0.0,
+            "mean_parse_failed": float(np.mean([s["parse_failed"] for s in round_summaries])) if round_summaries else 0.0,
+        }
     else:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {
-                ex.submit(process_one, idx, row, args, client, disable_thinking): idx
-                for idx, row in rows
-            }
-            for fut in as_completed(futs):
-                idx = futs[fut]
-                results[idx] = fut.result()
-                print(f"[{len(results)}/{len(rows)}] row={idx} status={results[idx]['status']}", flush=True)
+        rows = all_rows if args.n_samples <= 0 else all_rows[:args.n_samples]
+        results = run_rows(rows, args, client, disable_thinking, workers)
+        ordered = [results[i] for i in range(len(rows))]
+        with out_path.open("w", encoding="utf-8") as fout:
+            for result in ordered:
+                fout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        summary = summarize_results(ordered, workers)
+        summary["mode"] = "sequential"
 
-    with out_path.open("w", encoding="utf-8") as fout:
-        for idx, _ in rows:
-            fout.write(json.dumps(results[idx], ensure_ascii=False) + "\n")
-
-    ok_rows = [r for r in results.values() if r["status"] == "ok"]
-    micro_list = [float(r["micro_iou"]) for r in ok_rows if r["micro_iou"] is not None]
-    macro_list = [float(r["macro_iou"]) for r in ok_rows if r["macro_iou"] is not None]
-
-    summary = {
-        "total": len(rows),
-        "ok": sum(1 for r in results.values() if r["status"] == "ok"),
-        "parse_failed": sum(1 for r in results.values() if r["status"] == "parse_failed"),
-        "invalid": sum(1 for r in results.values() if r["status"] == "invalid"),
-        "dry_run": sum(1 for r in results.values() if r["status"] == "dry_run"),
-        "workers": workers,
-        "micro_iou": float(np.mean(micro_list)) if micro_list else 0.0,
-        "macro_iou": float(np.mean(macro_list)) if macro_list else 0.0,
-    }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"details -> {out_path}")
