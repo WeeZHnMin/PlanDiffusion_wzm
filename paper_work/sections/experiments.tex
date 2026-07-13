@@ -182,12 +182,15 @@ Coord-RMSE 用于诊断 $\theta_2$ 的节点坐标去噪精度。
 \caption{测试集文本与 GT 邻接图条件下的 PlanDiffusion-tri 无轮廓 IoU 结果}
 \label{tab:gt_graph_iou}
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{llcc}
 \toprule
-采样器 & Micro-IoU↑ & Macro-IoU↑ \\
+文本编码器 & 采样器 & Micro-IoU↑ & Macro-IoU↑ \\
 \midrule
-DDPM 1000 & 57.83\% & 56.51\% \\
-DDIM 500  & 54.69\% & 53.31\% \\
+BERT-base-uncased & DDPM 1000 & 10.35\% & 11.02\% \\
+BERT-base-uncased & DDIM 500  & 9.84\%  & 10.39\% \\
+\midrule
+TextGraphAlign-aligned BERT & DDPM 1000 & 57.83\% & 56.51\% \\
+TextGraphAlign-aligned BERT & DDIM 500  & 54.69\% & 53.31\% \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -198,6 +201,11 @@ DDIM 500  & 54.69\% & 53.31\% \\
 而不是评价 $\theta_1$ 预测错误继续向下游传播后的端到端结果。
 在该设置下，DDPM 1000 步达到 Micro-IoU 57.83\%、Macro-IoU 56.51\%，
 DDIM 500 步达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
+若直接使用原生 BERT-base-uncased 文本编码器进行训练和推理，
+DDPM 1000 步仅达到 Micro-IoU 10.35\%、Macro-IoU 11.02\%，
+DDIM 500 步仅达到 Micro-IoU 9.84\%、Macro-IoU 10.39\%。
+这说明 TextGraphAlign 的 CLIP 风格图文对比预训练显著增强了文本语义与图结构条件之间的对齐，
+是无轮廓坐标扩散获得有效 IoU 的关键因素。
 
 \begin{table}[h]
 \centering
