@@ -19,6 +19,7 @@ import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -85,6 +86,7 @@ def parse_args() -> argparse.Namespace:
                    help="Disable model thinking mode")
     p.add_argument("--enable-thinking", action="store_true", default=True,
                    help="Enable model thinking mode (default: on)")
+    p.add_argument("--workers", type=int, default=16)
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
     p.add_argument("--sleep", type=float, default=0.0)
     p.add_argument("--dry_run", action="store_true", help="Build prompts only; do not call LLM")
@@ -411,6 +413,102 @@ def compute_iou(gt_by_type: Dict[str, List[Polygon]], pred_by_type: Dict[str, Li
     return float(sum(intersections) / sum(unions)), float(sum(ious) / len(ious))
 
 
+def base_output(row: Dict[str, Any], row_index: int) -> Dict[str, Any]:
+    out = dict(row)
+    out.update({
+        "row_index": row_index,
+        "source_index": row.get("source_index", row_index),
+        "status": "",
+        "error": "",
+        "retry_count": 0,
+        "n_recovered_rooms": 0,
+        "recovered_rooms": [],
+        "room_types": [],
+        "micro_iou": None,
+        "macro_iou": None,
+        "raw_response_1": None,
+        "raw_response_2": None,
+    })
+    return out
+
+
+def process_one(
+    row_index: int,
+    row: Dict[str, Any],
+    args: argparse.Namespace,
+    client: Any,
+    disable_thinking: bool,
+) -> Dict[str, Any]:
+    out = base_output(row, row_index)
+    raw1 = None
+    raw2 = None
+    try:
+        rooms, pred_polys_by_room = recover_pred_rooms(row)
+        out["n_recovered_rooms"] = len(rooms)
+        out["recovered_rooms"] = rooms
+        if not rooms:
+            raise ValueError("no recovered generated rooms")
+
+        prompt = build_prompt(row, rooms)
+        if args.dry_run:
+            out["status"] = "dry_run"
+            out["llm_prompt"] = prompt
+            return out
+
+        expected_ids = [r["room_id"] for r in rooms]
+        raw1 = call_llm(
+            client, args.model, prompt, args.temperature,
+            disable_thinking, args.retry_times, args.retry_delay,
+        )
+        try:
+            room_types = parse_llm_response(raw1, expected_ids)
+            retry_count = 0
+        except Exception as e1:
+            retry_prompt = (
+                f"{prompt}\n\nYour previous answer could not be parsed: {e1}.\n"
+                "Return only strict JSON. Cover every room_id exactly once."
+            )
+            raw2 = call_llm(
+                client, args.model, retry_prompt, args.temperature,
+                disable_thinking, args.retry_times, args.retry_delay,
+            )
+            room_types = parse_llm_response(raw2, expected_ids)
+            retry_count = 1
+
+        pred_by_type: Dict[str, List[Polygon]] = {}
+        for rid, rtype in room_types.items():
+            pred_by_type.setdefault(rtype, []).extend(pred_polys_by_room[rid])
+
+        gt_by_type = polys_by_type_from_gt(
+            row["gt_node_coords"],
+            row["gt_adj_matrix"],
+            row["gt_node_types"],
+        )
+        micro, macro = compute_iou(gt_by_type, pred_by_type)
+        out.update({
+            "status": "ok",
+            "retry_count": retry_count,
+            "room_types": [{"room_id": rid, "type": room_types[rid]} for rid in expected_ids],
+            "micro_iou": round(micro, 6),
+            "macro_iou": round(macro, 6),
+            "raw_response_1": raw1,
+            "raw_response_2": raw2,
+        })
+        if args.sleep > 0:
+            time.sleep(args.sleep)
+        return out
+    except Exception as e:
+        out.update({
+            "status": "parse_failed" if raw1 is not None else "invalid",
+            "error": str(e),
+            "raw_response_1": raw1,
+            "raw_response_2": raw2,
+        })
+        if args.strict:
+            raise
+        return out
+
+
 def main() -> None:
     args = parse_args()
     if not args.dry_run:
@@ -427,100 +525,44 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path = Path(args.summary) if args.summary else out_path.with_suffix(".summary.json")
 
-    total = ok = parse_failed = invalid = dry = 0
-    micro_list: List[float] = []
-    macro_list: List[float] = []
+    rows: List[Tuple[int, Dict[str, Any]]] = []
+    for idx, row in enumerate(read_jsonl(args.jsonl)):
+        if args.n_samples > 0 and len(rows) >= args.n_samples:
+            break
+        rows.append((idx, row))
+
+    results: Dict[int, Dict[str, Any]] = {}
+    workers = max(1, int(args.workers))
+    if workers == 1:
+        for idx, row in rows:
+            results[idx] = process_one(idx, row, args, client, disable_thinking)
+            print(f"[{len(results)}/{len(rows)}] row={idx} status={results[idx]['status']}", flush=True)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {
+                ex.submit(process_one, idx, row, args, client, disable_thinking): idx
+                for idx, row in rows
+            }
+            for fut in as_completed(futs):
+                idx = futs[fut]
+                results[idx] = fut.result()
+                print(f"[{len(results)}/{len(rows)}] row={idx} status={results[idx]['status']}", flush=True)
 
     with out_path.open("w", encoding="utf-8") as fout:
-        for idx, row in enumerate(read_jsonl(args.jsonl)):
-            if args.n_samples > 0 and total >= args.n_samples:
-                break
-            total += 1
-            source_index = row.get("source_index", idx)
-            raw1 = None
-            raw2 = None
-            try:
-                rooms, pred_polys_by_room = recover_pred_rooms(row)
-                if not rooms:
-                    raise ValueError("no recovered generated rooms")
-                prompt = build_prompt(row, rooms)
-                if args.dry_run:
-                    fout.write(json.dumps({
-                        "source_index": source_index,
-                        "status": "dry_run",
-                        "prompt": prompt,
-                        "rooms": rooms,
-                    }, ensure_ascii=False) + "\n")
-                    dry += 1
-                    continue
+        for idx, _ in rows:
+            fout.write(json.dumps(results[idx], ensure_ascii=False) + "\n")
 
-                expected_ids = [r["room_id"] for r in rooms]
-                raw1 = call_llm(
-                    client, args.model, prompt, args.temperature,
-                    disable_thinking, args.retry_times, args.retry_delay,
-                )
-                try:
-                    room_types = parse_llm_response(raw1, expected_ids)
-                    retry_count = 0
-                except Exception as e1:
-                    retry_prompt = (
-                        f"{prompt}\n\nYour previous answer could not be parsed: {e1}.\n"
-                        "Return only strict JSON. Cover every room_id exactly once."
-                    )
-                    raw2 = call_llm(
-                        client, args.model, retry_prompt, args.temperature,
-                        disable_thinking, args.retry_times, args.retry_delay,
-                    )
-                    room_types = parse_llm_response(raw2, expected_ids)
-                    retry_count = 1
-
-                pred_by_type: Dict[str, List[Polygon]] = {}
-                for rid, rtype in room_types.items():
-                    pred_by_type.setdefault(rtype, []).extend(pred_polys_by_room[rid])
-
-                gt_by_type = polys_by_type_from_gt(
-                    row["gt_node_coords"],
-                    row["gt_adj_matrix"],
-                    row["gt_node_types"],
-                )
-                micro, macro = compute_iou(gt_by_type, pred_by_type)
-                micro_list.append(micro)
-                macro_list.append(macro)
-                ok += 1
-                fout.write(json.dumps({
-                    "source_index": source_index,
-                    "status": "ok",
-                    "retry_count": retry_count,
-                    "room_types": [{"room_id": rid, "type": room_types[rid]} for rid in expected_ids],
-                    "micro_iou": round(micro, 6),
-                    "macro_iou": round(macro, 6),
-                    "raw_response_1": raw1,
-                    "raw_response_2": raw2,
-                }, ensure_ascii=False) + "\n")
-                if args.sleep > 0:
-                    time.sleep(args.sleep)
-            except Exception as e:
-                status = "parse_failed" if raw1 is not None else "invalid"
-                if status == "parse_failed":
-                    parse_failed += 1
-                else:
-                    invalid += 1
-                fout.write(json.dumps({
-                    "source_index": source_index,
-                    "status": status,
-                    "error": str(e),
-                    "raw_response_1": raw1,
-                    "raw_response_2": raw2,
-                }, ensure_ascii=False) + "\n")
-                if args.strict:
-                    raise
+    ok_rows = [r for r in results.values() if r["status"] == "ok"]
+    micro_list = [float(r["micro_iou"]) for r in ok_rows if r["micro_iou"] is not None]
+    macro_list = [float(r["macro_iou"]) for r in ok_rows if r["macro_iou"] is not None]
 
     summary = {
-        "total": total,
-        "ok": ok,
-        "parse_failed": parse_failed,
-        "invalid": invalid,
-        "dry_run": dry,
+        "total": len(rows),
+        "ok": sum(1 for r in results.values() if r["status"] == "ok"),
+        "parse_failed": sum(1 for r in results.values() if r["status"] == "parse_failed"),
+        "invalid": sum(1 for r in results.values() if r["status"] == "invalid"),
+        "dry_run": sum(1 for r in results.values() if r["status"] == "dry_run"),
+        "workers": workers,
         "micro_iou": float(np.mean(micro_list)) if micro_list else 0.0,
         "macro_iou": float(np.mean(macro_list)) if macro_list else 0.0,
     }
