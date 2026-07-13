@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
         help="Fail if any row cannot be matched uniquely",
     )
     p.add_argument(
+        "--drop_unmatched",
+        action="store_true",
+        help="Drop unmatched rows. Default: keep unmatched rows unchanged.",
+    )
+    p.add_argument(
         "--write_source_index",
         action="store_true",
         help="Also write source_index for rows matched by GT content",
@@ -150,7 +155,7 @@ def main() -> None:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    total = matched = skipped = 0
+    total = matched = kept_unmatched = dropped_unmatched = 0
     reasons: Dict[str, int] = defaultdict(int)
     with in_path.open(encoding="utf-8") as fin, write_path.open("w", encoding="utf-8") as fout:
         for line in fin:
@@ -162,9 +167,13 @@ def main() -> None:
             idx, reason = find_match(row, val_rows, indexes)
             reasons[reason] += 1
             if idx is None:
-                skipped += 1
                 if args.strict:
                     raise RuntimeError(f"row {total - 1}: failed to match validation row ({reason})")
+                if args.drop_unmatched:
+                    dropped_unmatched += 1
+                    continue
+                fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                kept_unmatched += 1
                 continue
 
             patched = dict(row)
@@ -176,7 +185,8 @@ def main() -> None:
 
     print(f"read inference rows: {total}")
     print(f"matched: {matched}")
-    print(f"skipped: {skipped}")
+    print(f"kept_unmatched: {kept_unmatched}")
+    print(f"dropped_unmatched: {dropped_unmatched}")
     for reason, count in sorted(reasons.items()):
         print(f"{reason}: {count}")
     if write_path != out_path:

@@ -379,6 +379,7 @@ def main():
                 "pmsk":       pmsk,
                 "n":          n,
                 "prompt":     prompt,
+                "source_index": rec.get("source_index"),
                 "adj_list":   adj_raw.tolist(),
                 "gt_adj":     gt_adj_matrix,
                 "gt_coords":  gt_node_coords,
@@ -450,7 +451,7 @@ def main():
 
         with open(out_path, "w", encoding="utf-8") as f:
             for idx, (s, (pred_coords, pred_adj, pred_n)) in enumerate(zip(prepared, all_pred)):
-                f.write(json.dumps({
+                out_rec = {
                     "prompt":           s["prompt"],
                     "n_nodes":          pred_n,
                     "adj_matrix":       pred_adj,
@@ -458,7 +459,10 @@ def main():
                     "gt_node_coords":   s["gt_coords"],
                     "gt_node_types":    s["gt_types"],
                     "pred_node_coords": pred_coords,
-                }, ensure_ascii=False) + "\n")
+                }
+                if s["source_index"] is not None:
+                    out_rec["source_index"] = s["source_index"]
+                f.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
 
                 if img_dir:
                     img = render_graph(pred_coords, pred_adj, pred_n,
@@ -517,7 +521,7 @@ def main():
 
     with open(out_path, "w", encoding="utf-8") as f:
         for idx, (s, (pred_coords, pred_adj, pred_n)) in enumerate(zip(prepared, all_pred)):
-            f.write(json.dumps({
+            out_rec = {
                 "prompt":           s["prompt"],
                 "n_nodes":          pred_n,
                 "adj_matrix":       pred_adj,
@@ -525,7 +529,10 @@ def main():
                 "gt_node_coords":   s["gt_coords"],
                 "gt_node_types":    s["gt_types"],
                 "pred_node_coords": pred_coords,
-            }, ensure_ascii=False) + "\n")
+            }
+            if s["source_index"] is not None:
+                out_rec["source_index"] = s["source_index"]
+            f.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
 
             if img_dir:
                 img = render_graph(pred_coords, pred_adj, pred_n,
