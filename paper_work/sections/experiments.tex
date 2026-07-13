@@ -6,7 +6,7 @@
 
 \paragraph{评估指标}
 本文的核心任务是从自然语言生成可用的住宅平面布局，因此最主要的评估指标为
-\textbf{端到端布局 IoU}。图拓扑合法性、图结构分布和坐标 RMSE
+\textbf{端到端布局 IoU}。图拓扑合法性和图结构分布
 主要作为阶段诊断指标，用于解释 IoU 变化的来源，而不作为最终任务的主要结论依据。
 除特别说明外，指标在独立测试集上计算；无轮廓条件主结果使用 15,656 条验证集样本进行全量评估。
 
@@ -25,10 +25,6 @@
     \item \textbf{节点数准确率（Node-count Acc.）}：
     生成节点数与真实节点数完全一致（精确）或误差在 $\pm k$ 以内的样本占比，
     衡量模型对单条样本节点规模的预测精度。
-
-    \item \textbf{坐标 RMSE（Coord-RMSE）}：
-    给定真实图结构条件下，去噪预测坐标与真实坐标的均方根误差，
-    衡量节点坐标扩散子模块的回归精度。
 
     \item \textbf{端到端 IoU}：
     三阶段完整推理后，以 Shapely 多边形面积计算预测房间布局与真实布局之间的交并比。
@@ -139,17 +135,11 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 表~\ref{tab:main_results} 报告了 PlanDiffusion 主要模块的定量诊断结果。
 由于现有方法与本文在输入模态、数据集及图表示方式上均不一致，
 此处首先报告本文方法内部各阶段的结构生成与坐标扩散指标。
-其中图拓扑生成指标用于刻画 $\theta_1$ 从文本恢复邻接图的能力；
-Coord-RMSE 用于诊断 $\theta_2$ 的节点坐标去噪精度。
+其中图拓扑生成指标用于刻画 $\theta_1$ 从文本恢复邻接图的能力。
 需要特别说明的是，表~\ref{tab:gt_graph_iou} 中的无轮廓 IoU 结果
 使用测试集文本与真实邻接图作为 $\theta_2$ 的条件输入，
 用于评估坐标扩散模块在给定正确拓扑时的几何布局生成能力，
 不等同于完整端到端 $\theta_1\to\theta_2$ 链路的 IoU。
-
-注意，\S\ref{subsec:ablation} 消融实验中的 Coord-RMSE（表~\ref{tab:ablation_attn}）
-使用真实邻接矩阵和 6k 子集数据，与本表不可直接比较：
-主结果使用 $\theta_1$ 推理链路引入的误差邻接矩阵，评估样本规模也大于消融设置，
-因此主结果 RMSE（65.62）高于消融中的完整模型（61.58）属正常现象。
 
 \begin{table}[h]
 \centering
@@ -171,8 +161,6 @@ Coord-RMSE 用于诊断 $\theta_2$ 的节点坐标去噪精度。
     & 节点数准确率（$\pm2$）↑  & 83.0\% \\
     & 节点数准确率（$\pm3$）↑  & 91.6\% \\
     & 生成节点数均值$\pm$标准差 & $22.34 \pm 5.38$ \\
-\midrule
-节点坐标扩散（$\theta_2$，三流） & Coord-RMSE↓ & 65.62 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -291,93 +279,6 @@ Micro-IoU 93.66\%--93.68\%、Macro-IoU 92.40\%--92.66\% 区间。
 \bottomrule
 \end{tabular}
 \end{table}
-
-
-\subsubsection{注意力结构消融（节点坐标扩散）}
-
-为验证双流注意力设计的有效性，
-我们在相同数据集和相同训练步数下分别从头训练三个结构变体，
-并对比坐标回归精度（表~\ref{tab:ablation_attn}）。
-三个变体除注意力结构外其余超参数完全一致。
-
-训练数据为原始 6k 平面图数据集经 8 倍坐标增强后所得约 48k 样本，
-三个变体均以 batch size 384 各独立训练 250k steps（仅用于结构对比，步数少于主模型）；
-定量评估采用从同一 6k 数据集中随机抽取的 1000 条样本，
-以 Coord-RMSE 衡量完整 DDPM 1000 步逆采样后的坐标重建精度；
-定性可视化（图~\ref{fig:ablation_viz}）同样采用完整 DDPM 1000 步逆采样以保证生成质量。
-由于三变体在定量评估中均使用相同的 DDPM 1000 步配置，
-各变体之间的相对比较可有效反映注意力结构本身的影响。
-
-\begin{table}[h]
-\centering
-\caption{注意力结构消融：各变体独立训练后的坐标扩散精度对比（DDPM 1000步）}
-\label{tab:ablation_attn}
-\small
-\begin{tabular}{lcc}
-\toprule
-注意力变体 & 描述 & Coord-RMSE↓ \\
-\midrule
-AdjAttn only   & 每节点仅关注直连邻居（局部边）         & 80.71 \\
-GlobalAttn only & 节点间无掩码全局自注意力              & 68.71 \\
-AdjAttn + GlobalAttn（双流） & 局部 + 全局并行                & \todo{待补} \\
-\textbf{AdjAttn + RoomAttn + GlobalAttn（三流，本文）} & 局部 + 面 + 全局并行 & \textbf{61.58} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-图~\ref{fig:ablation_viz} 对变体的生成布局进行定性对比。
-GlobalAttn only 生成的节点分布散乱、边交叉严重；
-AdjAttn only 布局较为规整但整体偏移较大；
-三流变体（Ours）在布局合理性和与真实图的相似度上均最优。
-RoomAttn 的引入使同一房间面内的所有角点在去噪过程中可以相互感知，
-弥补了 AdjAttn 仅覆盖一跳邻居的局限，显著降低了 Coord-RMSE。
-
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\linewidth]{figures/ablation_viz.png}
-    \caption{
-        注意力结构消融定性对比（5 个测试样本，DDPM 1000 步采样）。
-        每行为同一输入条件下三个变体的生成结果，列从左至右依次为：
-        Ground Truth、AdjAttn Only、GlobalAttn Only、Dual-stream（本文）。
-        边表示节点间相邻关系。
-    }
-    \label{fig:ablation_viz}
-\end{figure}
-
-\subsubsection{坐标后处理消融（节点-墙体吸附）}
-\label{subsec:snap_ablation}
-
-由于 $\theta_2$ 独立预测每个节点坐标，缺乏显式的几何对齐约束，
-部分节点在视觉上已贴近某条墙体，但邻接图中却未建立连接关系，
-造成拓扑与几何的不一致，进而导致多边形提取失败或面积计算偏差。
-为此，我们在坐标扩散之后引入一个几何后处理步骤：
-若节点 $i$ 到某条边 $(j, k)$ 的垂直距离小于阈值 $\tau$，
-则将节点 $i$ 投影到该边上，并同步更新邻接图——
-删除直连边 $j$-$k$，添加 $i$-$j$ 和 $i$-$k$ 两条新边，
-使节点 $i$ 正式插入墙体。
-修正后的坐标与邻接图用于后续面提取、语义标注与 IoU 计算。
-
-表~\ref{tab:ablation_snap} 报告了是否启用该后处理对端到端 IoU 的影响（$\tau = 0.05 \times d_{\text{bbox}}$，
-$d_{\text{bbox}}$ 为有效节点包围盒对角线长度）。
-
-\begin{table}[h]
-\centering
-\caption{节点-墙体吸附后处理消融（9,895 条测试样本，5-roll 平均）}
-\label{tab:ablation_snap}
-\small
-\begin{tabular}{lcc}
-\toprule
-方法 & Micro-IoU↑ & Macro-IoU↑ \\
-\midrule
-w/o 后处理 & 21.18\% & 19.81\% \\
-w/\ 后处理（$\tau=0.05$） & \textbf{22.46\%} & \textbf{21.27\%} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-后处理带来 Micro-IoU $+1.28\%$、Macro-IoU $+1.46\%$ 的提升，
-且 5 次 roll 之间的方差极小（$<0.2\%$），表明该步骤能有效修正几何偏差、
-提升预测布局与真实布局的面积重叠度。
 
 \subsection{定性结果}
 \label{subsec:qualitative}
