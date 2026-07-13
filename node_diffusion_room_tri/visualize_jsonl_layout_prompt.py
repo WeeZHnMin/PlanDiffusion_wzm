@@ -257,19 +257,29 @@ def draw_text(ax, row_index: int, row: Dict[str, Any]) -> None:
     valid = valid_indices(row)
     prompt = row.get("prompt", "")
     original = row.get("prompt_original", "")
+
+    def block(label: str, text: str, width: int = 78) -> List[str]:
+        wrapped = textwrap.wrap(
+            str(text),
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [""]
+        return [f"{label}:"] + [f"  {line}" for line in wrapped]
+
     info = [
-        layout_name(row_index, row),
-        f"n_nodes={row.get('n_nodes')} | valid_mask_nodes={len(valid)} | adj_size={len(row.get('adj_matrix', []))}",
+        f"LAYOUT : {layout_name(row_index, row)}",
+        f"NODES  : n_nodes={row.get('n_nodes')} | valid_mask_nodes={len(valid)} | adj_size={len(row.get('adj_matrix', []))}",
         "",
-        "PROMPT:",
-        textwrap.fill(prompt, width=74),
+        *block("PROMPT", prompt),
     ]
     if original and original != prompt:
-        info.extend(["", "PROMPT_ORIGINAL:", textwrap.fill(original, width=74)])
+        info.extend(["", *block("PROMPT_ORIGINAL", original)])
     ax.text(
-        0.0, 1.0, "\n".join(info),
-        ha="left", va="top", fontsize=9.5,
-        transform=ax.transAxes, family="DejaVu Sans",
+        0.02, 0.98, "\n".join(info),
+        ha="left", va="top", fontsize=8.8,
+        transform=ax.transAxes, family="DejaVu Sans Mono",
+        linespacing=1.18,
         bbox=dict(boxstyle="round,pad=0.55", facecolor="#F8F8F4", edgecolor="#CCCCCC"),
     )
 
