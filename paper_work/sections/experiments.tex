@@ -4,65 +4,62 @@
 \subsection{实验设置}
 \label{subsec:setup}
 
-\paragraph{评估指标}
-本文的核心任务是从自然语言生成可用的住宅平面布局，因此最主要的评估指标为
-\textbf{端到端布局 IoU}。图拓扑合法性和图结构分布
-主要作为阶段诊断指标，用于解释 IoU 变化的来源，而不作为最终任务的主要结论依据。
-除特别说明外，指标在独立测试集上计算；无轮廓条件主结果使用 15,656 条验证集样本进行全量评估。
+\paragraph{数据划分与评估协议}
+本文在 PlanText-150K 上训练和评估各个子模块。除特别说明外，定量结果均在
+15,656 条测试样本上计算。由于本文目标是从自然语言生成可用的住宅平面布局，
+最主要的评估指标为布局 IoU；图拓扑合法性和图结构分布指标主要用于诊断
+$\theta_1$ 的图生成质量，并解释下游 IoU 的误差来源。
 
+\paragraph{评估指标}
 \begin{itemize}
     \item \textbf{图有效率（Graph Validity Rate, GVR）}：
     生成图中连通且无孤立节点的样本占比，反映图拓扑生成的合法性。
 
     \item \textbf{度分布 KL 散度（Degree KL）}：
     生成图与真实图的节点度分布之间的 KL 散度，
-    衡量端到端生成的图结构分布质量。
+    衡量生成图结构分布与真实数据分布的一致性。
 
     \item \textbf{节点数分布 KL 散度（Node-count KL）}：
     生成图与真实图的节点数分布之间的 KL 散度，
-    衡量模型对平面图规模的建模能力。
+    衡量模型对单个平面图规模的建模能力。
 
     \item \textbf{节点数准确率（Node-count Acc.）}：
-    生成节点数与真实节点数完全一致（精确）或误差在 $\pm k$ 以内的样本占比，
-    衡量模型对单条样本节点规模的预测精度。
+    生成节点数与真实节点数完全一致，或误差在 $\pm k$ 以内的样本占比。
 
-    \item \textbf{端到端 IoU}：
-    三阶段完整推理后，以 Shapely 多边形面积计算预测房间布局与真实布局之间的交并比。
-    预测坐标经质心对齐后，按房间类型分组计算：
+    \item \textbf{布局 IoU}：
+    将预测节点坐标和房间面转换为 Shapely 多边形后，
+    计算预测房间布局与真实布局之间的交并比。
+    预测坐标经质心对齐后按房间类型分组：
     Micro-IoU 为面积加权全局交并比，Macro-IoU 为各房间类型 IoU 的算术平均。
-    由于 DDPM 逆采样从随机高斯噪声出发，不同的初始化种子会导致生成结果存在一定方差，
-    单次采样的评估结果受随机性影响较大，难以稳定反映模型真实能力。
-    为此，对每条样本运行 5 次独立推理（噪声种子各异），
-    取 5 次结果的平均 IoU 作为最终报告值，以获得更稳定的定量估计。
 \end{itemize}
 
-\paragraph{基线方法}
+\paragraph{对比方法与实验路线}
+本文比较三类实验路线。第一类是 \textbf{GT 图条件坐标扩散}：
+输入测试集文本和真实邻接图，评估 $\theta_2$ 在正确图拓扑约束下的几何布局生成能力。
+该设置不等同于完整端到端 $\theta_1\to\theta_2$ 链路，
+而是用于隔离分析文本编码器与坐标扩散模块的作用。
 
-为实现定量对比，我们将 ChatHouseDiffusion~\cite{qin2025chathousediffusion}
-在 \textbf{PlanText-150K} 上重新训练，与本文方法共用相同的训练集、验证集与测试集划分。
-ChatHouseDiffusion 原论文在 RPLAN 数据集上训练，以像素级平面图图像为生成目标，
-以文本描述和房间轮廓（outline mask）为双重输入条件。
-为在我们的矢量数据集上复现该方法，我们将轮廓由像素 mask 转换为顶点图的外轮廓多边形渲染，
-其余训练配置沿用原文设置。
+第二类是 \textbf{纯文本布局生成}。为评估已有文本到平面图方法的迁移能力，
+我们将数据集中所有房间均为矩形的样本筛选出来，并转换为
+Tell2Design~\cite{leng2023tell2design} 所需的 room type、bbox、relation、
+location、size 与 aspect ratio 等监督格式。Tell2Design 在该设置下不输入房间轮廓，
+仅依据自然语言描述执行推理并计算 IoU。作为对应的纯文本路线，
+PlanDiffusion 首先由 $\theta_1$ 从文本生成图拓扑，再由 $\theta_2$ 基于生成图完成
+节点坐标扩散，最后使用 Qwen3.7-Plus 多模态大语言模型根据节点环与渲染结果确认房间类型，
+并据此计算布局 IoU。
 
-此外，为评估已有纯文本平面图生成方法 Tell2Design~\cite{leng2023tell2design}
-在本文数据上的适配性，
-我们将数据集中所有房间均为矩形的样本筛选出来，并转换为 Tell2Design 所需的
-room type、bbox、relation、location、size 与 aspect ratio 等监督格式。
-Tell2Design 在该设置下不输入房间轮廓，仅依据自然语言描述执行推理并计算 IoU。
-作为对应的纯文本路线，PlanDiffusion 首先由 $\theta_1$ 从文本生成图拓扑，
-再由 $\theta_2$ 基于生成图完成节点坐标扩散，最后使用 Qwen3.7-Plus 多模态大语言模型
-根据节点环与渲染结果确认房间类型，并据此计算布局 IoU。
+第三类是 \textbf{轮廓条件生成}。为实现与 ChatHouseDiffusion~\cite{qin2025chathousediffusion}
+的公平对比，我们将其在 PlanText-150K 上重新训练，并与本文方法共用相同训练集、
+验证集与测试集划分。ChatHouseDiffusion 原论文以像素级平面图图像为生成目标，
+以文本描述和房间轮廓 mask 为双重输入条件。为在我们的矢量数据集上复现该方法，
+我们将轮廓由像素 mask 转换为顶点图的外轮廓多边形渲染，其余训练配置沿用原文设置。
+对应地，本文在 $\theta_2$ 的基础上引入轮廓条件变体 \textbf{PlanDiffusion-bnd}：
+在四流注意力架构（adj + room + global + bnd）中固定外轮廓节点坐标，
+并通过独立的轮廓注意力流将外轮廓空间约束注入所有内部节点。
 
-为进一步实现与 ChatHouseDiffusion 的\textbf{公平对比}，
-本文在 $\theta_2$ 的基础上引入轮廓条件变体 \textbf{PlanDiffusion-bnd}：
-在四流注意力架构（adj + room + global + bnd）中，
-将外轮廓节点（is\_boundary=1）的坐标在扩散全程固定（不加噪），
-并通过独立的轮廓注意力流（bnd\_attn）将轮廓空间约束注入所有内部节点。
-该变体与 ChatHouseDiffusion 的输入条件等价——均以文本描述和建筑外轮廓为条件——
-但生成空间为矢量节点坐标而非像素图像。
-
-表~\ref{tab:method_comparison} 从方法特性角度对比各代表性工作。
+\paragraph{方法特性对比}
+表~\ref{tab:method_comparison} 从输入模态、轮廓条件、显式图结构与拓扑约束等角度
+对比代表性方法。
 
 \begin{table}[h]
 \centering
@@ -85,6 +82,11 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 
 \paragraph{实现细节}
 三个可训练子模块均在 NVIDIA GPU 上独立训练，其超参数如表~\ref{tab:impl} 所示。
+TextGraphAlign 采用 AdamW 优化器，图编码器与投影头学习率为 $10^{-4}$，
+BERT 最后 6 层解冻并使用较小学习率 $10^{-5}$，
+weight decay 为 $10^{-2}$，warmup 500 steps，batch size 为 256，
+总训练 30k steps。验证时报告双向检索准确率（graph-to-text 与 text-to-graph），
+并保存验证损失最低的 aligned BERT 供后续 NodeDiffusionTransformer 使用。
 
 \begin{table}[h]
 \centering
@@ -97,16 +99,10 @@ PlanDiffusion-tri（本文）  & 文本 & $\times$     & $\checkmark$ & $\checkm
 \midrule
 图拓扑生成     & LlamaForCausalLM（20M）          & RTX 3060（6\,GB）  & 22  & $\sim$345万 & $\sim$211\,h \\
 图文对比对齐   & TextGraphAlign（39M 可训练）     & RTX 3090（24\,GB） & 256 & 30k          & -- \\
-节点坐标扩散   & NodeDiffusionTransformer（15M）   & RTX 3080（10\,GB） & 384 & $\sim$100万 & $\sim$201\,h  \\
+节点坐标扩散   & NodeDiffusionTransformer（15M）  & RTX 3080（10\,GB） & 384 & $\sim$100万 & $\sim$201\,h  \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-TextGraphAlign 采用 AdamW 优化器，图编码器与投影头学习率为 $10^{-4}$，
-BERT 最后 6 层解冻并使用较小学习率 $10^{-5}$，
-weight decay 为 $10^{-2}$，warmup 500 steps，batch size 为 256，
-总训练 30k steps。验证时报告双向检索准确率（graph-to-text 与 text-to-graph），
-并保存验证损失最低的 aligned BERT 供后续 NodeDiffusionTransformer 使用。
 
 推理时各阶段串联执行：图拓扑生成（自回归解码）$\to$
 坐标扩散（DDPM 1000 步逆采样）$\to$ 面提取与语义标注 $\to$ 渲染输出。
@@ -129,41 +125,76 @@ Intel Core i5-11400 CPU & 1.82\,s & 28.61\,s & 0.34\,s & $<$0.01\,s & 30.77\,s \
 \end{tabular}
 \end{table}
 
-\subsection{主实验结果}
+\subsection{图拓扑生成结果}
+\label{subsec:topology_results}
 \label{subsec:main_results}
 
-表~\ref{tab:main_results} 报告了 PlanDiffusion 主要模块的定量诊断结果。
-由于现有方法与本文在输入模态、数据集及图表示方式上均不一致，
-此处首先报告本文方法内部各阶段的结构生成与坐标扩散指标。
-其中图拓扑生成指标用于刻画 $\theta_1$ 从文本恢复邻接图的能力。
-需要特别说明的是，表~\ref{tab:gt_graph_iou} 中的无轮廓 IoU 结果
-使用测试集文本与真实邻接图作为 $\theta_2$ 的条件输入，
-用于评估坐标扩散模块在给定正确拓扑时的几何布局生成能力，
-不等同于完整端到端 $\theta_1\to\theta_2$ 链路的 IoU。
+表~\ref{tab:main_results} 报告 $\theta_1$ 从文本生成图拓扑的定量结果。
+模型在 15,656 条测试样本上取得 0.996 的 Valid Rate，
+说明解码约束能够有效避免非法图结构。节点数精确匹配率为 26.1\%，
+$\pm2$ 匹配率达到 83.0\%，表明模型虽然难以在所有样本上完全预测节点数量，
+但多数样本的规模误差保持在较小范围内。
 
 \begin{table}[h]
 \centering
-\caption{PlanDiffusion 主要模块定量诊断结果}
+\caption{图拓扑生成（$\theta_1$）定量结果}
 \label{tab:main_results}
 \small
-\begin{tabular}{lcc}
+\begin{tabular}{lc}
 \toprule
-模块/阶段 & 指标 & 结果 \\
+指标 & 结果 \\
 \midrule
-\multirow{10}{*}{图拓扑生成（$\theta_1$）}
-    & Valid Rate↑              & 0.996 \\
-    & avg GED↓                 & 48.1506 \\
-    & avg face diff↓           & 0.6862 \\
-    & Node-count KL↓           & 0.0047  \\
-    & Degree KL↓               & 1.6022  \\
-    & 节点数准确率（精确）↑     & 26.1\% \\
-    & 节点数准确率（$\pm1$）↑  & 63.6\% \\
-    & 节点数准确率（$\pm2$）↑  & 83.0\% \\
-    & 节点数准确率（$\pm3$）↑  & 91.6\% \\
-    & 生成节点数均值$\pm$标准差 & $22.34 \pm 5.38$ \\
+Valid Rate↑              & 0.996 \\
+avg GED↓                 & 48.1506 \\
+avg face diff↓           & 0.6862 \\
+Node-count KL↓           & 0.0047  \\
+Degree KL↓               & 1.6022  \\
+节点数准确率（精确）↑     & 26.1\% \\
+节点数准确率（$\pm1$）↑  & 63.6\% \\
+节点数准确率（$\pm2$）↑  & 83.0\% \\
+节点数准确率（$\pm3$）↑  & 91.6\% \\
+生成节点数均值$\pm$标准差 & $22.34 \pm 5.38$ \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{推理约束消融}
+表~\ref{tab:ablation_constraints} 在相同模型权重下逐步加入四个解码约束，
+评估图结构合法性指标的变化。四个约束定义如下：
+\textbf{C1}（因果树约束）：生成第 $k$ 个节点的父节点时，仅允许从已生成节点
+$0{\sim}k{-}1$ 中选取；
+\textbf{C2}（SEP 时机控制）：生成恰好 $N-1$ 个父节点后强制插入 \texttt{SEP}；
+\textbf{C3}（禁三节点环）：添加补边时禁止形成三节点闭环；
+\textbf{C4}（最小度约束）：在所有节点度数均 $\geq 2$ 之前禁止发出 \texttt{EOS\_G}。
+结果表明，仅无约束解码时 GVR 已达到 99.6\%，完整约束后提升至 100.0\%，
+说明这些规则主要用于消除少量结构边界错误，保证下游几何生成稳定执行。
+
+\begin{table}[h]
+\centering
+\caption{推理约束消融：逐步启用解码约束对图合法性的影响（C1--C4 定义见正文）}
+\label{tab:ablation_constraints}
+\small
+\begin{tabular}{lccccc}
+\toprule
+约束配置 & C1 & C2 & C3 & C4 & GVR↑ \\
+\midrule
+无约束  & $\times$     & $\times$     & $\times$     & $\times$     & 99.6\%  \\
++C1    & $\checkmark$ & $\times$     & $\times$     & $\times$     & 99.9\%  \\
++C2    & $\checkmark$ & $\checkmark$ & $\times$     & $\times$     & 100.0\% \\
++C3    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$     & 100.0\% \\
++C4    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{GT 图条件下的坐标扩散与文本对齐}
+\label{subsec:gt_graph_results}
+
+表~\ref{tab:gt_graph_iou} 给出测试集文本与 GT 邻接图条件下的 PlanDiffusion-tri
+无轮廓 IoU 结果。该实验输入为测试集文本和真实邻接图，
+并使用真实房间类型作为 IoU 分组标签，因此主要衡量 $\theta_2$
+在正确图拓扑约束下恢复房间几何布局的能力，而不是评价 $\theta_1$
+预测错误继续向下游传播后的端到端结果。
 
 \begin{table}[h]
 \centering
@@ -183,17 +214,25 @@ TextGraphAlign-aligned BERT & DDIM 500  & 54.69\% & 53.31\% \\
 \end{tabular}
 \end{table}
 
-表~\ref{tab:gt_graph_iou} 进一步给出无轮廓条件下的坐标扩散 IoU 评估。
-该实验输入为测试集文本和真实邻接图，并使用真实房间类型作为 IoU 分组标签；
-因此它主要衡量 $\theta_2$ 在正确图拓扑约束下恢复房间几何布局的能力，
-而不是评价 $\theta_1$ 预测错误继续向下游传播后的端到端结果。
-在该设置下，DDPM 1000 步达到 Micro-IoU 57.83\%、Macro-IoU 56.51\%，
-DDIM 500 步达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 若直接使用原生 BERT-base-uncased 文本编码器进行训练和推理，
 DDPM 1000 步仅达到 Micro-IoU 10.35\%、Macro-IoU 11.02\%，
 DDIM 500 步仅达到 Micro-IoU 9.84\%、Macro-IoU 10.39\%。
-这说明 TextGraphAlign 的 CLIP 风格图文对比预训练显著增强了文本语义与图结构条件之间的对齐，
-是无轮廓坐标扩散获得有效 IoU 的关键因素。
+使用 TextGraphAlign 对齐后的 BERT 后，DDPM 1000 步提升至
+Micro-IoU 57.83\%、Macro-IoU 56.51\%，DDIM 500 步达到
+Micro-IoU 54.69\%、Macro-IoU 53.31\%。这说明 CLIP 风格图文对比预训练
+显著增强了文本语义与图结构条件之间的对齐，是无轮廓坐标扩散获得有效 IoU 的关键因素。
+
+\subsection{纯文本布局生成对比}
+\label{subsec:text_only_results}
+
+表~\ref{tab:text_only_baseline} 对比纯文本布局生成路线。
+Tell2Design 的输出格式假设房间以矩形 bbox 表示，因此我们仅使用可转换为该监督格式的
+矩形房间样本进行训练与评估。在不提供房间轮廓或真实邻接图的情况下，
+Tell2Design 的 Micro-IoU 为 9.36\%、Macro-IoU 为 9.84\%。
+相比之下，PlanDiffusion 的纯文本链路通过显式图拓扑生成、节点坐标扩散以及
+Qwen3.7-Plus 多模态房间类型确认，得到 Micro-IoU 20.56\%、Macro-IoU 20.92\%。
+该结果表明，将文本到布局生成拆解为结构生成、几何生成和语义标注三个阶段，
+比直接从文本回归矩形房间框更适合本文的矢量平面图生成任务。
 
 \begin{table}[h]
 \centering
@@ -210,14 +249,19 @@ PlanDiffusion-tri + Qwen3.7-Plus & 文本 $\to$ 图拓扑 $\to$ 节点扩散 $\t
 \end{tabular}
 \end{table}
 
-表~\ref{tab:text_only_baseline} 给出纯文本布局生成路线的对比结果。
-由于 Tell2Design 的输出格式假设房间以矩形 bbox 表示，
-我们仅使用可转换为该监督格式的矩形房间样本进行训练与评估。
-在不提供房间轮廓或真实邻接图的情况下，其 Micro-IoU 为 9.36\%、Macro-IoU 为 9.84\%。
-相比之下，PlanDiffusion 的纯文本链路通过显式图拓扑生成、节点坐标扩散以及
-Qwen3.7-Plus 多模态房间类型确认，得到 Micro-IoU 20.56\%、Macro-IoU 20.92\%。
-该结果表明，将文本到布局生成拆解为结构生成、几何生成和语义标注三个阶段，
-比直接从文本回归矩形房间框更适合本文的矢量平面图生成任务。
+\subsection{轮廓条件横向对比}
+\label{subsec:boundary_results}
+
+表~\ref{tab:bnd_comparison} 报告 ChatHouseDiffusion 与 PlanDiffusion-bnd
+在轮廓条件设置下的横向对比。在 15,656 条测试样本上，
+PlanDiffusion-bnd 的 DDIM 50 步即可达到 Micro-IoU 98.49\%、
+Macro-IoU 98.23\%；DDIM 200 步与 DDIM 500 步结果基本不变，
+说明固定外轮廓节点与 $\mathrm{BndAttn}$ 已提供足够强的几何约束，
+采样步数不再是影响 IoU 的主要因素。相同轮廓条件下，
+ChatHouseDiffusion 的 DDIM 50/200/500 步结果稳定在
+Micro-IoU 93.66\%--93.68\%、Macro-IoU 92.40\%--92.66\% 区间。
+这说明在同样使用文本与外轮廓作为条件时，PlanDiffusion-bnd 的显式矢量节点建模
+相比像素轮廓生成范式取得了更高的房间区域重叠度。
 
 \begin{table}[h]
 \centering
@@ -238,60 +282,14 @@ PlanDiffusion-bnd（本文，DDIM 500） & 轮廓节点固定  & 98.42\% & 98.15
 \end{tabular}
 \end{table}
 
-在有轮廓条件设置下，PlanDiffusion-bnd 在 15,656 条验证集样本上全量评估，
-DDIM 50 步即可达到 Micro-IoU 98.49\%、Macro-IoU 98.23\%；
-DDIM 200 步与 DDIM 500 步分别达到 Micro-IoU 98.45\%/98.42\%、
-Macro-IoU 98.18\%/98.15\%，结果基本不变，说明固定外轮廓节点与 $\mathrm{BndAttn}$
-已经提供了足够强的几何约束，采样步数不再是影响 IoU 的主要因素。
-在相同轮廓条件评估下，ChatHouseDiffusion 的 DDIM 50/200/500 步结果均稳定在
-Micro-IoU 93.66\%--93.68\%、Macro-IoU 92.40\%--92.66\% 区间。
-这说明在同样使用文本与房间外轮廓作为条件时，PlanDiffusion-bnd 的显式矢量节点建模
-相比 ChatHouseDiffusion 的像素轮廓生成范式取得了更高的房间区域重叠度。
-
-\subsection{消融实验}
-\label{subsec:ablation}
-
-\subsubsection{推理约束消融（图拓扑生成）}
-
-表~\ref{tab:ablation_constraints} 在相同模型权重下，
-逐步加入四个解码约束，评估图结构合法性指标的变化。
-四个约束定义如下：
-\textbf{C1}（因果树约束）：生成第 $k$ 个节点的父节点时，仅允许从已生成的节点 $0{\sim}k{-}1$ 中选取，保证生成树的因果合法性；
-\textbf{C2}（SEP 时机控制）：生成恰好 $N-1$ 个父节点后强制插入 \texttt{SEP}，防止生成树提前或延迟终止；
-\textbf{C3}（禁三节点环）：添加补边时禁止形成三节点闭环，保证图无三角结构；
-\textbf{C4}（最小度约束）：在所有节点度数均 $\geq 2$ 之前禁止发出 \texttt{EOS\_G}，保证无孤立或悬挂节点。
-评估指标：\textbf{图有效率（GVR）}为生成图连通且无孤立节点的样本占比。
-
-\begin{table}[h]
-\centering
-\caption{推理约束消融：逐步启用解码约束对图合法性的影响（C1--C4 定义见正文）}
-\label{tab:ablation_constraints}
-\small
-\begin{tabular}{lccccc}
-\toprule
-约束配置 & C1 & C2 & C3 & C4 & GVR↑ \\
-\midrule
-无约束  & $\times$     & $\times$     & $\times$     & $\times$     & 99.6\%  \\
-+C1    & $\checkmark$ & $\times$     & $\times$     & $\times$     & 99.9\%  \\
-+C2    & $\checkmark$ & $\checkmark$ & $\times$     & $\times$     & 100.0\% \\
-+C3    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\times$     & 100.0\% \\
-+C4    & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ & 100.0\% \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 \subsection{定性结果}
 \label{subsec:qualitative}
 
 图~\ref{fig:qualitative} 展示了五条文本条件下的端到端生成结果。
 定性结果表明，PlanDiffusion 能够以自然语言文本为条件，
-端到端生成结构合理的建筑平面图。
-尤其是 $\theta_2$ 生成的节点坐标（图~\ref{fig:qualitative} 第三列）
-呈现出平面图特有的网格状空间分布——节点沿水平/垂直方向规整对齐、
-相邻节点间距均匀，表明模型在 DDPM 扩散过程中
-有效学习到了真实平面图节点坐标的空间分布特征。
-受限于级联式生成架构，
-部分样例中房间类型的空间位置与文本描述存在对应偏差，
+生成结构合理的建筑平面图。$\theta_1$ 生成的邻接图提供房间布局的拓扑骨架，
+$\theta_2$ 进一步生成与图结构对应的节点坐标，并通过面提取和语义标注得到最终矢量平面图。
+受限于级联式生成架构，部分样例中房间类型的空间位置与文本描述仍存在对应偏差，
 留待后续端到端联合训练方案改进。
 
 \begin{figure}[htbp]
