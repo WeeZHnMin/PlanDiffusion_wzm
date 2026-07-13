@@ -54,6 +54,9 @@ ChatHouseDiffusion 原论文在 RPLAN 数据集上训练，以像素级平面图
 我们将数据集中所有房间均为矩形的样本筛选出来，并转换为 Tell2Design 所需的
 room type、bbox、relation、location、size 与 aspect ratio 等监督格式。
 Tell2Design 在该设置下不输入房间轮廓，仅依据自然语言描述执行推理并计算 IoU。
+作为对应的纯文本路线，PlanDiffusion 首先由 $\theta_1$ 从文本生成图拓扑，
+再由 $\theta_2$ 基于生成图完成节点坐标扩散，最后使用 Qwen3.7-Plus 多模态大语言模型
+根据节点环与渲染结果确认房间类型，并据此计算布局 IoU。
 
 为进一步实现与 ChatHouseDiffusion 的\textbf{公平对比}，
 本文在 $\theta_2$ 的基础上引入轮廓条件变体 \textbf{PlanDiffusion-bnd}：
@@ -198,23 +201,27 @@ DDIM 500 步达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 
 \begin{table}[h]
 \centering
-\caption{纯文本平面图生成基线：Tell2Design 适配到本文矩形筛选数据后的 IoU 结果}
+\caption{纯文本布局生成对比：Tell2Design 与 PlanDiffusion 文本链路}
 \label{tab:text_only_baseline}
 \small
 \begin{tabular}{lccc}
 \toprule
-方法 & 输入条件 & Micro-IoU↑ & Macro-IoU↑ \\
+方法 & 推理链路 & Micro-IoU↑ & Macro-IoU↑ \\
 \midrule
-Tell2Design（适配后） & 纯文本 & 9.36\% & 9.84\% \\
+Tell2Design（适配后） & 文本 $\to$ bbox & 9.36\% & 9.84\% \\
+PlanDiffusion-tri + Qwen3.7-Plus & 文本 $\to$ 图拓扑 $\to$ 节点扩散 $\to$ 房间类型 & 20.56\% & 20.92\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表~\ref{tab:text_only_baseline} 给出 Tell2Design 在本文数据格式适配后的纯文本推理结果。
+表~\ref{tab:text_only_baseline} 给出纯文本布局生成路线的对比结果。
 由于 Tell2Design 的输出格式假设房间以矩形 bbox 表示，
 我们仅使用可转换为该监督格式的矩形房间样本进行训练与评估。
-在不提供房间轮廓或真实邻接图的情况下，其 Micro-IoU 为 9.36\%、Macro-IoU 为 9.84\%，
-说明直接将既有纯文本生成范式迁移到本文更复杂的矢量布局数据上仍存在明显困难。
+在不提供房间轮廓或真实邻接图的情况下，其 Micro-IoU 为 9.36\%、Macro-IoU 为 9.84\%。
+相比之下，PlanDiffusion 的纯文本链路通过显式图拓扑生成、节点坐标扩散以及
+Qwen3.7-Plus 多模态房间类型确认，得到 Micro-IoU 20.56\%、Macro-IoU 20.92\%。
+该结果表明，将文本到布局生成拆解为结构生成、几何生成和语义标注三个阶段，
+比直接从文本回归矩形房间框更适合本文的矢量平面图生成任务。
 
 \begin{table}[h]
 \centering

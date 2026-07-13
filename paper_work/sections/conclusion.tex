@@ -14,9 +14,12 @@
 PlanDiffusion-tri 的坐标扩散模块在 DDPM 1000 步采样下达到
 Micro-IoU 57.83\%、Macro-IoU 56.51\%，
 在 DDIM 500 步加速采样下达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
-作为纯文本生成基线，Tell2Design 适配到本文矩形筛选数据后取得
-Micro-IoU 9.36\%、Macro-IoU 9.84\%，
-反映出既有文本到矩形 bbox 范式直接迁移到本文矢量布局数据时的局限。
+作为纯文本布局生成对比，Tell2Design 适配到本文矩形筛选数据后取得
+Micro-IoU 9.36\%、Macro-IoU 9.84\%；
+PlanDiffusion 从文本生成图拓扑、基于生成图扩散节点坐标，
+再由 Qwen3.7-Plus 多模态模型确认房间类型后，
+达到 Micro-IoU 20.56\%、Macro-IoU 20.92\%，
+体现出显式图拓扑中间表示相比直接文本到矩形 bbox 范式的优势。
 在有轮廓条件下，PlanDiffusion-bnd 通过固定外轮廓节点并引入 $\mathrm{BndAttn}$，
 DDIM 50 步即可达到 Micro-IoU 98.49\%、Macro-IoU 98.23\%，
 并在 DDIM 200/500 步下保持 Micro-IoU 98.45\%/98.42\%、
