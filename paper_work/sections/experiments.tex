@@ -152,13 +152,17 @@ DDIM 500 步加速采样达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 \toprule
 模块/阶段 & 指标 & 结果 \\
 \midrule
-\multirow{6}{*}{图拓扑生成（$\theta_1$）}
-    & GVR↑                     & 100.0\% \\
-    & Degree KL↓               & 0.0122  \\
-    & Node-count KL↓           & 0.0057  \\
-    & 节点数准确率（精确）↑     & 22.59\% \\
-    & 节点数准确率（$\pm1$）↑  & 57.39\% \\
-    & 节点数准确率（$\pm2$）↑  & 76.39\% \\
+\multirow{10}{*}{图拓扑生成（$\theta_1$）}
+    & 有效生成数↑              & 15592/15656 \\
+    & avg GED↓                 & 48.1506 \\
+    & avg face diff↓           & 0.6862 \\
+    & Node-count KL↓           & 0.0047  \\
+    & Degree KL↓               & 1.6022  \\
+    & 节点数准确率（精确）↑     & 26.1\% \\
+    & 节点数准确率（$\pm1$）↑  & 63.6\% \\
+    & 节点数准确率（$\pm2$）↑  & 83.0\% \\
+    & 节点数准确率（$\pm3$）↑  & 91.6\% \\
+    & 生成节点数均值$\pm$标准差 & $22.34 \pm 5.38$ \\
 \midrule
 节点坐标扩散（$\theta_2$，三流） & Coord-RMSE↓ & 65.62 \\
 \midrule
@@ -181,9 +185,12 @@ DDIM 500 步加速采样达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
 \toprule
 方法 & 轮廓条件形式 & Micro-IoU↑ & Macro-IoU↑ \\
 \midrule
+ChatHouseDiffusion~\cite{qin2025chathousediffusion}（DDIM 50）  & 像素轮廓 mask  & 93.66\% & 92.40\% \\
 ChatHouseDiffusion~\cite{qin2025chathousediffusion}（DDIM 200） & 像素轮廓 mask  & 93.68\% & 92.66\% \\
+ChatHouseDiffusion~\cite{qin2025chathousediffusion}（DDIM 500） & 像素轮廓 mask  & 93.66\% & 92.66\% \\
 PlanDiffusion-bnd（本文，DDIM 50） & 轮廓节点固定  & \textbf{98.49\%} & \textbf{98.23\%} \\
 PlanDiffusion-bnd（本文，DDIM 200） & 轮廓节点固定  & 98.45\% & 98.18\% \\
+PlanDiffusion-bnd（本文，DDIM 500） & 轮廓节点固定  & 98.42\% & 98.15\% \\
 \midrule
 PlanDiffusion-tri（本文，主线） & 无（纯文本）  & 57.83\% & 56.51\% \\
 \bottomrule
@@ -192,11 +199,13 @@ PlanDiffusion-tri（本文，主线） & 无（纯文本）  & 57.83\% & 56.51\%
 
 在有轮廓条件设置下，PlanDiffusion-bnd 在 15,656 条验证集样本上全量评估，
 DDIM 50 步即可达到 Micro-IoU 98.49\%、Macro-IoU 98.23\%；
-增加到 DDIM 200 步后结果基本不变，说明固定外轮廓节点与 $\mathrm{BndAttn}$
+DDIM 200 步与 DDIM 500 步分别达到 Micro-IoU 98.45\%/98.42\%、
+Macro-IoU 98.18\%/98.15\%，结果基本不变，说明固定外轮廓节点与 $\mathrm{BndAttn}$
 已经提供了足够强的几何约束，采样步数不再是影响 IoU 的主要因素。
 在相同轮廓条件评估下，ChatHouseDiffusion 的 DDIM 50/200/500 步结果均稳定在
-Micro-IoU 93.66\%--93.68\%、Macro-IoU 92.40\%--92.66\% 区间；
-因此表中选取 DDIM 200 作为其代表性结果。
+Micro-IoU 93.66\%--93.68\%、Macro-IoU 92.40\%--92.66\% 区间。
+这说明在同样使用文本与房间外轮廓作为条件时，PlanDiffusion-bnd 的显式矢量节点建模
+相比 ChatHouseDiffusion 的像素轮廓生成范式取得了更高的房间区域重叠度。
 
 \subsection{消融实验}
 \label{subsec:ablation}
