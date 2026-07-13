@@ -49,6 +49,12 @@ ChatHouseDiffusion 原论文在 RPLAN 数据集上训练，以像素级平面图
 为在我们的矢量数据集上复现该方法，我们将轮廓由像素 mask 转换为顶点图的外轮廓多边形渲染，
 其余训练配置沿用原文设置。
 
+此外，为评估已有纯文本平面图生成方法 Tell2Design~\cite{leng2023tell2design}
+在本文数据上的适配性，
+我们将数据集中所有房间均为矩形的样本筛选出来，并转换为 Tell2Design 所需的
+room type、bbox、relation、location、size 与 aspect ratio 等监督格式。
+Tell2Design 在该设置下不输入房间轮廓，仅依据自然语言描述执行推理并计算 IoU。
+
 为进一步实现与 ChatHouseDiffusion 的\textbf{公平对比}，
 本文在 $\theta_2$ 的基础上引入轮廓条件变体 \textbf{PlanDiffusion-bnd}：
 在四流注意力架构（adj + room + global + bnd）中，
@@ -189,6 +195,26 @@ DDIM 500  & 54.69\% & 53.31\% \\
 而不是评价 $\theta_1$ 预测错误继续向下游传播后的端到端结果。
 在该设置下，DDPM 1000 步达到 Micro-IoU 57.83\%、Macro-IoU 56.51\%，
 DDIM 500 步达到 Micro-IoU 54.69\%、Macro-IoU 53.31\%。
+
+\begin{table}[h]
+\centering
+\caption{纯文本平面图生成基线：Tell2Design 适配到本文矩形筛选数据后的 IoU 结果}
+\label{tab:text_only_baseline}
+\small
+\begin{tabular}{lccc}
+\toprule
+方法 & 输入条件 & Micro-IoU↑ & Macro-IoU↑ \\
+\midrule
+Tell2Design（适配后） & 纯文本 & 9.36\% & 9.84\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:text_only_baseline} 给出 Tell2Design 在本文数据格式适配后的纯文本推理结果。
+由于 Tell2Design 的输出格式假设房间以矩形 bbox 表示，
+我们仅使用可转换为该监督格式的矩形房间样本进行训练与评估。
+在不提供房间轮廓或真实邻接图的情况下，其 Micro-IoU 为 9.36\%、Macro-IoU 为 9.84\%，
+说明直接将既有纯文本生成范式迁移到本文更复杂的矢量布局数据上仍存在明显困难。
 
 \begin{table}[h]
 \centering
