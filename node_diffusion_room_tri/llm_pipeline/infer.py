@@ -235,8 +235,9 @@ def render_graph(coords, adj, n, img_size=768, margin=48, node_r=18):
     span   = np.maximum(hi - lo, 1e-6)
     draw_range = img_size - 2 * margin
     pts_px = ((pts - lo) / span * draw_range + margin).astype(int)
-    # Keep the rendered image in image-coordinate convention: larger y appears
-    # lower on the canvas. JSON coordinates are left unchanged.
+    # visualize_gt_adj.py displays the data y-axis upward. PIL pixels grow
+    # downward, so flip only the rendered y pixel and keep json coordinates as-is.
+    pts_px[:, 1] = (img_size - 1) - pts_px[:, 1]
 
     img  = Image.new("RGB", (img_size, img_size), color=(250, 250, 250))
     draw = ImageDraw.Draw(img)
