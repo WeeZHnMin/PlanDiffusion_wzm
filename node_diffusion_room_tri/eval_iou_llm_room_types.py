@@ -41,6 +41,9 @@ ALLOWED_TYPES = {
     "dining_room",
 }
 
+DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_MODEL = "qwen3.5-plus"
+
 TYPE_ALIASES = {
     "bath": "bathroom",
     "toilet": "bathroom",
@@ -67,9 +70,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--jsonl", required=True, help="tri inference output JSONL")
     p.add_argument("--out", default="outputs/tri_llm_room_type_iou.jsonl")
     p.add_argument("--summary", default=None, help="Optional summary JSON path")
-    p.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"))
-    p.add_argument("--base_url", default=os.environ.get("OPENAI_BASE_URL"))
-    p.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY"))
+    p.add_argument("--model", default=os.environ.get("OPENAI_MODEL", DEFAULT_MODEL))
+    p.add_argument("--base-url", "--base_url", dest="base_url",
+                   default=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL))
+    p.add_argument("--api-key", "--api_key", dest="api_key",
+                   default=os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    p.add_argument("--temperature", type=float, default=0.0)
+    p.add_argument("--timeout", type=float, default=30.0)
+    p.add_argument("--retry-times", type=int, default=3)
+    p.add_argument("--retry-delay", type=float, default=1.0)
+    p.add_argument("--disable-thinking", action="store_true", default=True)
+    p.add_argument("--enable-thinking", action="store_true", help="override disable-thinking")
     p.add_argument("--n_samples", type=int, default=0, help="0 means all")
     p.add_argument("--sleep", type=float, default=0.0)
     p.add_argument("--dry_run", action="store_true", help="Build prompts only; do not call LLM")
@@ -320,16 +331,36 @@ def parse_llm_response(text: str, expected_room_ids: Sequence[str]) -> Dict[str,
     return parsed
 
 
-def call_llm(client: Any, model: str, prompt: str) -> str:
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "You label floor-plan rooms. Output strict JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-    )
-    return resp.choices[0].message.content or ""
+def call_llm(
+    client: Any,
+    model: str,
+    prompt: str,
+    temperature: float,
+    disable_thinking: bool,
+    retry_times: int,
+    retry_delay: float,
+) -> str:
+    last_error = ""
+    for attempt in range(1, retry_times + 1):
+        try:
+            kwargs = {}
+            if disable_thinking:
+                kwargs["extra_body"] = {"enable_thinking": False}
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You label floor-plan rooms. Output strict JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=temperature,
+                **kwargs,
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            last_error = str(e)
+            if attempt < retry_times:
+                time.sleep(retry_delay * attempt)
+    raise RuntimeError(last_error)
 
 
 def compute_iou(gt_by_type: Dict[str, List[Polygon]], pred_by_type: Dict[str, List[Polygon]]) -> Tuple[float, float]:
@@ -356,9 +387,10 @@ def main() -> None:
             raise RuntimeError("openai package is not installed")
         if not args.api_key:
             raise RuntimeError("OPENAI_API_KEY or --api_key is required")
-        client = OpenAI(api_key=args.api_key, base_url=args.base_url)
+        client = OpenAI(api_key=args.api_key, base_url=args.base_url, timeout=args.timeout)
     else:
         client = None
+    disable_thinking = args.disable_thinking and not args.enable_thinking
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,7 +424,10 @@ def main() -> None:
                     continue
 
                 expected_ids = [r["room_id"] for r in rooms]
-                raw1 = call_llm(client, args.model, prompt)
+                raw1 = call_llm(
+                    client, args.model, prompt, args.temperature,
+                    disable_thinking, args.retry_times, args.retry_delay,
+                )
                 try:
                     room_types = parse_llm_response(raw1, expected_ids)
                     retry_count = 0
@@ -401,7 +436,10 @@ def main() -> None:
                         f"{prompt}\n\nYour previous answer could not be parsed: {e1}.\n"
                         "Return only strict JSON. Cover every room_id exactly once."
                     )
-                    raw2 = call_llm(client, args.model, retry_prompt)
+                    raw2 = call_llm(
+                        client, args.model, retry_prompt, args.temperature,
+                        disable_thinking, args.retry_times, args.retry_delay,
+                    )
                     room_types = parse_llm_response(raw2, expected_ids)
                     retry_count = 1
 
