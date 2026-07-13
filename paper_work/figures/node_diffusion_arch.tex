@@ -54,11 +54,10 @@
 % ─────────────────────────────────────────────────────────────────────────────
 %  ROW 0  Raw inputs
 % ─────────────────────────────────────────────────────────────────────────────
-\node[B={Ci}] (txt) at (-6.0,  0)  {Text Tokens};
-\node[B={Ci}] (xin) at (-3.0,  0)  {Noisy Coords};
-\node[B={Ci}] (tin) at ( 0.0,  0)  {Diffusion Step};
-\node[B={Ci}] (adj) at ( 3.0,  0)  {Adjacency Matrix};
-\node[B={Ci}] (roomin) at ( 6.0,  0)  {Room Membership\\[-2pt]\footnotesize(face cycles)};
+\node[B={Ci}] (txt) at (-4.8,  0)  {Text Tokens};
+\node[B={Ci}] (xin) at (-1.6,  0)  {Noisy Coords};
+\node[B={Ci}] (tin) at ( 1.6,  0)  {Diffusion Step};
+\node[B={Ci}] (adj) at ( 4.8,  0)  {Adjacency Matrix};
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  ROW 1  Text branch: BERT (frozen)
@@ -85,23 +84,22 @@
 %  Group: Inputs + Embeddings
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{scope}[on background layer]
-  \node[grp, fit=(txt)(xin)(tin)(adj)(roomin)(bert)(tp)(cp)(tm)(ni),
+  \node[grp, fit=(txt)(xin)(tin)(adj)(bert)(tp)(cp)(tm)(ni),
         inner sep=7pt] (Ginput) {};
 \end{scope}
 \node[ttl, anchor=south west] at ([yshift=2pt]Ginput.north west) {Inputs \& Embeddings};
 
 % ─────────────────────────────────────────────────────────────────────────────
 %  ENCODER  ×6
-%  Sub-layers: (1) Adj + Room + Global Attn (parallel sum)  (2) Cross-Attn  (3) FFN
+%  Sub-layers: (1) Adj Attn + Global Attn (parallel sum)  (2) Cross-Attn  (3) FFN
 % ─────────────────────────────────────────────────────────────────────────────
 \node[W={Cs}]  (ln1)  at (0, -5.3)  {LayerNorm};
 
-% tri-stream: three masked self-attention branches.
-\node[HW={Cs}] (ga) at (-3.1, -6.85) {Global\\[-2pt]\footnotesize Self-Attn};
-\node[HW={Cs}] (ra) at ( 0.0, -6.85) {Room\\[-2pt]\footnotesize Self-Attn};
-\node[HW={Cs}] (aa) at ( 3.1, -6.85) {Adj\\[-2pt]\footnotesize Self-Attn};
+% dual-stream: two narrow boxes side by side (2.85cm each, gap ~0.45cm, total ~6.15cm)
+\node[HW={Cs}] (ga) at (-1.65, -6.85) {Global\\[-2pt]\footnotesize Self-Attn};
+\node[HW={Cs}] (aa) at ( 1.65, -6.85) {Adj\\[-2pt]\footnotesize Self-Attn};
 
-% single + merges all stream outputs AND residual
+% single + merges both stream outputs AND residual
 \node[C={Cs}]  (add1) at (0, -8.25) {$+$};
 
 \node[W={Cs}, below=0.55cm of add1] (ln2)  {LayerNorm};
@@ -114,7 +112,7 @@
 \node[C={Cs}, below=0.4cm of ffn]   (add3) {$+$};
 
 \begin{scope}[on background layer]
-  \node[grp, fit=(ln1)(aa)(ra)(ga)(add1)(ln2)(ca)(add2)(ln3)(ffn)(add3),
+  \node[grp, fit=(ln1)(aa)(ga)(add1)(ln2)(ca)(add2)(ln3)(ffn)(add3),
         inner sep=11pt] (Genc) {};
 \end{scope}
 \node[ttl, anchor=south west] at ([yshift=2pt]Genc.north west)
@@ -150,17 +148,15 @@
 % node init → ln1
 \draw[a] (ni.south) -- (ln1.north);
 
-% ln1 -> three independent vertical arrows to adj, room, and global
+% ln1 → two independent vertical arrows to adj and global
 \draw[a] (ln1.south -| aa.north) -- (aa.north);
-\draw[a] (ln1.south -| ra.north) -- (ra.north);
 \draw[a] (ln1.south -| ga.north) -- (ga.north);
 
-% adj, room, and global outputs -> add1
+% adj and global outputs → add1  (down → horizontal → down)
 \draw[a] (aa.south) |- (add1.east);
-\draw[a] (ra.south) -- (add1.north);
 \draw[a] (ga.south) -- ++(0,-0.4cm) -| (add1.north);
 
-% residual skip 1: ni bypasses ln1+tri-stream to add1
+% residual skip 1: ni bypasses ln1+dual-stream to add1
 \draw[sk]
   let \p1=(ni.south), \p2=(add1.west), \p3=(Genc.west) in
   (\x1, \y1-0.45cm)
@@ -181,15 +177,6 @@
   (adj.south)
   -- (adj.south |- aa.east)
   -- (aa.east);
-
-% room membership -> room self-attn from right
-\draw[a]
-  (roomin.south)
-  -- (roomin.south |- ra.east)
-  -- (ra.east);
-
-% adjacency induces face-cycle membership
-\draw[sk] (adj.east) -- (roomin.west);
 
 % residual skip 2: add1 bypasses ln2+ca to add2
 \draw[sk]
