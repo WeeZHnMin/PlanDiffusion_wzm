@@ -343,21 +343,17 @@ def main():
             adj_raw = np.array(rec["adj_matrix"], dtype=np.int32)[:n, :n]
             np.fill_diagonal(adj_raw, 0)
             # GT 字段可选（θ₁ 直接输出的 JSONL 没有真实坐标和类型）
-            if "node_coords" in rec:
-                raw_coords = np.array(rec["node_coords"][:n], dtype=np.float32)
-            else:
-                raw_coords = np.zeros((n, 2), dtype=np.float32)
-            if "node_types" in rec:
-                gt_node_types = [
-                    (t if isinstance(t, list) else [t])
-                    for t in rec["node_types"][:n]
-                ]
-            else:
-                gt_node_types = [["other"]] * n
-            raw_coords, adj_raw, gt_node_types, _ = prune_dangling_nodes(
-                raw_coords, adj_raw, gt_node_types
+            gt_adj_matrix = rec.get("gt_adj_matrix", rec.get("adj_matrix", []))
+            gt_node_coords = rec.get("gt_node_coords", rec.get("node_coords", []))
+            gt_node_types = rec.get("gt_node_types", rec.get("node_types", []))
+
+            # Prune only the inference graph. GT fields are comparison metadata
+            # and must stay aligned with the original validation record.
+            coords_for_prune = np.zeros((n, 2), dtype=np.float32)
+            coords_for_prune, adj_raw, _, _ = prune_dangling_nodes(
+                coords_for_prune, adj_raw
             )
-            n = len(raw_coords)
+            n = len(coords_for_prune)
             if n < 3:
                 skipped += 1
                 continue
@@ -384,7 +380,8 @@ def main():
                 "n":          n,
                 "prompt":     prompt,
                 "adj_list":   adj_raw.tolist(),
-                "gt_coords":  raw_coords.tolist(),
+                "gt_adj":     gt_adj_matrix,
+                "gt_coords":  gt_node_coords,
                 "gt_types":   gt_node_types,
             })
 
@@ -457,6 +454,7 @@ def main():
                     "prompt":           s["prompt"],
                     "n_nodes":          pred_n,
                     "adj_matrix":       pred_adj,
+                    "gt_adj_matrix":    s["gt_adj"],
                     "gt_node_coords":   s["gt_coords"],
                     "gt_node_types":    s["gt_types"],
                     "pred_node_coords": pred_coords,
@@ -523,6 +521,7 @@ def main():
                 "prompt":           s["prompt"],
                 "n_nodes":          pred_n,
                 "adj_matrix":       pred_adj,
+                "gt_adj_matrix":    s["gt_adj"],
                 "gt_node_coords":   s["gt_coords"],
                 "gt_node_types":    s["gt_types"],
                 "pred_node_coords": pred_coords,
