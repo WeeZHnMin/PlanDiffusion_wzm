@@ -1,4 +1,4 @@
-"""Convert LLM graph eval JSONL to node_diffusion_room_tri.infer input.
+"""Convert LLM graph eval JSONL to node_diffusion_room_tri.llm_pipeline.infer input.
 
 This is intentionally a thin field mapping:
   gen_n_nodes -> n_nodes
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .graph_prune import prune_non_cycle_nodes
+from ..graph_prune import prune_non_cycle_nodes
 
 MAX_NODES = 40
 

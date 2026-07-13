@@ -1,4 +1,4 @@
-"""Backfill GT fields into tri inference JSONL outputs.
+"""Backfill GT fields into tri LLM-pipeline inference JSONL outputs.
 
 The input inference JSONL may already contain prompt, generated adjacency,
 and predicted coordinates, but may have missing/placeholder GT fields. This

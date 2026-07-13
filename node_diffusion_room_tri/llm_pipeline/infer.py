@@ -12,7 +12,7 @@ node_diffusion_room_tri 推理脚本
   pred_node_coords  预测坐标（质心归零后，n 条）
 
 用法：
-  python -m node_diffusion_room_tri.infer \\
+  python -m node_diffusion_room_tri.llm_pipeline.infer \\
       --ckpt      checkpoints/node_diffusion_room_tri/latest.pt \\
       --jsonl     data/jsonl/test_graph_dataset_18k5.jsonl \\
       --n_samples 1000 \\
@@ -31,9 +31,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from .model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
-from .diffusion import GaussianDiffusion
-from .graph_prune import prune_dangling_nodes
+from ..model import NodeDiffusionTransformer, _assign_room_membership_single, MAX_ROOMS
+from ..diffusion import GaussianDiffusion
+from ..graph_prune import prune_dangling_nodes
 from transformers import BertTokenizer
 
 MAX_NODES    = 40

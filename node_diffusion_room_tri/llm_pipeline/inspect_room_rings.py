@@ -1,4 +1,4 @@
-"""Inspect recovered room rings and their aligned inference images.
+"""Inspect recovered room rings and their aligned LLM-pipeline inference images.
 
 This is a small sanity-check helper before sending images to a multimodal LLM.
 It prints the image path and the node-index cycle for each recovered room so

@@ -30,7 +30,7 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from .graph_prune import prune_dangling_nodes
+from ..graph_prune import prune_dangling_nodes
 
 try:
     from openai import OpenAI
