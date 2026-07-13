@@ -5,10 +5,11 @@ GT coordinates/types, and predicted coordinates, but miss gt_adj_matrix. This
 script rematches each row against the original validation JSONL and copies the
 validation adj_matrix into gt_adj_matrix.
 
-Matching is intentionally conservative:
-  1. source_index is used when present because it is an explicit val-row id.
-  2. Otherwise, match by stable GT content keys, not by row number.
-  3. Ambiguous or missing matches are skipped unless --strict is set.
+Matching is intentionally conservative and uses only:
+  prompt + gt_node_coords + gt_node_types
+
+source_index is not trusted here because old intermediate files may have been
+filtered, regenerated, or merged in ways that make index-based matching unsafe.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--write_source_index",
         action="store_true",
-        help="Also write source_index for rows matched by GT content",
+        help="Also write matched validation row index as source_index",
     )
     return p.parse_args()
 
@@ -98,17 +99,11 @@ def make_keys(row: Dict[str, Any]) -> Iterable[Tuple[str, Key]]:
 
     if prompt and coords is not None and types is not None:
         yield ("prompt_coords_types", ("pct", prompt, canonical(coords), canonical(types)))
-    if prompt and coords is not None:
-        yield ("prompt_coords", ("pc", prompt, canonical(coords), ""))
-    if coords is not None and types is not None:
-        yield ("coords_types", ("ct", canonical(coords), canonical(types), ""))
 
 
 def build_indexes(val_rows: List[Dict[str, Any]]) -> Dict[str, Dict[Key, List[int]]]:
     indexes: Dict[str, Dict[Key, List[int]]] = {
         "prompt_coords_types": defaultdict(list),
-        "prompt_coords": defaultdict(list),
-        "coords_types": defaultdict(list),
     }
     for idx, row in enumerate(val_rows):
         for name, key in make_keys(row):
@@ -121,24 +116,13 @@ def find_match(
     val_rows: List[Dict[str, Any]],
     indexes: Dict[str, Dict[Key, List[int]]],
 ) -> Tuple[Optional[int], str]:
-    source_index = row.get("source_index")
-    if source_index is not None:
-        try:
-            idx = int(source_index)
-        except (TypeError, ValueError):
-            return None, "bad_source_index"
-        if 0 <= idx < len(val_rows):
-            return idx, "source_index"
-        return None, "bad_source_index"
-
-    saw_ambiguous = False
     for name, key in make_keys(row):
         matches = indexes[name].get(key, [])
         if len(matches) == 1:
             return matches[0], name
         if len(matches) > 1:
-            saw_ambiguous = True
-    return None, "ambiguous" if saw_ambiguous else "no_match"
+            return None, "ambiguous"
+    return None, "no_match"
 
 
 def main() -> None:
@@ -184,6 +168,9 @@ def main() -> None:
             matched += 1
 
     print(f"read inference rows: {total}")
+    failed = kept_unmatched + dropped_unmatched
+    print(f"backfill_success: {matched}")
+    print(f"backfill_failed: {failed}")
     print(f"matched: {matched}")
     print(f"kept_unmatched: {kept_unmatched}")
     print(f"dropped_unmatched: {dropped_unmatched}")
