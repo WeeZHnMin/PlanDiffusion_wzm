@@ -32,9 +32,9 @@ def parse_args() -> argparse.Namespace:
         help="Fail if any row cannot be matched uniquely",
     )
     p.add_argument(
-        "--drop_unmatched",
+        "--keep_unmatched",
         action="store_true",
-        help="Drop unmatched rows. Default: keep unmatched rows unchanged.",
+        help="Keep unmatched/ambiguous rows unchanged. Default: drop them.",
     )
     p.add_argument("--write_source_index", action="store_true", default=True)
     return p.parse_args()
@@ -135,11 +135,11 @@ def main() -> None:
             if idx is None:
                 if args.strict:
                     raise RuntimeError(f"row {total - 1}: failed to match validation row ({reason})")
-                if args.drop_unmatched:
+                if args.keep_unmatched:
+                    fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    kept_unmatched += 1
+                else:
                     dropped_unmatched += 1
-                    continue
-                fout.write(json.dumps(row, ensure_ascii=False) + "\n")
-                kept_unmatched += 1
                 continue
 
             patched = dict(row)
