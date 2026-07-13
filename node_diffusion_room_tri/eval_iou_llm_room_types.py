@@ -26,6 +26,8 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
+from .graph_prune import prune_dangling_nodes
+
 try:
     from openai import OpenAI
 except Exception:  # pragma: no cover
@@ -96,6 +98,12 @@ def read_jsonl(path: str) -> Iterable[Dict[str, Any]]:
             line = line.strip()
             if line:
                 yield json.loads(line)
+
+
+def center_at_origin(coords: np.ndarray) -> np.ndarray:
+    if len(coords) == 0:
+        return coords
+    return coords - coords.mean(axis=0, keepdims=True)
 
 
 def _build_sorted_neighbors(coords: Sequence[Tuple[float, float]], adj: np.ndarray, n: int):
@@ -196,14 +204,28 @@ def vote_gt_room_type(face: Sequence[int], node_types: Sequence[Any], all_nbrs: 
 
 def polys_by_type_from_gt(coords_raw: Any, adj_raw: Any, node_types: Any) -> Dict[str, List[Polygon]]:
     n = min(len(coords_raw), len(adj_raw))
-    coords = [(float(coords_raw[i][0]), float(coords_raw[i][1])) for i in range(n)]
+    coords_np = np.array(coords_raw[:n], dtype=np.float32)
     adj = np.array(adj_raw, dtype=np.int32)[:n, :n]
     np.fill_diagonal(adj, 0)
+    node_types_list = [
+        (t if isinstance(t, list) else [t])
+        for t in (node_types[:n] if node_types is not None else [])
+    ]
+    if len(node_types_list) < n:
+        node_types_list.extend([["bedroom"]] * (n - len(node_types_list)))
+    coords_np, adj, node_types_list, _ = prune_dangling_nodes(
+        coords_np, adj, node_types_list
+    )
+    n = len(coords_np)
+    if n < 3:
+        return {}
+    coords_np = center_at_origin(coords_np)
+    coords = [(float(coords_np[i, 0]), float(coords_np[i, 1])) for i in range(n)]
     faces = find_faces(coords, adj)
     all_nbrs = _build_sorted_neighbors(coords, adj, n)
     out: Dict[str, List[Polygon]] = {}
     for face in faces:
-        rtype = vote_gt_room_type(face, node_types, all_nbrs)
+        rtype = vote_gt_room_type(face, node_types_list, all_nbrs)
         poly = safe_poly([coords[i] for i in face])
         if poly is not None:
             out.setdefault(rtype, []).append(poly)
@@ -242,7 +264,9 @@ def room_location(cx: float, cy: float, min_x: float, max_x: float, min_y: float
 
 def recover_pred_rooms(row: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, List[Polygon]]]:
     n = int(row["n_nodes"])
-    coords = [(float(x), float(y)) for x, y in row["pred_node_coords"][:n]]
+    coords_np = np.array(row["pred_node_coords"][:n], dtype=np.float32)
+    coords_np = center_at_origin(coords_np)
+    coords = [(float(coords_np[i, 0]), float(coords_np[i, 1])) for i in range(n)]
     adj = np.array(row["adj_matrix"], dtype=np.int32)[:n, :n]
     np.fill_diagonal(adj, 0)
     faces = find_faces(coords, adj)
