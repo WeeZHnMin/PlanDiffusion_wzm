@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -39,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--image_dir",
         default=None,
-        help="Optional image directory whose 00000.png-style files should be deleted for dropped rows.",
+        help="Optional image directory to rebuild so 00000.png-style files match filtered JSONL rows.",
     )
     p.add_argument(
         "--image_ext",
@@ -134,7 +135,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     total = matched = kept_unmatched = dropped_unmatched = 0
-    deleted_images = missing_images = 0
+    image_pairs: List[Tuple[int, int]] = []
     reasons: Dict[str, int] = defaultdict(int)
     with in_path.open(encoding="utf-8") as fin, write_path.open("w", encoding="utf-8") as fout:
         for line in fin:
@@ -150,20 +151,21 @@ def main() -> None:
                 if args.strict:
                     raise RuntimeError(f"row {total - 1}: failed to match validation row ({reason})")
                 if args.keep_unmatched:
-                    fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    new_image_index = len(image_pairs)
+                    patched = dict(row)
+                    patched["image_index"] = new_image_index
+                    patched["original_image_index"] = row_index
+                    fout.write(json.dumps(patched, ensure_ascii=False) + "\n")
+                    image_pairs.append((row_index, new_image_index))
                     kept_unmatched += 1
                 else:
                     dropped_unmatched += 1
-                    if image_dir is not None:
-                        image_path = image_dir / f"{row_index:05d}{image_ext}"
-                        if image_path.exists():
-                            image_path.unlink()
-                            deleted_images += 1
-                        else:
-                            missing_images += 1
                 continue
 
             patched = dict(row)
+            new_image_index = len(image_pairs)
+            patched["image_index"] = new_image_index
+            patched["original_image_index"] = row_index
             patched["gt_n_nodes"] = int(val_rows[idx]["n_nodes"])
             patched["gt_adj_matrix"] = val_rows[idx]["adj_matrix"]
             patched["gt_node_coords"] = val_rows[idx].get("node_coords")
@@ -171,6 +173,7 @@ def main() -> None:
             if args.write_source_index:
                 patched["source_index"] = idx
             fout.write(json.dumps(patched, ensure_ascii=False) + "\n")
+            image_pairs.append((row_index, new_image_index))
             matched += 1
 
     print(f"read inference rows: {total}")
@@ -180,14 +183,41 @@ def main() -> None:
     print(f"matched: {matched}")
     print(f"kept_unmatched: {kept_unmatched}")
     print(f"dropped_unmatched: {dropped_unmatched}")
-    if image_dir is not None:
-        print(f"deleted_images: {deleted_images}")
-        print(f"missing_images: {missing_images}")
     for reason, count in sorted(reasons.items()):
         print(f"{reason}: {count}")
     if write_path != out_path:
         write_path.replace(out_path)
+    if image_dir is not None:
+        synced_images, missing_images = sync_image_dir(image_dir, image_ext, image_pairs)
+        print(f"synced_images: {synced_images}")
+        print(f"missing_images: {missing_images}")
     print(f"saved -> {out_path}")
+
+
+def sync_image_dir(image_dir: Path, image_ext: str, image_pairs: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """Rebuild image_dir so image filenames align with filtered JSONL row order."""
+    image_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = image_dir.with_name(f"{image_dir.name}.tmp_sync")
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+
+    synced = missing = 0
+    for original_index, new_index in image_pairs:
+        src = image_dir / f"{original_index:05d}{image_ext}"
+        dst = tmp_dir / f"{new_index:05d}{image_ext}"
+        if src.exists():
+            shutil.copy2(src, dst)
+            synced += 1
+        else:
+            missing += 1
+
+    for old_image in image_dir.glob(f"*{image_ext}"):
+        old_image.unlink()
+    for new_image in tmp_dir.glob(f"*{image_ext}"):
+        shutil.move(str(new_image), str(image_dir / new_image.name))
+    tmp_dir.rmdir()
+    return synced, missing
 
 
 if __name__ == "__main__":
