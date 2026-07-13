@@ -223,7 +223,7 @@ def draw_col3_coords(ax, coords: np.ndarray, adj_np: np.ndarray, mask_np: np.nda
     for i in range(len(valid)):
         ax.add_patch(plt.Circle((d[i, 0], d[i, 1]), 0.16,
                                 color='#4E8CC2', ec='#444444', lw=0.5, zorder=3))
-    ax.set_xlim(-3.0, 3.0); ax.set_ylim(3.0, -3.0)
+    ax.set_xlim(-3.0, 3.0); ax.set_ylim(-3.0, 3.0)
     ax.set_aspect('equal')
 
 
@@ -261,7 +261,7 @@ def draw_col4_render(ax, coords: np.ndarray, adj_np: np.ndarray,
         )
 
     ax.set_aspect('equal'); ax.axis('off')
-    ax.set_xlim(0, 1); ax.set_ylim(1, 0)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
 
     for face, room_type in zip(faces, face_types):
         pts = [norm(*raw_coords[i]) for i in face]
