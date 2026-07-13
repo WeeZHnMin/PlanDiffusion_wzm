@@ -49,7 +49,7 @@ ALLOWED_TYPES = {
 }
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "Qwen3.7-Plus"
+DEFAULT_MODEL = "qwen3.7-plus"
 DEFAULT_OUT = "outputs/tri_llm_room_type_iou/tri_llm_room_type_iou_ddim500.jsonl"
 DEFAULT_SUMMARY = "outputs/tri_llm_room_type_iou/tri_llm_room_type_iou_ddim500_summary.json"
 
