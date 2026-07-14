@@ -23,8 +23,9 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from .dataset import load_align_data
+from .dataset import load_align_data, load_align_jsonl_data
 from .model   import TextGraphAlign
+from transformers import BertTokenizer
 
 VAL_SAMPLES = 0  # 0 = 跑完整个验证集
 
@@ -32,7 +33,10 @@ VAL_SAMPLES = 0  # 0 = 跑完整个验证集
 def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--train',           required=True)
-    p.add_argument('--val',             default='')
+    p.add_argument('--val',             default='',
+                   help='验证集路径，支持 .npz 或 .jsonl')
+    p.add_argument('--val_max_samples', type=int, default=0,
+                   help='jsonl 验证集最多读取条数，0=全量；npz 验证集忽略该参数')
     p.add_argument('--save',            default='checkpoints/text_graph_align')
     p.add_argument('--gpus',            default='0',
                    help='使用的 GPU，单卡: "0"，双卡: "0,1"')
@@ -102,8 +106,21 @@ def main():
                                       num_workers=args.workers)
     val_loader = None
     if args.val:
-        _, val_loader = load_align_data(args.val, batch_size=args.val_batch,
-                                        shuffle=True, num_workers=args.workers)
+        val_suffix = Path(args.val).suffix.lower()
+        if val_suffix == '.jsonl':
+            print(f"loading val jsonl: {args.val}")
+            val_tokenizer = BertTokenizer.from_pretrained(args.bert)
+            _, val_loader = load_align_jsonl_data(
+                args.val,
+                val_tokenizer,
+                batch_size=args.val_batch,
+                shuffle=False,
+                num_workers=args.workers,
+                max_samples=args.val_max_samples,
+            )
+        else:
+            _, val_loader = load_align_data(args.val, batch_size=args.val_batch,
+                                            shuffle=False, num_workers=args.workers)
 
     raw_model = TextGraphAlign(
         bert_name       = args.bert,

@@ -10,9 +10,13 @@ npz 中需包含：
   prompt_mask     [N, MAX_TEXT_LEN]                int32
 """
 
+import random
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+
+from .build_npz import process_jsonl
 
 
 class AlignDataset(Dataset):
@@ -40,8 +44,51 @@ class AlignDataset(Dataset):
         }
 
 
+class AlignMemoryDataset(Dataset):
+    def __init__(self, arrays, source='memory'):
+        self.node_coords, self.adj_matrix, self.node_mask, self.room_membership, \
+            self.prompt_tokens, self.prompt_mask = arrays
+
+        self.node_coords = np.stack(self.node_coords, axis=0).astype(np.float32)
+        self.adj_matrix = np.stack(self.adj_matrix, axis=0).astype(np.float32)
+        self.node_mask = np.stack(self.node_mask, axis=0).astype(np.float32)
+        self.room_membership = np.stack(self.room_membership, axis=0).astype(np.float32)
+        self.prompt_tokens = np.stack(self.prompt_tokens, axis=0).astype(np.int64)
+        self.prompt_mask = np.stack(self.prompt_mask, axis=0).astype(np.float32)
+        print(f"AlignMemoryDataset: {len(self.node_mask)} 条  {source}")
+
+    def __len__(self):
+        return len(self.node_mask)
+
+    def __getitem__(self, idx):
+        return {
+            'node_coords': torch.from_numpy(self.node_coords[idx]),
+            'adj_matrix': torch.from_numpy(self.adj_matrix[idx]),
+            'node_mask': torch.from_numpy(self.node_mask[idx]),
+            'room_membership': torch.from_numpy(self.room_membership[idx]),
+            'prompt_tokens': torch.from_numpy(self.prompt_tokens[idx]),
+            'prompt_mask': torch.from_numpy(self.prompt_mask[idx]),
+        }
+
+
 def load_align_data(npz_path, batch_size, shuffle=True, num_workers=4):
     ds     = AlignDataset(npz_path)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                        num_workers=num_workers, drop_last=True,
+                        pin_memory=True, persistent_workers=(num_workers > 0))
+    return ds, loader
+
+
+def load_align_jsonl_data(jsonl_path, tokenizer, batch_size, shuffle=False,
+                         num_workers=4, max_samples=0, seed=42):
+    arrays = process_jsonl(
+        jsonl_path,
+        tokenizer,
+        max_samples=max_samples,
+        augment=1,
+        rng=random.Random(seed),
+    )
+    ds = AlignMemoryDataset(arrays, source=jsonl_path)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                         num_workers=num_workers, drop_last=True,
                         pin_memory=True, persistent_workers=(num_workers > 0))

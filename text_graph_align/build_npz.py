@@ -77,7 +77,7 @@ def process_jsonl(jsonl_path, tokenizer, max_samples=0, augment=1, rng=None):
     n_graphs = n_skipped = 0
     t0 = time.perf_counter()
 
-    with open(jsonl_path, encoding='utf-8') as f:
+    with open(jsonl_path, encoding='utf-8-sig') as f:
         for line_no, line in enumerate(f):
             line = line.strip()
             if not line:
