@@ -3,9 +3,10 @@
 
 核心逻辑：
   1. 每个节点有 node_types（可多类型）和坐标
-  2. 按 primary_type 分组，用邻接矩阵找同类型连通分量 → 每个分量代表一个「房间实例」
-  3. 计算每个房间实例的质心，映射到 5×5 网格 → 位置标签
-  4. 生成: "Living room: center. Kitchen: top-right. Bedroom 1: top-left. Bedroom 2: bottom-right."
+  2. 用 node_coords + adj_matrix 做半边遍历，提取所有有界面 → 每个面代表一个「房间实例」
+  3. 根据面内外 node_types 投票确定房间类型
+  4. 计算每个房间实例的质心，映射到 5×5 网格 → 位置标签
+  5. 生成: "Living room: center. Kitchen: top-right. Bedroom 1: top-left. Bedroom 2: bottom-right."
 
 用法：
   python generate_spatial_prompts.py
@@ -15,29 +16,23 @@
 
 import argparse
 import json
+import math
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
-from transformers import BertTokenizer
 
 # ── 房间类型优先级与显示名 ─────────────────────────────────────────────────────
-TYPE_PRIORITY = ['living_room', 'kitchen', 'bedroom', 'corridor', 'bathroom']
+TYPE_PRIORITY = ['living_room', 'kitchen', 'bedroom', 'corridor', 'bathroom', 'dining_room']
 TYPE_DISPLAY  = {
     'bedroom':     'Bedroom',
     'bathroom':    'Bathroom',
     'kitchen':     'Kitchen',
     'living_room': 'Living room',
     'corridor':    'Corridor',
+    'dining_room': 'Dining room',
 }
-
-
-def primary_type(types):
-    for t in TYPE_PRIORITY:
-        if t in types:
-            return t
-    return types[0] if types else None
-
 
 # ── 5×5 位置标签 ──────────────────────────────────────────────────────────────
 ROW_LABELS = ['top', 'upper', 'mid', 'lower', 'bottom']
@@ -86,6 +81,134 @@ def connected_components(node_indices, adj):
     return comps
 
 
+def _build_sorted_neighbors(coords, adj, n):
+    nbrs = {i: [] for i in range(n)}
+    for i in range(n):
+        for j in range(n):
+            if i != j and adj[i, j] > 0.5:
+                nbrs[i].append(j)
+    for i in range(n):
+        nbrs[i].sort(
+            key=lambda w: math.atan2(
+                coords[w, 1] - coords[i, 1],
+                coords[w, 0] - coords[i, 0],
+            )
+        )
+    return nbrs
+
+
+def _next_half_edge(u, v, sorted_nbrs):
+    nbrs = sorted_nbrs[v]
+    if not nbrs:
+        return None
+    idx = nbrs.index(u)
+    return nbrs[(idx - 1) % len(nbrs)]
+
+
+def _signed_area(face, coords):
+    area = 0.0
+    for i, u in enumerate(face):
+        v = face[(i + 1) % len(face)]
+        x1, y1 = coords[u]
+        x2, y2 = coords[v]
+        area += x1 * y2 - x2 * y1
+    return area / 2.0
+
+
+def find_bounded_faces(coords, adj):
+    """
+    用半边遍历提取平面图有界面。
+    一个有界面才对应一个真实房间候选，最大面积面视为外轮廓并剔除。
+    """
+    n = len(coords)
+    sorted_nbrs = _build_sorted_neighbors(coords, adj, n)
+    visited = set()
+    faces = []
+
+    for u in range(n):
+        for v in sorted_nbrs[u]:
+            if (u, v) in visited:
+                continue
+            face = []
+            cu, cv = u, v
+            steps = 0
+            while (cu, cv) not in visited and steps < n * n:
+                visited.add((cu, cv))
+                face.append(cu)
+                nw = _next_half_edge(cu, cv, sorted_nbrs)
+                if nw is None:
+                    break
+                cu, cv = cv, nw
+                steps += 1
+            if len(face) >= 3:
+                faces.append(face)
+
+    if not faces:
+        return []
+
+    abs_areas = [abs(_signed_area(face, coords)) for face in faces]
+    outer_idx = abs_areas.index(max(abs_areas))
+    return [face for i, face in enumerate(faces) if i != outer_idx]
+
+
+def vote_face_type(face, node_types, adj):
+    """
+    给一个房间面投票确定类型。
+    共享节点会带入相邻房间类型，因此用 face 内计数 / face 外一跳计数做去噪。
+    """
+    face_set = set(face)
+    face_counts = Counter()
+    for node in face:
+        for t in node_types[node]:
+            if t in TYPE_DISPLAY:
+                face_counts[t] += 1
+
+    if not face_counts:
+        return None
+
+    ext_counts = Counter()
+    for node in face:
+        for nb, connected in enumerate(adj[node]):
+            if connected > 0.5 and nb not in face_set:
+                for t in node_types[nb]:
+                    if t in TYPE_DISPLAY:
+                        ext_counts[t] += 1
+
+    scores = {
+        t: face_counts[t] / (ext_counts.get(t, 0) + 1)
+        for t in face_counts
+    }
+    best = max(scores.values())
+    winners = [t for t, score in scores.items() if score == best]
+    order = {t: i for i, t in enumerate(TYPE_PRIORITY)}
+    return min(winners, key=lambda t: order.get(t, len(TYPE_PRIORITY)))
+
+
+def fallback_room_instances(node_types, nx_arr, ny_arr, adj, n):
+    """
+    面提取失败时兜底。
+    与旧逻辑不同，这里保留共享节点的全部类型，不再只取 primary_type。
+    """
+    type_groups = {}
+    for i in range(n):
+        for t in node_types[i]:
+            if t in TYPE_DISPLAY:
+                type_groups.setdefault(t, []).append(i)
+
+    room_instances = []
+    for pt in TYPE_PRIORITY:
+        if pt not in type_groups:
+            continue
+        comps = connected_components(type_groups[pt], adj)
+        for comp in comps:
+            xs = [nx_arr[i] for i in comp]
+            ys = [ny_arr[i] for i in comp]
+            cx = (min(xs) + max(xs)) / 2
+            cy = (min(ys) + max(ys)) / 2
+            room_instances.append((pt, cx, cy))
+    return room_instances
+
+
 # ── 核心：生成描述 ────────────────────────────────────────────────────────────
 
 def generate_prompt(node_types, node_coords, adj_matrix, n):
@@ -101,31 +224,28 @@ def generate_prompt(node_types, node_coords, adj_matrix, n):
     nx_arr = (coords[:, 0] - x_min) / x_span
     ny_arr = (y_max - coords[:, 1]) / y_span
 
-    # 按 primary_type 分组节点
-    type_groups = {}
-    for i in range(n):
-        pt = primary_type(node_types[i])
-        if pt is None:
+    # 正确逻辑：先从平面图提取有界面，每个有界面才是一个房间实例。
+    room_instances = []   # (room_type, centroid_nx, centroid_ny)
+    for face in find_bounded_faces(coords, adj):
+        t = vote_face_type(face, node_types, adj)
+        if t is None:
             continue
-        type_groups.setdefault(pt, []).append(i)
+        xs = [nx_arr[i] for i in face]
+        ys = [ny_arr[i] for i in face]
+        cx = (min(xs) + max(xs)) / 2
+        cy = (min(ys) + max(ys)) / 2
+        room_instances.append((t, cx, cy))
 
-    # 每个类型内找连通分量（房间实例），计算质心
-    room_instances = []   # (primary_type, centroid_nx, centroid_ny)
-    for pt in TYPE_PRIORITY:
-        if pt not in type_groups:
-            continue
-        comps = connected_components(type_groups[pt], adj)
-        # 按质心位置排序（先 y 后 x，从上到下、从左到右）
-        comp_centroids = []
-        for comp in comps:
-            xs = [nx_arr[i] for i in comp]
-            ys = [ny_arr[i] for i in comp]
-            cx = (min(xs) + max(xs)) / 2
-            cy = (min(ys) + max(ys)) / 2
-            comp_centroids.append((cy, cx, pt))
-        comp_centroids.sort()
-        for cy, cx, t in comp_centroids:
-            room_instances.append((t, cx, cy))
+    if not room_instances:
+        room_instances = fallback_room_instances(node_types, nx_arr, ny_arr, adj, n)
+
+    # 类型顺序固定；同类型内部按上到下、左到右排序，便于 Bedroom 1/2 命名稳定。
+    type_order = {t: i for i, t in enumerate(TYPE_PRIORITY)}
+    room_instances.sort(key=lambda item: (
+        type_order.get(item[0], len(TYPE_PRIORITY)),
+        item[2],
+        item[1],
+    ))
 
     # 生成文字
     type_counts = {}
@@ -160,13 +280,17 @@ def main():
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert) if args.stats else None
+    if args.stats:
+        from transformers import BertTokenizer
+        tokenizer = BertTokenizer.from_pretrained(args.bert)
+    else:
+        tokenizer = None
 
     t0 = time.perf_counter()
     n_written = 0
     token_lens = []
 
-    with open(in_path, encoding='utf-8') as fin, \
+    with open(in_path, encoding='utf-8-sig') as fin, \
          open(out_path, 'w', encoding='utf-8') as fout:
         for line_no, line in enumerate(fin):
             line = line.strip()
@@ -178,6 +302,8 @@ def main():
             spatial_prompt         = generate_prompt(
                 rec['node_types'], rec['node_coords'], rec['adj_matrix'], n)
             original_prompt        = rec.get('prompt', '')
+            if ' [SEP] ' in original_prompt:
+                original_prompt = original_prompt.split(' [SEP] ', 1)[1]
             full_prompt            = spatial_prompt + ' [SEP] ' + original_prompt
             rec['prompt_original'] = original_prompt
             rec['prompt']          = full_prompt
